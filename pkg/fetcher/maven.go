@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -221,7 +222,8 @@ func (c *MavenClient) VerifySourceAvailability(packageName, version string, repo
 	}
 
 	// Check for matching git tag in repository
-	if repoURL != "" && gitClient != nil {
+	// Note: gitClient is an interface, so we need to check if the underlying value is nil
+	if repoURL != "" && gitClient != nil && !reflect.ValueOf(gitClient).IsNil() {
 		tagExists, tagURL, err := gitClient.CheckGitTag(repoURL, version)
 		if err != nil {
 			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to check git tag: %v", err))
