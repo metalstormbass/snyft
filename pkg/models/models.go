@@ -21,16 +21,17 @@ type Dependency struct {
 
 // AnalysisResult contains the supply chain security analysis for a dependency
 type AnalysisResult struct {
-	Dependency          Dependency      `json:"dependency"`
-	Timestamp           time.Time       `json:"timestamp"`
-	RiskLevel           string          `json:"risk_level"` // HIGH, MEDIUM, LOW
-	RiskScore           int             `json:"risk_score"` // 0-100
-	RiskFactors         []string        `json:"risk_factors"`
-	RepositoryURL       string          `json:"repository_url"`
-	SourceCodeAvailable bool            `json:"source_code_available"`
-	BuildInfrastructure string          `json:"build_infrastructure"`
-	Findings            []Finding       `json:"findings"`
-	Metadata            PackageMetadata `json:"metadata"`
+	Dependency          Dependency             `json:"dependency"`
+	Timestamp           time.Time              `json:"timestamp"`
+	RiskLevel           string                 `json:"risk_level"` // HIGH, MEDIUM, LOW
+	RiskScore           int                    `json:"risk_score"` // 0-100
+	RiskFactors         []string               `json:"risk_factors"`
+	RepositoryURL       string                 `json:"repository_url"`
+	SourceCodeAvailable bool                   `json:"source_code_available"`
+	BuildInfrastructure string                 `json:"build_infrastructure"`
+	Findings            []Finding              `json:"findings"`
+	Metadata            PackageMetadata        `json:"metadata"`
+	SupplyChainScore    *SupplyChainScore      `json:"supply_chain_score,omitempty"`
 }
 
 // Finding represents a specific security finding
@@ -71,6 +72,9 @@ type PackageMetadata struct {
 	HasReleaseProcess bool    `json:"has_release_process"`
 	SignedReleases   bool     `json:"signed_releases"`
 
+	// Install-time execution
+	InstallScripts   map[string]string `json:"install_scripts,omitempty"` // postinstall, preinstall, etc.
+
 	// OpenSSF Scorecard
 	OSSFScore        float64  `json:"ossf_score"`
 	OSSFChecks       map[string]int `json:"ossf_checks"`
@@ -103,4 +107,31 @@ type ReleaseInfo struct {
 	Assets      []string
 	Checksum    string
 	Signature   string
+}
+
+// SupplyChainScore represents a 0-14 point supply chain security scoring rubric
+type SupplyChainScore struct {
+	TotalScore    int                   `json:"total_score"`    // 0-14 points
+	RiskLevel     string                `json:"risk_level"`     // LOW (0-3), MEDIUM (4-7), HIGH (8+)
+	CategoryScores CategoryScores       `json:"category_scores"`
+}
+
+// CategoryScores contains individual scores for each supply chain security category
+type CategoryScores struct {
+	PublisherControl   CategoryScore `json:"publisher_control"`    // 0-2 pts: 2FA/signing/multi-maintainer
+	OwnershipChanges   CategoryScore `json:"ownership_changes"`    // 0-2 pts: ownership transfers
+	ReleaseAnomalies   CategoryScore `json:"release_anomalies"`    // 0-2 pts: dormant→sudden activity
+	InstallExecution   CategoryScore `json:"install_execution"`    // 0-2 pts: postinstall scripts
+	DependencySprawl   CategoryScore `json:"dependency_sprawl"`    // 0-2 pts: transitive dependencies
+	Provenance         CategoryScore `json:"provenance"`           // 0-2 pts: reproducible/signed builds
+	Health             CategoryScore `json:"health"`               // 0-2 pts: bus factor/review/CI
+}
+
+// CategoryScore contains the score and details for a single category
+type CategoryScore struct {
+	Score       int    `json:"score"`       // 0-2 points
+	RiskPoints  int    `json:"risk_points"` // Points assigned (higher = more risk)
+	Description string `json:"description"` // Human-readable description
+	Evidence    string `json:"evidence"`    // Evidence for the score
+	Verified    bool   `json:"verified"`    // Whether data was available to verify
 }
