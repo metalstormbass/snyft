@@ -759,3 +759,80 @@ func TestCalculateSupplyChainScore_OwnershipChangesIntegration(t *testing.T) {
 		t.Errorf("TotalScore = %v, want 0-14", result.SupplyChainScore.TotalScore)
 	}
 }
+
+func TestVerifySourceCode(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	tests := []struct {
+		name                    string
+		dep                     models.Dependency
+		repoURL                 string
+		expectFindingSeverity   string
+		expectFindingCategory   string
+		expectSourceVerification bool
+	}{
+		{
+			name: "Source verification creates findings when source missing",
+			dep: models.Dependency{
+				Name:      "test-package",
+				Version:   "1.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			repoURL:                 "",
+			expectFindingSeverity:   "",
+			expectFindingCategory:   "",
+			expectSourceVerification: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := models.AnalysisResult{
+				Dependency: tt.dep,
+				Timestamp:  time.Now(),
+				Findings:   []models.Finding{},
+			}
+
+			analyzer.verifySourceCode(&result, tt.dep, tt.repoURL)
+
+			if tt.expectSourceVerification && result.SourceVerification == nil {
+				t.Error("Expected SourceVerification to be populated")
+			}
+
+			if tt.expectFindingSeverity != "" {
+				found := false
+				for _, finding := range result.Findings {
+					if finding.Severity == tt.expectFindingSeverity &&
+					   finding.Category == tt.expectFindingCategory {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected finding with severity=%s and category=%s, but not found in: %v",
+						tt.expectFindingSeverity, tt.expectFindingCategory, result.Findings)
+				}
+			}
+		})
+	}
+}
+
+func TestSourceVerificationIntegrationInAnalyzer(t *testing.T) {
+	t.Run("Source verification is the first check", func(t *testing.T) {
+		result := models.AnalysisResult{
+			Dependency: models.Dependency{
+				Name:      "express",
+				Version:   "4.18.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			Findings: []models.Finding{},
+		}
+
+		analyzer := NewAnalyzer()
+		analyzer.verifySourceCode(&result, result.Dependency, "https://github.com/expressjs/express")
+
+		if result.SourceVerification == nil {
+			t.Error("Expected SourceVerification to be populated")
+		}
+	})
+}

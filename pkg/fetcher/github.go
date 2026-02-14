@@ -229,6 +229,50 @@ func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 	return commits, nil
 }
 
+// CheckGitTag verifies if a specific version tag exists in the repository
+// Returns true if the tag exists, along with the tag URL
+func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return false, "", err
+	}
+
+	// Try common version tag formats: v1.2.3, 1.2.3, v1.2.3-beta, release-1.2.3
+	tagVariants := []string{
+		version,
+		"v" + version,
+		"V" + version,
+		"release-" + version,
+		"Release-" + version,
+	}
+
+	for _, tag := range tagVariants {
+		url := fmt.Sprintf("%s/repos/%s/%s/git/ref/tags/%s", c.baseURL, owner, repo, tag)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode == http.StatusOK {
+			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
+			return true, tagURL, nil
+		}
+	}
+
+	return false, "", nil
+}
+
 func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("HEAD", url, nil)
@@ -558,7 +602,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
@@ -609,7 +653,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if page == 1 {
 				body, _ := io.ReadAll(resp.Body)
 				return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
@@ -620,10 +664,10 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 
 		var commits []GitHubCommit
 		if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, err
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if len(commits) == 0 {
 			break
@@ -701,7 +745,7 @@ func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 	if err != nil {
 		return false, 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false, 0, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
@@ -752,7 +796,7 @@ func (c *GitHubClient) CheckSignedReleases(repoURL string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false, nil

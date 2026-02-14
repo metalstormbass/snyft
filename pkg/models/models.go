@@ -19,19 +19,31 @@ type Dependency struct {
 	Source    string    `json:"source"` // The manifest file it came from
 }
 
+// SourceVerification contains detailed results of source code availability verification
+type SourceVerification struct {
+	Verified           bool     `json:"verified"`              // Overall verification status
+	HasSourcePackage   bool     `json:"has_source_package"`    // npm: tarball has source, PyPI: sdist exists, Maven: sources.jar exists
+	HasMatchingGitTag  bool     `json:"has_matching_git_tag"`  // Repository has git tag matching the version
+	SourcePackageURL   string   `json:"source_package_url"`    // URL to source package
+	GitTagURL          string   `json:"git_tag_url"`           // URL to git tag in repository
+	VerificationErrors []string `json:"verification_errors"`   // Any errors during verification
+	Details            string   `json:"details"`               // Human-readable details
+}
+
 // AnalysisResult contains the supply chain security analysis for a dependency
 type AnalysisResult struct {
-	Dependency          Dependency             `json:"dependency"`
-	Timestamp           time.Time              `json:"timestamp"`
-	RiskLevel           string                 `json:"risk_level"` // HIGH, MEDIUM, LOW
-	RiskScore           int                    `json:"risk_score"` // 0-100
-	RiskFactors         []string               `json:"risk_factors"`
-	RepositoryURL       string                 `json:"repository_url"`
-	SourceCodeAvailable bool                   `json:"source_code_available"`
-	BuildInfrastructure string                 `json:"build_infrastructure"`
-	Findings            []Finding              `json:"findings"`
-	Metadata            PackageMetadata        `json:"metadata"`
-	SupplyChainScore    *SupplyChainScore      `json:"supply_chain_score,omitempty"`
+	Dependency            Dependency             `json:"dependency"`
+	Timestamp             time.Time              `json:"timestamp"`
+	RiskLevel             string                 `json:"risk_level"` // HIGH, MEDIUM, LOW
+	RiskScore             int                    `json:"risk_score"` // 0-100
+	RiskFactors           []string               `json:"risk_factors"`
+	RepositoryURL         string                 `json:"repository_url"`
+	SourceCodeAvailable   bool                   `json:"source_code_available"`
+	SourceVerification    *SourceVerification    `json:"source_verification,omitempty"`
+	BuildInfrastructure   string                 `json:"build_infrastructure"`
+	Findings              []Finding              `json:"findings"`
+	Metadata              PackageMetadata        `json:"metadata"`
+	SupplyChainScore      *SupplyChainScore      `json:"supply_chain_score,omitempty"`
 }
 
 // Finding represents a specific security finding

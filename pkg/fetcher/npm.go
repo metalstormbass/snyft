@@ -1,11 +1,17 @@
 package fetcher
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/metalstormbass/snyft/pkg/models"
 )
 
 // NPMClient handles interactions with npm registry API
@@ -129,14 +135,14 @@ type NPMDistTags struct {
 type NPMVersionDetails struct {
 	Version     string            `json:"version"`
 	Scripts     map[string]string `json:"scripts"`
-	Maintainers []NPMMaintainer   `json:"maintainers"`
 	Dist        NPMDist           `json:"dist"`
+	Maintainers []NPMMaintainer   `json:"maintainers"`
 }
 
 type NPMDist struct {
-	Tarball      string          `json:"tarball"`
-	Shasum       string          `json:"shasum"`
-	Integrity    string          `json:"integrity"`
+	Tarball      string        `json:"tarball"`
+	Shasum       string        `json:"shasum"`
+	Integrity    string        `json:"integrity"`
 	Attestations *NPMAttestation `json:"attestations,omitempty"`
 }
 
@@ -145,7 +151,6 @@ type NPMAttestation struct {
 	ProvenanceURL string `json:"provenance_url"`
 }
 
-// NPMOwnershipHistory represents ownership/maintainer changes over time
 type NPMOwnershipHistory struct {
 	CurrentMaintainers    []string
 	HistoricalMaintainers []string
@@ -193,7 +198,185 @@ func (c *NPMClient) CheckNPMProvenance(packageName string) (bool, string, error)
 	return false, "", nil
 }
 
-// GetOwnershipHistory analyzes maintainer changes across package versions
+// VerifySourceAvailability verifies that source code exists for the exact version
+// Checks: 1) tarball contains source files (not just minified), 2) matching git tag exists
+func (c *NPMClient) VerifySourceAvailability(packageName, version string, repoURL string, githubClient *GitHubClient) *models.SourceVerification {
+	result := &models.SourceVerification{
+		Verified:           false,
+		HasSourcePackage:   false,
+		HasMatchingGitTag:  false,
+		VerificationErrors: []string{},
+	}
+
+	// Fetch package version metadata
+	pkgURL := fmt.Sprintf("%s/%s/%s", c.baseURL, packageName, version)
+	resp, err := c.httpClient.Get(pkgURL)
+	if err != nil {
+		result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to fetch package version: %v", err))
+		result.Details = "Failed to fetch package metadata from npm registry"
+		return result
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		result.VerificationErrors = append(result.VerificationErrors, "Package version not found in npm registry")
+		result.Details = fmt.Sprintf("Version %s not found in registry", version)
+		return result
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("npm registry returned status %d", resp.StatusCode))
+		result.Details = "Failed to access npm registry"
+		return result
+	}
+
+	var versionData struct {
+		Dist struct {
+			Tarball string `json:"tarball"`
+		} `json:"dist"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&versionData); err != nil {
+		result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to parse package metadata: %v", err))
+		result.Details = "Invalid package metadata from registry"
+		return result
+	}
+
+	if versionData.Dist.Tarball == "" {
+		result.VerificationErrors = append(result.VerificationErrors, "No tarball URL found for package version")
+		result.Details = "Package has no downloadable tarball"
+		return result
+	}
+
+	result.SourcePackageURL = versionData.Dist.Tarball
+
+	// Check if tarball contains source files
+	hasSource, err := c.checkTarballHasSource(versionData.Dist.Tarball)
+	if err != nil {
+		result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to analyze tarball: %v", err))
+		result.Details = "Could not verify tarball contents"
+	} else if hasSource {
+		result.HasSourcePackage = true
+	} else {
+		result.VerificationErrors = append(result.VerificationErrors, "Tarball contains only minified/dist files, no source code")
+		result.Details = "Package distribution lacks source code"
+	}
+
+	// Check for matching git tag in repository
+	if repoURL != "" && githubClient != nil {
+		tagExists, tagURL, err := githubClient.CheckGitTag(repoURL, version)
+		if err != nil {
+			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to check git tag: %v", err))
+		} else if tagExists {
+			result.HasMatchingGitTag = true
+			result.GitTagURL = tagURL
+		} else {
+			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("No git tag found for version %s", version))
+		}
+	}
+
+	// Overall verification passes if both checks pass
+	result.Verified = result.HasSourcePackage && result.HasMatchingGitTag
+
+	if result.Verified {
+		result.Details = fmt.Sprintf("Source code verified for v%s: tarball contains source, git tag exists", version)
+	} else if result.HasSourcePackage && !result.HasMatchingGitTag {
+		result.Details = fmt.Sprintf("Partial verification: tarball has source but no matching git tag for v%s", version)
+	} else if !result.HasSourcePackage && result.HasMatchingGitTag {
+		result.Details = fmt.Sprintf("Partial verification: git tag exists but tarball lacks source for v%s", version)
+	} else {
+		result.Details = fmt.Sprintf("Source verification failed for v%s", version)
+	}
+
+	return result
+}
+
+// checkTarballHasSource downloads and inspects the tarball to verify it contains source files
+func (c *NPMClient) checkTarballHasSource(tarballURL string) (bool, error) {
+	resp, err := c.httpClient.Get(tarballURL)
+	if err != nil {
+		return false, fmt.Errorf("failed to download tarball: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("tarball download returned status %d", resp.StatusCode)
+	}
+
+	// Decompress gzip
+	gzr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("failed to decompress gzip: %w", err)
+	}
+	defer func() { _ = gzr.Close() }()
+
+	// Read tar archive
+	tr := tar.NewReader(gzr)
+
+	hasSourceFile := false
+	hasOnlyMinified := true
+	fileCount := 0
+	maxFilesToCheck := 100 // Limit to avoid processing huge packages
+
+	for fileCount < maxFilesToCheck {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false, fmt.Errorf("failed to read tar: %w", err)
+		}
+
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		fileCount++
+		filename := strings.ToLower(header.Name)
+
+		// Skip package.json and other metadata
+		if strings.HasSuffix(filename, "package.json") || strings.HasSuffix(filename, ".md") {
+			continue
+		}
+
+		// Look for source files (not minified, not in dist/build directories)
+		isSourceFile := (strings.HasSuffix(filename, ".js") ||
+			strings.HasSuffix(filename, ".ts") ||
+			strings.HasSuffix(filename, ".jsx") ||
+			strings.HasSuffix(filename, ".tsx") ||
+			strings.HasSuffix(filename, ".mjs"))
+
+		isInSourceDir := strings.Contains(filename, "/src/") ||
+			strings.Contains(filename, "/lib/") && !strings.Contains(filename, "/dist/") && !strings.Contains(filename, "/build/")
+
+		isMinified := strings.Contains(filename, ".min.") ||
+			strings.Contains(filename, "/dist/") ||
+			strings.Contains(filename, "/build/") ||
+			strings.Contains(filename, "/bundle")
+
+		if isSourceFile && isInSourceDir {
+			hasSourceFile = true
+			hasOnlyMinified = false
+		}
+
+		if isSourceFile && !isMinified {
+			hasOnlyMinified = false
+		}
+	}
+
+	// If we found source files in typical source directories, verification passes
+	if hasSourceFile {
+		return true, nil
+	}
+
+	// If all JS files are minified/in dist folders, verification fails
+	if hasOnlyMinified && fileCount > 0 {
+		return false, nil
+	}
+
+	// If we found non-minified JS files (even not in src/), give benefit of doubt
+	return !hasOnlyMinified, nil
+}
 func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistory, error) {
 	url := fmt.Sprintf("%s/%s", c.baseURL, packageName)
 
@@ -201,7 +384,7 @@ func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistor
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch npm package: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("npm registry returned status %d", resp.StatusCode)

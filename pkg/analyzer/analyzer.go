@@ -131,6 +131,10 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	result.RepositoryURL = repoURL
 	result.Metadata = metadata
 
+	// PRIMARY CHECK: Verify source code availability for the EXACT version
+	// This MUST be the first check before any other scoring
+	a.verifySourceCode(&result, dep, repoURL)
+
 	// Analyze dependency sprawl from lock files
 	a.analyzeDependencySprawl(&result, dep)
 
@@ -168,6 +172,59 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	a.calculateSupplyChainScore(&result)
 
 	return result
+}
+
+// verifySourceCode performs primary source code availability verification
+// This is the FIRST check before any other scoring
+func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.Dependency, repoURL string) {
+	var sourceVerification *models.SourceVerification
+
+	switch dep.Ecosystem {
+	case models.EcosystemNPM:
+		sourceVerification = a.npmClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, a.githubClient)
+
+	case models.EcosystemPyPI:
+		sourceVerification = a.pypiClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, a.githubClient)
+
+	case models.EcosystemMaven:
+		sourceVerification = a.mavenClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, a.githubClient)
+	}
+
+	if sourceVerification != nil {
+		result.SourceVerification = sourceVerification
+
+		// Add findings based on source verification results
+		if !sourceVerification.Verified {
+			if !sourceVerification.HasSourcePackage && !sourceVerification.HasMatchingGitTag {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "HIGH",
+					Category:    "Source Code Verification Failed",
+					Description: "No verifiable source code found for this exact version",
+					Check:       "Primary Source Code Verification",
+					Evidence:    strings.Join(sourceVerification.VerificationErrors, "; "),
+				})
+				result.RiskFactors = append(result.RiskFactors, "No verifiable source code for exact version")
+			} else if !sourceVerification.HasSourcePackage {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "HIGH",
+					Category:    "Missing Source Package",
+					Description: "Package distribution lacks source code",
+					Check:       "Source Package Verification",
+					Evidence:    sourceVerification.Details,
+				})
+				result.RiskFactors = append(result.RiskFactors, "No source package available")
+			} else if !sourceVerification.HasMatchingGitTag {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "MEDIUM",
+					Category:    "Missing Git Tag",
+					Description: fmt.Sprintf("No git tag found for version %s in repository", dep.Version),
+					Check:       "Git Tag Verification",
+					Evidence:    "Cannot verify build corresponds to repository state",
+				})
+				result.RiskFactors = append(result.RiskFactors, "No matching git tag for version")
+			}
+		}
+	}
 }
 
 func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL string) {
@@ -729,9 +786,10 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 
 	// Determine description based on risk points
 	description := "Stable long-term ownership"
-	if riskPoints == 2 {
+	switch riskPoints {
+	case 2:
 		description = "Recent suspicious ownership changes detected"
-	} else if riskPoints == 1 {
+	case 1:
 		description = "Some ownership changes detected"
 	}
 

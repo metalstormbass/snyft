@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/metalstormbass/snyft/pkg/models"
 )
 
 // MavenClient handles interactions with Maven Central
@@ -163,4 +165,80 @@ type MavenSCM struct {
 type MavenLicense struct {
 	Name string `xml:"name"`
 	URL  string `xml:"url"`
+}
+
+// VerifySourceAvailability verifies that source code exists for the exact version
+// Checks: 1) sources.jar exists in Maven Central, 2) matching git tag exists
+func (c *MavenClient) VerifySourceAvailability(packageName, version string, repoURL string, githubClient *GitHubClient) *models.SourceVerification {
+	result := &models.SourceVerification{
+		Verified:           false,
+		HasSourcePackage:   false,
+		HasMatchingGitTag:  false,
+		VerificationErrors: []string{},
+	}
+
+	// Parse package name (format: groupId:artifactId)
+	parts := strings.Split(packageName, ":")
+	if len(parts) != 2 {
+		result.VerificationErrors = append(result.VerificationErrors, "Invalid Maven package name format")
+		result.Details = "Expected format: groupId:artifactId"
+		return result
+	}
+
+	groupID := parts[0]
+	artifactID := parts[1]
+
+	// Construct sources.jar URL
+	groupPath := strings.ReplaceAll(groupID, ".", "/")
+	sourcesURL := fmt.Sprintf("%s/%s/%s/%s/%s-%s-sources.jar",
+		c.baseURL, groupPath, artifactID, version, artifactID, version)
+
+	result.SourcePackageURL = sourcesURL
+
+	// Check if sources.jar exists
+	resp, err := c.httpClient.Head(sourcesURL)
+	if err != nil {
+		result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to check sources.jar: %v", err))
+		result.Details = "Could not verify sources.jar availability"
+	} else {
+		defer func() { _ = resp.Body.Close() }()
+		switch resp.StatusCode {
+		case http.StatusOK:
+			result.HasSourcePackage = true
+		case http.StatusNotFound:
+			result.VerificationErrors = append(result.VerificationErrors, "sources.jar not found in Maven Central")
+			result.Details = "Package does not publish sources.jar"
+		default:
+			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Maven Central returned status %d for sources.jar", resp.StatusCode))
+			result.Details = "Could not verify sources.jar"
+		}
+	}
+
+	// Check for matching git tag in repository
+	if repoURL != "" && githubClient != nil {
+		tagExists, tagURL, err := githubClient.CheckGitTag(repoURL, version)
+		if err != nil {
+			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to check git tag: %v", err))
+		} else if tagExists {
+			result.HasMatchingGitTag = true
+			result.GitTagURL = tagURL
+		} else {
+			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("No git tag found for version %s", version))
+		}
+	}
+
+	// Overall verification passes if both checks pass
+	result.Verified = result.HasSourcePackage && result.HasMatchingGitTag
+
+	if result.Verified {
+		result.Details = fmt.Sprintf("Source code verified for v%s: sources.jar exists, git tag exists", version)
+	} else if result.HasSourcePackage && !result.HasMatchingGitTag {
+		result.Details = fmt.Sprintf("Partial verification: sources.jar exists but no matching git tag for v%s", version)
+	} else if !result.HasSourcePackage && result.HasMatchingGitTag {
+		result.Details = fmt.Sprintf("Partial verification: git tag exists but no sources.jar for v%s", version)
+	} else {
+		result.Details = fmt.Sprintf("Source verification failed for v%s", version)
+	}
+
+	return result
 }
