@@ -109,6 +109,16 @@ type PackageMetadata struct {
 	ReproducibleBuild    bool  `json:"reproducible_build"`
 	ProvenanceDetails    string `json:"provenance_details,omitempty"`  // Additional context
 
+	// Health metrics (Category 7)
+	BusFactor           int               `json:"bus_factor"`             // Number of contributors for 50% of commits
+	CommitDistribution  map[string]int    `json:"commit_distribution"`    // Author -> commit count
+	TopContributorPct   float64           `json:"top_contributor_pct"`    // Percentage by top contributor
+	CodeReviewRate      float64           `json:"code_review_rate"`       // Percentage of PRs with reviews
+	RequiredReviewers   int               `json:"required_reviewers"`     // Required reviewers from branch protection
+	HasBranchProtection bool              `json:"has_branch_protection"`  // Whether branch protection is enabled
+	CIQualityScore      int               `json:"ci_quality_score"`       // 0-10 CI quality score
+	CIHasTests          bool              `json:"ci_has_tests"`           // Whether CI runs tests
+
 	// Install-time execution
 	InstallScripts      map[string]string `json:"install_scripts,omitempty"`       // postinstall, preinstall, etc.
 	HasInstallScripts   bool              `json:"has_install_scripts"`             // Whether package has install scripts

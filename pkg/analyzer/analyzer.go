@@ -155,6 +155,11 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	// Analyze build infrastructure
 	a.analyzeBuildInfrastructure(&result, repoURL)
 
+	// Analyze repository health metrics (for Category 7)
+	if repoURL != "" {
+		a.analyzeHealthMetrics(&result, repoURL)
+	}
+
 	// Get OSSF Scorecard (if available)
 	if repoURL != "" {
 		a.analyzeOSSFScorecard(&result, repoURL)
@@ -364,6 +369,31 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 			Description: "No evidence of automated release process",
 			Check:       "Release Automation Check",
 		})
+	}
+}
+
+func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL string) {
+	// Get commit statistics for bus factor calculation
+	commitStats, err := a.githubClient.GetCommitStats(repoURL)
+	if err == nil && commitStats != nil {
+		result.Metadata.BusFactor = commitStats.BusFactor
+		result.Metadata.CommitDistribution = commitStats.AuthorCommits
+		result.Metadata.TopContributorPct = commitStats.TopContributorPct
+	}
+
+	// Get pull request statistics for code review verification
+	prStats, err := a.githubClient.GetPullRequestStats(repoURL)
+	if err == nil && prStats != nil {
+		result.Metadata.CodeReviewRate = prStats.CodeReviewRate
+		result.Metadata.RequiredReviewers = prStats.RequiredReviewers
+		result.Metadata.HasBranchProtection = prStats.HasBranchProtection
+	}
+
+	// Analyze CI quality
+	ciQuality, err := a.githubClient.AnalyzeCIQuality(repoURL, result.Metadata.CISystems)
+	if err == nil && ciQuality != nil {
+		result.Metadata.CIQualityScore = ciQuality.QualityScore
+		result.Metadata.CIHasTests = ciQuality.HasTests
 	}
 }
 
@@ -1262,47 +1292,128 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 }
 
 // scoreHealth: bus factor/review process/CI (0-2 pts)
+// Score: 0 = high bus factor/no CI/no reviews (high risk)
+//        1 = moderate indicators (medium risk)
+//        2 = low bus factor with CI and reviews (low risk)
 func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategoryScore {
-	healthScore := 0
+	points := 0
 	evidence := []string{}
+	verified := false
 
-	// Check CI presence (worth 1 point)
-	if result.Metadata.HasCI {
-		healthScore++
+	// Component 1: Bus Factor (from commit distribution)
+	// Low bus factor = concentrated development = higher risk
+	busFactor := result.Metadata.BusFactor
+	if busFactor > 0 {
+		verified = true
+		if busFactor >= 3 {
+			// Multiple contributors (low risk)
+			points++
+			evidence = append(evidence, fmt.Sprintf("Bus factor: %d", busFactor))
+		} else if busFactor == 2 {
+			// Moderate risk - 2 contributors
+			evidence = append(evidence, fmt.Sprintf("Bus factor: %d (moderate)", busFactor))
+		} else {
+			// High risk - single contributor
+			evidence = append(evidence, fmt.Sprintf("Bus factor: %d (high risk)", busFactor))
+		}
+
+		// Additional evidence: top contributor concentration
+		if result.Metadata.TopContributorPct > 0 {
+			if result.Metadata.TopContributorPct >= 80 {
+				evidence = append(evidence, fmt.Sprintf("Top contributor: %.0f%% of commits", result.Metadata.TopContributorPct))
+			}
+		}
+	} else {
+		// Fallback to maintainer count if bus factor unavailable
+		maintainerCount := len(result.Metadata.Maintainers)
+		if maintainerCount >= 3 {
+			points++
+			evidence = append(evidence, fmt.Sprintf("%d maintainers", maintainerCount))
+			verified = true
+		} else if maintainerCount > 0 {
+			evidence = append(evidence, fmt.Sprintf("Only %d maintainer(s)", maintainerCount))
+			verified = true
+		}
+	}
+
+	// Component 2: Code Review Process
+	// No reviews = higher risk
+	if result.Metadata.HasBranchProtection && result.Metadata.RequiredReviewers > 0 {
+		// Branch protection with required reviews (best case)
+		points++
+		evidence = append(evidence, fmt.Sprintf("%d required reviewers", result.Metadata.RequiredReviewers))
+		verified = true
+	} else if result.Metadata.CodeReviewRate > 0 {
+		// Some code reviews happening
+		if result.Metadata.CodeReviewRate >= 75 {
+			// Most PRs reviewed (good)
+			points++
+			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed", result.Metadata.CodeReviewRate))
+		} else if result.Metadata.CodeReviewRate >= 50 {
+			// Some PRs reviewed (moderate)
+			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (moderate)", result.Metadata.CodeReviewRate))
+		} else {
+			// Few PRs reviewed (low)
+			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (low)", result.Metadata.CodeReviewRate))
+		}
+		verified = true
+	} else {
+		evidence = append(evidence, "No code review process detected")
+	}
+
+	// Component 3: CI Quality
+	// No CI or low-quality CI = higher risk
+	if result.Metadata.CIQualityScore > 0 {
+		verified = true
+		if result.Metadata.CIQualityScore >= 7 {
+			// High-quality CI with tests
+			points++
+			evidence = append(evidence, fmt.Sprintf("CI quality: %d/10", result.Metadata.CIQualityScore))
+			if result.Metadata.CIHasTests {
+				evidence = append(evidence, "CI includes tests")
+			}
+		} else if result.Metadata.CIQualityScore >= 4 {
+			// Moderate CI
+			evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (moderate)", result.Metadata.CIQualityScore))
+		} else {
+			// Basic CI only
+			evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (basic)", result.Metadata.CIQualityScore))
+		}
+	} else if result.Metadata.HasCI {
+		// CI detected but quality not assessed
 		evidence = append(evidence, fmt.Sprintf("CI: %v", result.Metadata.CISystems))
+		verified = true
 	} else {
 		evidence = append(evidence, "No CI detected")
 	}
 
-	// Check bus factor (worth 1 point)
-	maintainerCount := len(result.Metadata.Maintainers)
-	if maintainerCount >= 3 {
-		healthScore++
-		evidence = append(evidence, fmt.Sprintf("%d maintainers", maintainerCount))
-	} else if maintainerCount > 0 {
-		evidence = append(evidence, fmt.Sprintf("Only %d maintainer(s)", maintainerCount))
-	}
-
-	// Convert health score to risk points (invert: high health = low risk)
-	riskPoints := 2 - healthScore
-	if riskPoints < 0 {
+	// Calculate risk points based on total points earned
+	// Points earned represents good indicators, so we invert for risk
+	// 0-1 points earned = high risk (2 risk points)
+	// 2 points earned = medium risk (1 risk point)
+	// 3+ points earned = low risk (0 risk points)
+	riskPoints := 2
+	if points >= 3 {
 		riskPoints = 0
+	} else if points >= 2 {
+		riskPoints = 1
 	}
 
-	description := "Poor health indicators"
-	if healthScore >= 2 {
-		description = "Good health indicators"
-	} else if healthScore == 1 {
-		description = "Moderate health indicators"
+	// Determine description
+	description := "Poor health: high bus factor, no CI, or no reviews"
+	if points >= 3 {
+		description = "Good health: distributed development, CI with tests, code reviews"
+	} else if points >= 2 {
+		description = "Moderate health: some good practices but gaps remain"
+	} else if points >= 1 {
+		description = "Limited health: few contributors or missing CI/reviews"
 	}
-
-	verified := maintainerCount > 0 || result.Metadata.HasCI
 
 	return models.CategoryScore{
-		Score:       healthScore,
+		Score:       points,
 		RiskPoints:  riskPoints,
 		Description: description,
-		Evidence:    strings.Join(evidence, ", "),
+		Evidence:    strings.Join(evidence, "; "),
 		Verified:    verified,
 	}
 }
