@@ -435,6 +435,7 @@ func (c *BitbucketClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, 
 		AuthorCommitCounts: make(map[string]int),
 		AuthorFirstCommit:  make(map[string]time.Time),
 		AuthorLastCommit:   make(map[string]time.Time),
+		AuthorEmails:       make(map[string]bool),
 		RecentAuthors:      []string{},
 		HistoricalAuthors:  []string{},
 	}
@@ -697,4 +698,18 @@ func parseBitbucketURL(repoURL string) (owner, repo string, err error) {
 	}
 
 	return "", "", fmt.Errorf("could not parse Bitbucket URL: %s", repoURL)
+}
+
+// GetAccountType returns whether an account is "organization" or "user"
+// For Bitbucket, we always return "user" as a stub implementation
+func (c *BitbucketClient) GetAccountType(repoURL, username string) string {
+	// TODO: Implement Bitbucket-specific account type detection
+	return "user"
+}
+
+// GetAccountCreationDate returns when an account was created
+// For Bitbucket, we return zero time as a stub implementation
+func (c *BitbucketClient) GetAccountCreationDate(repoURL, username string) time.Time {
+	// TODO: Implement Bitbucket-specific account creation date detection
+	return time.Time{}
 }

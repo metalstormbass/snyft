@@ -578,3 +578,38 @@ func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistor
 
 	return history, nil
 }
+
+// GetMaintainerPackageCount returns the number of packages a maintainer publishes on npm
+// This helps identify high-volume publishers who present larger blast radius if compromised
+func (c *NPMClient) GetMaintainerPackageCount(maintainerName string) (int, error) {
+	// Query npm registry API for packages by maintainer
+	// Note: npm doesn't have a direct "packages by maintainer" endpoint
+	// This is a simplified implementation that searches by maintainer name
+	searchURL := fmt.Sprintf("%s/-/v1/search?text=maintainer:%s&size=250", c.baseURL, maintainerName)
+
+	req, err := http.NewRequest("GET", searchURL, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		// If search fails, return 0 (not an error, just unknown)
+		return 0, nil
+	}
+
+	var searchResp struct {
+		Total int `json:"total"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return 0, nil
+	}
+
+	return searchResp.Total, nil
+}

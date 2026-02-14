@@ -196,6 +196,10 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
 	}
 
+	// Enhanced maintainer risk analysis (Category 1 - 30% weight)
+	maintainerRisk := a.AnalyzeMaintainerRisk(&result)
+	result.Metadata.MaintainerRisk = maintainerRisk
+
 	// Calculate final risk score
 	a.calculateRiskScore(&result)
 
@@ -615,9 +619,26 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	result.SupplyChainScore = score
 }
 
-// scorePublisherControl: 2FA/signing/multi-maintainer (0-2 pts)
-// Score: 0=single maintainer no signing, 1=few maintainers OR signing, 2=multiple maintainers WITH signing
+// scorePublisherControl: Enhanced maintainer risk scoring (30% weight in Category 1)
+// This incorporates the comprehensive maintainer risk analysis
+// Score: 0=high risk, 1=moderate risk, 2=low risk (inverted to risk points: 0 risk=best, 2 risk=worst)
 func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.CategoryScore {
+	// If we have detailed maintainer risk analysis, use it
+	if result.Metadata.MaintainerRisk != nil {
+		if maintainerRisk, ok := result.Metadata.MaintainerRisk.(*MaintainerRiskAnalysis); ok {
+			// The maintainer risk analysis already calculated a 0-2 risk score
+			// We can use it directly with proper conversion
+			return models.CategoryScore{
+				Score:       2 - maintainerRisk.RiskScore, // Convert risk score to quality score
+				RiskPoints:  maintainerRisk.RiskScore,
+				Description: fmt.Sprintf("Enhanced maintainer risk: %s", maintainerRisk.RiskLevel),
+				Evidence:    maintainerRisk.Evidence,
+				Verified:    true,
+			}
+		}
+	}
+
+	// Fallback to original logic if maintainer risk analysis not available
 	maintainerCount := len(result.Metadata.Maintainers)
 	evidenceParts := []string{}
 

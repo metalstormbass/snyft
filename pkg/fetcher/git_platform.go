@@ -52,6 +52,12 @@ type GitPlatformClient interface {
 	// AnalyzeCIQuality evaluates CI/CD quality beyond just presence
 	AnalyzeCIQuality(repoURL string, ciSystems []string) (*CIQuality, error)
 
+	// GetAccountType returns whether an account is "organization" or "user"
+	GetAccountType(repoURL, username string) string
+
+	// GetAccountCreationDate returns when an account was created
+	GetAccountCreationDate(repoURL, username string) time.Time
+
 	// GetPlatformName returns the name of the platform (e.g., "GitHub", "GitLab", "Bitbucket")
 	GetPlatformName() string
 }

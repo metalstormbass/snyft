@@ -431,3 +431,13 @@ type PyPIReleaseFile struct {
 	UploadTime time.Time `json:"upload_time"`
 	Uploader   string    `json:"uploader"`
 }
+
+// GetMaintainerPackageCount returns the number of packages a maintainer publishes on PyPI
+// This helps identify high-volume publishers who present larger blast radius if compromised
+func (c *PyPIClient) GetMaintainerPackageCount(maintainerName string) (int, error) {
+	// PyPI doesn't have a direct "packages by maintainer" API
+	// This would require scraping the maintainer's profile page or using PyPI's BigQuery dataset
+	// For now, we return 0 to indicate unknown
+	// TODO: Implement PyPI maintainer package count (requires scraping or BigQuery)
+	return 0, nil
+}

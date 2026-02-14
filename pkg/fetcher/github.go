@@ -422,6 +422,7 @@ type CommitAuthorStats struct {
 	AuthorCommitCounts map[string]int
 	AuthorFirstCommit  map[string]time.Time
 	AuthorLastCommit   map[string]time.Time
+	AuthorEmails       map[string]bool // Set of unique email addresses
 	RecentAuthors      []string // Authors with commits in last 90 days
 	HistoricalAuthors  []string // Authors with no recent commits
 }
@@ -687,6 +688,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		AuthorCommitCounts: make(map[string]int),
 		AuthorFirstCommit:  make(map[string]time.Time),
 		AuthorLastCommit:   make(map[string]time.Time),
+		AuthorEmails:       make(map[string]bool),
 		RecentAuthors:      []string{},
 		HistoricalAuthors:  []string{},
 	}
@@ -735,6 +737,11 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 			authorName := commit.Commit.Author.Name
 			authorEmail := commit.Commit.Author.Email
 			commitDate := commit.Commit.Author.Date
+
+			// Track email addresses
+			if authorEmail != "" {
+				stats.AuthorEmails[authorEmail] = true
+			}
 
 			// Use email as unique identifier (more reliable than name)
 			authorID := authorEmail
@@ -1402,4 +1409,78 @@ type GitHubComment struct {
 // GetPlatformName returns "GitHub" to identify this platform
 func (c *GitHubClient) GetPlatformName() string {
 	return "GitHub"
+}
+
+// GetAccountType returns whether an account is "organization" or "user"
+func (c *GitHubClient) GetAccountType(repoURL, username string) string {
+	// Try to fetch user/org info from GitHub API
+	url := fmt.Sprintf("%s/users/%s", c.baseURL, username)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "user" // Default to user on error
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "user"
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return "user"
+	}
+
+	var account struct {
+		Type string `json:"type"` // "User" or "Organization"
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
+		return "user"
+	}
+
+	// Convert to lowercase for consistency
+	if strings.ToLower(account.Type) == "organization" {
+		return "organization"
+	}
+	return "user"
+}
+
+// GetAccountCreationDate returns when an account was created
+func (c *GitHubClient) GetAccountCreationDate(repoURL, username string) time.Time {
+	// Try to fetch user/org info from GitHub API
+	url := fmt.Sprintf("%s/users/%s", c.baseURL, username)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return time.Time{} // Return zero time on error
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return time.Time{}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return time.Time{}
+	}
+
+	var account struct {
+		CreatedAt time.Time `json:"created_at"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&account); err != nil {
+		return time.Time{}
+	}
+
+	return account.CreatedAt
 }

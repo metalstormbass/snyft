@@ -130,6 +130,9 @@ type PackageMetadata struct {
 	// OpenSSF Scorecard
 	OSSFScore        float64  `json:"ossf_score"`
 	OSSFChecks       map[string]int `json:"ossf_checks"`
+
+	// Maintainer Risk Analysis (Category 1 enhancement)
+	MaintainerRisk   interface{} `json:"maintainer_risk,omitempty"` // Use interface{} to avoid circular dependency
 }
 
 // DependencyMetrics contains information about dependency sprawl

@@ -459,6 +459,7 @@ func (c *GitLabClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		AuthorCommitCounts: make(map[string]int),
 		AuthorFirstCommit:  make(map[string]time.Time),
 		AuthorLastCommit:   make(map[string]time.Time),
+		AuthorEmails:       make(map[string]bool),
 		RecentAuthors:      []string{},
 		HistoricalAuthors:  []string{},
 	}
@@ -745,4 +746,18 @@ func getLicenseNameFromGitLab(license *GitLabLicense) string {
 		return ""
 	}
 	return license.Name
+}
+
+// GetAccountType returns whether an account is "organization" or "user"
+// For GitLab, we always return "user" as a stub implementation
+func (c *GitLabClient) GetAccountType(repoURL, username string) string {
+	// TODO: Implement GitLab-specific account type detection
+	return "user"
+}
+
+// GetAccountCreationDate returns when an account was created
+// For GitLab, we return zero time as a stub implementation
+func (c *GitLabClient) GetAccountCreationDate(repoURL, username string) time.Time {
+	// TODO: Implement GitLab-specific account creation date detection
+	return time.Time{}
 }
