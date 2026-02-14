@@ -105,8 +105,8 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		}
 
 		// Verify key findings section exists
-		if !strings.Contains(output, "Key Findings:") {
-			t.Error("Output missing 'Key Findings' section")
+		if !strings.Contains(output, "Top Priority Findings:") {
+			t.Error("Output missing 'Top Priority Findings' section")
 		}
 
 		// Verify HIGH risk package is shown with specific details
@@ -145,8 +145,8 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		output := buf.String()
 
 		// Verify key findings section
-		if !strings.Contains(output, "### Key Findings") {
-			t.Error("Markdown output missing '### Key Findings' section")
+		if !strings.Contains(output, "### Top Priority Findings") {
+			t.Error("Markdown output missing '### Top Priority Findings' section")
 		}
 
 		// Verify package with evidence
@@ -218,8 +218,8 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		output := buf.String()
 
 		// Verify key findings heading
-		if !strings.Contains(output, "<h3>Key Findings</h3>") {
-			t.Error("HTML output missing key findings heading")
+		if !strings.Contains(output, "<h3>Top Priority Findings</h3>") {
+			t.Error("HTML output missing top priority findings heading")
 		}
 
 		// Verify package is displayed

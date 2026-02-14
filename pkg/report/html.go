@@ -270,6 +270,13 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 	_, _ = fmt.Fprintln(w, "    <section>")
 	_, _ = fmt.Fprintln(w, "      <h2>Executive Summary</h2>")
 
+	// Risk Assessment Overview
+	_, _ = fmt.Fprintln(w, "      <div style=\"background: #f0f8ff; border-left: 4px solid #00a8e8; padding: 15px; margin: 20px 0; border-radius: 5px;\">")
+	_, _ = fmt.Fprintln(w, "        <h3 style=\"margin-top: 0;\">Supply Chain Risk Assessment</h3>")
+	_, _ = fmt.Fprintln(w, "        <p>This report evaluates the <strong>likelihood that software packages could be compromised</strong> through supply chain attacks. ")
+	_, _ = fmt.Fprintln(w, "        It assesses risk factors such as maintainer practices, ownership changes, and build integrity—<strong>NOT</strong> known CVEs or code vulnerabilities.</p>")
+	_, _ = fmt.Fprintln(w, "      </div>")
+
 	duration := r.stats.EndTime.Sub(r.stats.StartTime)
 
 	_, _ = fmt.Fprintln(w, "      <div class=\"summary\">")
@@ -344,12 +351,33 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 
 	_, _ = fmt.Fprintln(w, "      </div>")
 
+	// Risk Impact Summary
+	if r.stats.HighRisk > 0 || r.stats.MediumRisk > 0 {
+		_, _ = fmt.Fprintln(w, "      <div style=\"margin-top: 20px;\">")
+		_, _ = fmt.Fprintln(w, "        <h3>Risk Impact Summary</h3>")
+		if r.stats.HighRisk > 0 {
+			_, _ = fmt.Fprintf(w, "        <div style=\"background: #fff3cd; border-left: 4px solid #dc3545; padding: 15px; margin: 10px 0; border-radius: 5px;\">\n")
+			_, _ = fmt.Fprintf(w, "          <strong style=\"color: #dc3545;\">⚠️ ATTENTION REQUIRED:</strong> %d package%s identified with HIGH supply chain risk.<br>\n",
+				r.stats.HighRisk, pluralize(r.stats.HighRisk))
+			_, _ = fmt.Fprintln(w, "          These packages exhibit patterns commonly associated with compromised dependencies and require immediate review.")
+			_, _ = fmt.Fprintln(w, "        </div>")
+		}
+		if r.stats.MediumRisk > 0 {
+			_, _ = fmt.Fprintf(w, "        <div style=\"background: #fff9e6; border-left: 4px solid #ffc107; padding: 15px; margin: 10px 0; border-radius: 5px;\">\n")
+			_, _ = fmt.Fprintf(w, "          <strong style=\"color: #ffc107;\">⚠️ MONITORING RECOMMENDED:</strong> %d package%s with MEDIUM risk factors.<br>\n",
+				r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
+			_, _ = fmt.Fprintln(w, "          These packages show some concerning patterns that warrant closer monitoring.")
+			_, _ = fmt.Fprintln(w, "        </div>")
+		}
+		_, _ = fmt.Fprintln(w, "      </div>")
+	}
+
 	// Key Findings - Critical Issues
 	criticalIssues := r.extractCriticalIssues(5)
 	if len(criticalIssues) > 0 {
 		_, _ = fmt.Fprintln(w, "      <div style=\"margin-top: 30px;\">")
-		_, _ = fmt.Fprintln(w, "        <h3>Key Findings</h3>")
-		_, _ = fmt.Fprintln(w, "        <p style=\"color: #666; margin-bottom: 15px;\">Critical issues requiring immediate attention:</p>")
+		_, _ = fmt.Fprintln(w, "        <h3>Top Priority Findings</h3>")
+		_, _ = fmt.Fprintln(w, "        <p style=\"color: #666; margin-bottom: 15px;\">The following issues represent the highest supply chain compromise risks:</p>")
 
 		for i, issue := range criticalIssues {
 			issueClass := "medium"
@@ -360,11 +388,16 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 			_, _ = fmt.Fprintf(w, "        <div class=\"finding %s\" style=\"margin: 10px 0;\">\n", issueClass)
 			_, _ = fmt.Fprintf(w, "          <div style=\"font-weight: bold; margin-bottom: 5px;\">%d. %s@%s <span style=\"color: #666; font-weight: normal;\">(%s)</span></div>\n",
 				i+1, html.EscapeString(issue.PackageName), html.EscapeString(issue.PackageVersion), issue.Ecosystem)
-			_, _ = fmt.Fprintf(w, "          <div><span class=\"finding-severity\">[%s]</span> %s</div>\n",
+			_, _ = fmt.Fprintf(w, "          <div><span class=\"finding-severity\">[%s SEVERITY]</span> %s</div>\n",
 				html.EscapeString(issue.Severity), html.EscapeString(issue.Description))
 			if issue.Evidence != "" {
-				_, _ = fmt.Fprintf(w, "          <div style=\"margin-top: 5px; font-size: 12px; color: #666;\">Evidence: %s</div>\n",
+				_, _ = fmt.Fprintf(w, "          <div style=\"margin-top: 5px; font-size: 12px; color: #666;\"><strong>Evidence:</strong> %s</div>\n",
 					html.EscapeString(issue.Evidence))
+			}
+			impact := r.getRiskImpactDescription(issue.Severity)
+			if impact != "" {
+				_, _ = fmt.Fprintf(w, "          <div style=\"margin-top: 5px; font-size: 12px; color: #666; font-style: italic;\"><strong>Impact:</strong> %s</div>\n",
+					html.EscapeString(impact))
 			}
 			_, _ = fmt.Fprintln(w, "        </div>")
 		}

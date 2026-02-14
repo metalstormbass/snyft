@@ -24,6 +24,12 @@ func (r *Reporter) generateMarkdown() error {
 	// Executive Summary
 	_, _ = fmt.Fprintln(w, "## Executive Summary")
 	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "### Supply Chain Risk Assessment")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "This report evaluates the **likelihood that software packages could be compromised** through supply chain attacks. It assesses risk factors such as maintainer practices, ownership changes, and build integrity—**NOT** known CVEs or code vulnerabilities.")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "### Scan Overview")
+	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintf(w, "- **Total Packages Scanned:** %d\n", r.stats.TotalPackages)
 	_, _ = fmt.Fprintf(w, "- **Manifest Files Found:** %d\n", r.stats.ManifestFiles)
 	_, _ = fmt.Fprintf(w, "- **Scan Path:** `%s`\n", r.stats.ScannedPath)
@@ -46,21 +52,43 @@ func (r *Reporter) generateMarkdown() error {
 	_, _ = fmt.Fprintf(w, "**Scan Duration:** %s\n", formatDuration(duration))
 	_, _ = fmt.Fprintln(w)
 
+	// Risk Impact Summary
+	if r.stats.HighRisk > 0 || r.stats.MediumRisk > 0 {
+		_, _ = fmt.Fprintln(w, "### Risk Impact Summary")
+		_, _ = fmt.Fprintln(w)
+		if r.stats.HighRisk > 0 {
+			_, _ = fmt.Fprintf(w, "> ⚠️  **ATTENTION REQUIRED:** %d package%s identified with HIGH supply chain risk.\n",
+				r.stats.HighRisk, pluralize(r.stats.HighRisk))
+			_, _ = fmt.Fprintln(w, "> These packages exhibit patterns commonly associated with compromised dependencies and require immediate review.")
+			_, _ = fmt.Fprintln(w)
+		}
+		if r.stats.MediumRisk > 0 {
+			_, _ = fmt.Fprintf(w, "> ⚠️  **MONITORING RECOMMENDED:** %d package%s with MEDIUM risk factors.\n",
+				r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
+			_, _ = fmt.Fprintln(w, "> These packages show some concerning patterns that warrant closer monitoring.")
+			_, _ = fmt.Fprintln(w)
+		}
+	}
+
 	// Key Findings - Critical Issues
 	criticalIssues := r.extractCriticalIssues(5)
 	if len(criticalIssues) > 0 {
-		_, _ = fmt.Fprintln(w, "### Key Findings")
+		_, _ = fmt.Fprintln(w, "### Top Priority Findings")
 		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "Critical issues requiring immediate attention:")
+		_, _ = fmt.Fprintln(w, "The following issues represent the highest supply chain compromise risks:")
 		_, _ = fmt.Fprintln(w)
 
 		for i, issue := range criticalIssues {
 			riskIcon := r.getRiskIcon(issue.RiskLevel)
 			_, _ = fmt.Fprintf(w, "%d. %s **%s@%s** (%s)\n",
 				i+1, riskIcon, issue.PackageName, issue.PackageVersion, issue.Ecosystem)
-			_, _ = fmt.Fprintf(w, "   - **[%s]** %s\n", issue.Severity, issue.Description)
+			_, _ = fmt.Fprintf(w, "   - **[%s SEVERITY]** %s\n", issue.Severity, issue.Description)
 			if issue.Evidence != "" {
 				_, _ = fmt.Fprintf(w, "   - *Evidence:* %s\n", issue.Evidence)
+			}
+			impact := r.getRiskImpactDescription(issue.Severity)
+			if impact != "" {
+				_, _ = fmt.Fprintf(w, "   - *Impact:* %s\n", impact)
 			}
 			_, _ = fmt.Fprintln(w)
 		}
