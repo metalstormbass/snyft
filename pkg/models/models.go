@@ -38,6 +38,7 @@ type Finding struct {
 	Severity    string `json:"severity"`
 	Category    string `json:"category"`
 	Description string `json:"description"`
+	Check       string `json:"check"`           // The check that identified this risk
 	Evidence    string `json:"evidence,omitempty"`
 }
 

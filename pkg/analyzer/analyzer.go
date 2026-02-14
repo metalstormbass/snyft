@@ -51,6 +51,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 				Severity:    "HIGH",
 				Category:    "Package Not Found",
 				Description: fmt.Sprintf("Failed to fetch package from npm: %v", err),
+				Check:       "Package Registry Validation",
 			})
 			result.RiskLevel = "HIGH"
 			result.RiskScore = 100
@@ -66,6 +67,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 				Severity:    "HIGH",
 				Category:    "Package Not Found",
 				Description: fmt.Sprintf("Failed to fetch package from PyPI: %v", err),
+				Check:       "Package Registry Validation",
 			})
 			result.RiskLevel = "HIGH"
 			result.RiskScore = 100
@@ -81,6 +83,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 				Severity:    "HIGH",
 				Category:    "Package Not Found",
 				Description: fmt.Sprintf("Failed to fetch package from Maven Central: %v", err),
+				Check:       "Package Registry Validation",
 			})
 			result.RiskLevel = "HIGH"
 			result.RiskScore = 100
@@ -101,6 +104,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 			Severity:    "HIGH",
 			Category:    "Missing Source Code",
 			Description: "No repository URL found in package metadata",
+			Check:       "Repository Availability Check",
 		})
 		result.SourceCodeAvailable = false
 		result.RiskFactors = append(result.RiskFactors, "No public source code repository")
@@ -127,6 +131,7 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 			Severity:    "MEDIUM",
 			Category:    "Repository Access",
 			Description: fmt.Sprintf("Failed to fetch repository info: %v", err),
+			Check:       "Repository Metadata Check",
 		})
 		return
 	}
@@ -152,6 +157,7 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 			Severity:    "HIGH",
 			Category:    "Archived Repository",
 			Description: "The repository is archived and no longer maintained",
+			Check:       "Repository Status Check",
 		})
 		result.RiskFactors = append(result.RiskFactors, "Archived repository")
 	}
@@ -163,6 +169,7 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 			Severity:    "MEDIUM",
 			Category:    "Stale Repository",
 			Description: fmt.Sprintf("No commits in the last %.0f days", daysSinceLastCommit),
+			Check:       "Repository Activity Check",
 		})
 		result.RiskFactors = append(result.RiskFactors, "Inactive development")
 	}
@@ -173,6 +180,7 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 			Severity:    "MEDIUM",
 			Category:    "Low Community Engagement",
 			Description: "Package has minimal community engagement (low stars/forks)",
+			Check:       "Community Engagement Check",
 		})
 		result.RiskFactors = append(result.RiskFactors, "Limited community adoption")
 	}
@@ -199,6 +207,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 			Severity:    "MEDIUM",
 			Category:    "No CI/CD",
 			Description: "No continuous integration system detected",
+			Check:       "CI/CD Detection Check",
 		})
 		result.RiskFactors = append(result.RiskFactors, "No automated build verification")
 	}
@@ -212,6 +221,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 			Severity:    "LOW",
 			Category:    "Manual Releases",
 			Description: "No evidence of automated release process",
+			Check:       "Release Automation Check",
 		})
 	}
 }
@@ -231,6 +241,7 @@ func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL s
 			Severity:    "MEDIUM",
 			Category:    "Low OSSF Score",
 			Description: fmt.Sprintf("OpenSSF Scorecard score is %.1f/10", scorecard.Score),
+			Check:       "OSSF Scorecard Check",
 		})
 		result.RiskFactors = append(result.RiskFactors, "Low supply chain security score")
 	}
