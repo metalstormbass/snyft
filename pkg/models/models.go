@@ -43,6 +43,22 @@ type Finding struct {
 	Evidence    string `json:"evidence,omitempty"`
 }
 
+// InstallScriptAnalysis contains analysis of install-time scripts
+type InstallScriptAnalysis struct {
+	HasDangerousPatterns bool               `json:"has_dangerous_patterns"`
+	DangerousPatterns    []DangerousPattern `json:"dangerous_patterns,omitempty"`
+	RiskLevel            string             `json:"risk_level"` // HIGH, MEDIUM, LOW
+	ScriptCount          int                `json:"script_count"`
+}
+
+// DangerousPattern represents a dangerous operation found in install scripts
+type DangerousPattern struct {
+	Pattern     string `json:"pattern"`
+	Description string `json:"description"`
+	Severity    string `json:"severity"`
+	Match       string `json:"match,omitempty"`
+}
+
 // PackageMetadata contains metadata about the package
 type PackageMetadata struct {
 	// Repository information
@@ -82,7 +98,9 @@ type PackageMetadata struct {
 	ProvenanceDetails    string `json:"provenance_details,omitempty"`  // Additional context
 
 	// Install-time execution
-	InstallScripts   map[string]string `json:"install_scripts,omitempty"` // postinstall, preinstall, etc.
+	InstallScripts      map[string]string `json:"install_scripts,omitempty"`       // postinstall, preinstall, etc.
+	HasInstallScripts   bool              `json:"has_install_scripts"`             // Whether package has install scripts
+	InstallScriptAnalysis *InstallScriptAnalysis `json:"install_script_analysis,omitempty"` // Analysis of install scripts
 
 	// OpenSSF Scorecard
 	OSSFScore        float64  `json:"ossf_score"`

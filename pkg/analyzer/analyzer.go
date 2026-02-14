@@ -61,6 +61,16 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		repoURL = npmPkg.RepositoryURL
 		metadata = packageMetadataFromNPM(npmPkg)
 
+		// Analyze npm install scripts
+		if len(npmPkg.Scripts) > 0 {
+			metadata.InstallScripts = npmPkg.Scripts
+			metadata.HasInstallScripts = hasInstallTimeScripts(npmPkg.Scripts)
+			if metadata.HasInstallScripts {
+				scriptAnalysis := AnalyzeNPMScripts(npmPkg.Scripts)
+				metadata.InstallScriptAnalysis = convertToModelAnalysis(scriptAnalysis)
+			}
+		}
+
 	case models.EcosystemPyPI:
 		pypiPkg, err := a.pypiClient.GetPackageInfo(dep.Name)
 		if err != nil {
@@ -77,6 +87,16 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		repoURL = pypiPkg.RepositoryURL
 		metadata = packageMetadataFromPyPI(pypiPkg)
 
+		// Try to fetch and analyze setup.py if repository is available
+		if repoURL != "" {
+			if setupContent, err := a.githubClient.GetFileContent(repoURL, "setup.py"); err == nil {
+				scriptAnalysis := AnalyzePythonSetup(setupContent)
+				metadata.InstallScripts = map[string]string{"setup.py": setupContent}
+				metadata.HasInstallScripts = true
+				metadata.InstallScriptAnalysis = convertToModelAnalysis(scriptAnalysis)
+			}
+		}
+
 	case models.EcosystemMaven:
 		mavenPkg, err := a.mavenClient.GetPackageInfo(dep.Name)
 		if err != nil {
@@ -92,6 +112,18 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		}
 		repoURL = mavenPkg.RepositoryURL
 		metadata = packageMetadataFromMaven(mavenPkg)
+
+		// Try to fetch and analyze pom.xml if repository is available
+		if repoURL != "" {
+			if pomContent, err := a.githubClient.GetFileContent(repoURL, "pom.xml"); err == nil {
+				scriptAnalysis := AnalyzeJavaPOM(pomContent)
+				if scriptAnalysis.HasDangerousPatterns {
+					metadata.InstallScripts = map[string]string{"pom.xml": pomContent}
+					metadata.HasInstallScripts = true
+					metadata.InstallScriptAnalysis = convertToModelAnalysis(scriptAnalysis)
+				}
+			}
+		}
 	}
 
 	result.RepositoryURL = repoURL
@@ -685,57 +717,108 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 	return nil
 }
 
+// hasInstallTimeScripts checks if scripts include install-time hooks
+func hasInstallTimeScripts(scripts map[string]string) bool {
+	installScriptNames := []string{"preinstall", "install", "postinstall"}
+	for _, name := range installScriptNames {
+		if script, exists := scripts[name]; exists && script != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// convertToModelAnalysis converts script analysis to model format
+func convertToModelAnalysis(analysis ScriptAnalysis) *models.InstallScriptAnalysis {
+	patterns := make([]models.DangerousPattern, len(analysis.DangerousPatterns))
+	for i, p := range analysis.DangerousPatterns {
+		patterns[i] = models.DangerousPattern{
+			Pattern:     p.Pattern,
+			Description: p.Description,
+			Severity:    p.Severity,
+			Match:       p.Match,
+		}
+	}
+
+	return &models.InstallScriptAnalysis{
+		HasDangerousPatterns: analysis.HasDangerousPatterns,
+		DangerousPatterns:    patterns,
+		RiskLevel:            analysis.RiskLevel,
+		ScriptCount:          len(patterns),
+	}
+}
+
 // scoreInstallExecution: postinstall scripts (0-2 pts)
+// Scoring:
+//   - 0 risk points (best): No install-time scripts
+//   - 1 risk point (moderate): Single benign install script
+//   - 2 risk points (worst): Multiple scripts OR dangerous content detected
 func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.CategoryScore {
-	if len(result.Metadata.InstallScripts) == 0 {
-		// No install scripts - lowest risk
+	// If no install scripts present, return best score
+	if !result.Metadata.HasInstallScripts || len(result.Metadata.InstallScripts) == 0 {
 		return models.CategoryScore{
 			Score:       2,
 			RiskPoints:  0,
 			Description: "No install-time scripts",
-			Evidence:    "No postinstall, preinstall, or install scripts detected",
+			Evidence:    "No install scripts detected in package",
 			Verified:    true,
 		}
 	}
 
-	// Check for dangerous install-time scripts
-	dangerousScripts := []string{"postinstall", "preinstall", "install"}
+	// If we have script analysis with dangerous patterns, return worst score
+	if result.Metadata.InstallScriptAnalysis != nil && result.Metadata.InstallScriptAnalysis.HasDangerousPatterns {
+		patterns := []string{}
+		for _, p := range result.Metadata.InstallScriptAnalysis.DangerousPatterns {
+			patterns = append(patterns, fmt.Sprintf("%s (%s)", p.Pattern, p.Severity))
+		}
+
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  2,
+			Description: "Dangerous install-time operations detected",
+			Evidence:    fmt.Sprintf("Risk level: %s, Patterns: %s", result.Metadata.InstallScriptAnalysis.RiskLevel, strings.Join(patterns, ", ")),
+			Verified:    true,
+		}
+	}
+
+	// Count install-time script hooks
+	installScriptNames := []string{"preinstall", "install", "postinstall", "setup.py", "pom.xml"}
 	foundScripts := []string{}
 
-	for _, scriptName := range dangerousScripts {
+	for _, scriptName := range installScriptNames {
 		if script, exists := result.Metadata.InstallScripts[scriptName]; exists && script != "" {
 			foundScripts = append(foundScripts, scriptName)
 		}
 	}
 
-	if len(foundScripts) == 0 {
-		// Has scripts but none are install-time
-		return models.CategoryScore{
-			Score:       2,
-			RiskPoints:  0,
-			Description: "No install-time scripts",
-			Evidence:    "Package has scripts but no install hooks",
-			Verified:    true,
-		}
-	}
-
+	// Multiple install scripts = higher risk (even if benign)
 	if len(foundScripts) >= 2 {
-		// Multiple install scripts = higher risk
 		return models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
 			Description: "Multiple install-time scripts detected",
-			Evidence:    "Scripts: " + strings.Join(foundScripts, ", "),
+			Evidence:    fmt.Sprintf("Scripts: %s", strings.Join(foundScripts, ", ")),
 			Verified:    true,
 		}
 	}
 
-	// Single install script = moderate risk
+	// Single benign install script = moderate risk
+	if len(foundScripts) == 1 {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  1,
+			Description: "Single install-time script detected",
+			Evidence:    fmt.Sprintf("Script: %s", foundScripts[0]),
+			Verified:    true,
+		}
+	}
+
+	// Has scripts but none are install-time (shouldn't reach here if HasInstallScripts is correct)
 	return models.CategoryScore{
-		Score:       0,
-		RiskPoints:  1,
-		Description: "Install-time script detected",
-		Evidence:    "Script: " + strings.Join(foundScripts, ", "),
+		Score:       2,
+		RiskPoints:  0,
+		Description: "No install-time scripts",
+		Evidence:    "Package has scripts but no install hooks",
 		Verified:    true,
 	}
 }
