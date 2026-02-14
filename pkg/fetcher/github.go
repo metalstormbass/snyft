@@ -296,17 +296,32 @@ type GitHubAsset struct {
 }
 
 type GitHubCommit struct {
-	SHA    string              `json:"sha"`
-	Commit GitHubCommitDetails `json:"commit"`
+	SHA    string           `json:"sha"`
+	Commit GitHubCommitInfo `json:"commit"`
+	Author *GitHubUser      `json:"author"`
 }
 
-type GitHubCommitDetails struct {
-	Author  GitHubCommitAuthor `json:"author"`
-	Message string             `json:"message"`
+type GitHubCommitInfo struct {
+	Author    GitHubCommitAuthor `json:"author"`
+	Committer GitHubCommitAuthor `json:"committer"`
+	Message   string             `json:"message"`
 }
 
 type GitHubCommitAuthor struct {
-	Date time.Time `json:"date"`
+	Name  string    `json:"name"`
+	Email string    `json:"email"`
+	Date  time.Time `json:"date"`
+}
+
+// CommitAuthorStats represents commit author statistics for ownership analysis
+type CommitAuthorStats struct {
+	TotalCommits      int
+	UniqueAuthors     []string
+	AuthorCommitCounts map[string]int
+	AuthorFirstCommit  map[string]time.Time
+	AuthorLastCommit   map[string]time.Time
+	RecentAuthors      []string // Authors with commits in last 90 days
+	HistoricalAuthors  []string // Authors with no recent commits
 }
 
 func parseGitHubURL(repoURL string) (owner, repo string, err error) {
@@ -548,4 +563,110 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 	}
 
 	return string(body), nil
+}
+
+// GetCommitAuthors analyzes commit history to detect maintainer changes
+func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch commits from the last 2 years (or up to 500 commits)
+	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=100", c.baseURL, owner, repo)
+
+	stats := &CommitAuthorStats{
+		AuthorCommitCounts: make(map[string]int),
+		AuthorFirstCommit:  make(map[string]time.Time),
+		AuthorLastCommit:   make(map[string]time.Time),
+		RecentAuthors:      []string{},
+		HistoricalAuthors:  []string{},
+	}
+
+	// Fetch multiple pages (up to 5 pages = 500 commits)
+	for page := 1; page <= 5; page++ {
+		pageURL := fmt.Sprintf("%s&page=%d", url, page)
+		req, err := http.NewRequest("GET", pageURL, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			if page == 1 {
+				body, _ := io.ReadAll(resp.Body)
+				return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
+			}
+			// No more pages
+			break
+		}
+
+		var commits []GitHubCommit
+		if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+
+		if len(commits) == 0 {
+			break
+		}
+
+		// Analyze commits
+		for _, commit := range commits {
+			authorName := commit.Commit.Author.Name
+			authorEmail := commit.Commit.Author.Email
+			commitDate := commit.Commit.Author.Date
+
+			// Use email as unique identifier (more reliable than name)
+			authorID := authorEmail
+			if authorID == "" {
+				authorID = authorName
+			}
+
+			if authorID == "" {
+				continue
+			}
+
+			stats.TotalCommits++
+			stats.AuthorCommitCounts[authorID]++
+
+			// Track first and last commit for each author
+			if firstCommit, exists := stats.AuthorFirstCommit[authorID]; !exists || commitDate.Before(firstCommit) {
+				stats.AuthorFirstCommit[authorID] = commitDate
+			}
+			if lastCommit, exists := stats.AuthorLastCommit[authorID]; !exists || commitDate.After(lastCommit) {
+				stats.AuthorLastCommit[authorID] = commitDate
+			}
+		}
+	}
+
+	// Build unique authors list and categorize recent vs historical
+	seen := make(map[string]bool)
+	ninetyDaysAgo := time.Now().AddDate(0, 0, -90)
+
+	for authorID, lastCommit := range stats.AuthorLastCommit {
+		if !seen[authorID] {
+			stats.UniqueAuthors = append(stats.UniqueAuthors, authorID)
+			seen[authorID] = true
+
+			if lastCommit.After(ninetyDaysAgo) {
+				stats.RecentAuthors = append(stats.RecentAuthors, authorID)
+			} else {
+				stats.HistoricalAuthors = append(stats.HistoricalAuthors, authorID)
+			}
+		}
+	}
+
+	return stats, nil
 }

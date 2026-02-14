@@ -528,49 +528,138 @@ func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.C
 }
 
 // scoreOwnershipChanges: ownership transfers (0-2 pts)
+// Detects maintainer changes via GitHub commits API, npm/pypi ownership history,
+// and identifies recent transfers or new maintainers
 func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.CategoryScore {
-	// Check for recent repository transfers or maintainer changes
-	// For now, use repository age and maintainer count as proxy
+	evidenceParts := []string{}
+	verified := false
+	riskPoints := 1 // Default to medium risk if unable to verify
 
-	if result.Metadata.RepoCreatedAt.IsZero() {
-		return models.CategoryScore{
-			Score:       0,
-			RiskPoints:  1,
-			Description: "Unable to verify ownership history",
-			Evidence:    "Repository creation date unavailable",
-			Verified:    false,
+	// 1. Check GitHub commit author changes (if repository available)
+	if result.RepositoryURL != "" {
+		commitStats, err := a.githubClient.GetCommitAuthors(result.RepositoryURL)
+		if err == nil && commitStats != nil {
+			verified = true
+
+			// Analyze commit author patterns
+			if len(commitStats.RecentAuthors) > 0 && len(commitStats.HistoricalAuthors) > 0 {
+				// Check if recent authors are completely different from historical authors
+				historicalSet := make(map[string]bool)
+				for _, author := range commitStats.HistoricalAuthors {
+					historicalSet[author] = true
+				}
+
+				newAuthors := 0
+				for _, author := range commitStats.RecentAuthors {
+					if !historicalSet[author] {
+						newAuthors++
+					}
+				}
+
+				// If most/all recent authors are new = potential ownership change
+				if newAuthors > 0 && float64(newAuthors)/float64(len(commitStats.RecentAuthors)) > 0.5 {
+					riskPoints = 2
+					evidenceParts = append(evidenceParts,
+						fmt.Sprintf("GitHub: %d new commit authors in last 90 days", newAuthors))
+				} else {
+					evidenceParts = append(evidenceParts,
+						fmt.Sprintf("GitHub: %d unique authors, %d recent", len(commitStats.UniqueAuthors), len(commitStats.RecentAuthors)))
+				}
+			} else if len(commitStats.UniqueAuthors) == 1 {
+				// Single author throughout history
+				evidenceParts = append(evidenceParts, "GitHub: Single author (stable)")
+			}
 		}
 	}
 
-	repoAge := time.Since(result.Metadata.RepoCreatedAt).Hours() / 24 / 365
+	// 2. Check npm package ownership history
+	if result.Dependency.Ecosystem == models.EcosystemNPM {
+		npmHistory, err := a.npmClient.GetOwnershipHistory(result.Dependency.Name)
+		if err == nil && npmHistory != nil {
+			verified = true
 
-	// Very new packages with single maintainer = higher risk
-	if repoAge < 0.5 && len(result.Metadata.Maintainers) == 1 {
-		return models.CategoryScore{
-			Score:       0,
-			RiskPoints:  2,
-			Description: "New package with single maintainer",
-			Evidence:    fmt.Sprintf("Repository %.1f years old, 1 maintainer", repoAge),
-			Verified:    true,
+			if npmHistory.RecentTransfer {
+				riskPoints = 2
+				evidenceParts = append(evidenceParts,
+					fmt.Sprintf("npm: Recent ownership transfer detected (%s)",
+						npmHistory.TransferDate.Format("2006-01-02")))
+			} else if npmHistory.MaintainerChanges > 0 {
+				if riskPoints < 2 {
+					riskPoints = 1
+				}
+				evidenceParts = append(evidenceParts,
+					fmt.Sprintf("npm: %d historical maintainer changes", npmHistory.MaintainerChanges))
+			} else if len(npmHistory.CurrentMaintainers) > 0 {
+				evidenceParts = append(evidenceParts,
+					fmt.Sprintf("npm: Stable ownership (%d maintainers)", len(npmHistory.CurrentMaintainers)))
+			}
 		}
 	}
 
-	if repoAge < 1.0 {
-		return models.CategoryScore{
-			Score:       0,
-			RiskPoints:  1,
-			Description: "Relatively new package",
-			Evidence:    fmt.Sprintf("Repository %.1f years old", repoAge),
-			Verified:    true,
+	// 3. Check PyPI package ownership history
+	if result.Dependency.Ecosystem == models.EcosystemPyPI {
+		pypiHistory, err := a.pypiClient.GetOwnershipHistory(result.Dependency.Name)
+		if err == nil && pypiHistory != nil {
+			verified = true
+
+			if pypiHistory.RecentTransfer {
+				riskPoints = 2
+				evidenceParts = append(evidenceParts,
+					fmt.Sprintf("PyPI: Recent ownership transfer detected (%s)",
+						pypiHistory.TransferDate.Format("2006-01-02")))
+			} else if pypiHistory.AuthorChanges > 0 {
+				if riskPoints < 2 {
+					riskPoints = 1
+				}
+				evidenceParts = append(evidenceParts,
+					fmt.Sprintf("PyPI: %d historical author changes", pypiHistory.AuthorChanges))
+			} else if pypiHistory.CurrentAuthor != "" {
+				evidenceParts = append(evidenceParts, "PyPI: Stable ownership")
+			}
 		}
+	}
+
+	// 4. Fallback to repository age heuristic if no other data available
+	if !verified && !result.Metadata.RepoCreatedAt.IsZero() {
+		repoAge := time.Since(result.Metadata.RepoCreatedAt).Hours() / 24 / 365
+		verified = true
+
+		// Very new packages with single maintainer = higher risk
+		if repoAge < 0.5 && len(result.Metadata.Maintainers) <= 1 {
+			riskPoints = 2
+			evidenceParts = append(evidenceParts,
+				fmt.Sprintf("Repository %.1f years old, single maintainer", repoAge))
+		} else if repoAge < 1.0 {
+			riskPoints = 1
+			evidenceParts = append(evidenceParts,
+				fmt.Sprintf("Repository %.1f years old", repoAge))
+		} else {
+			riskPoints = 0
+			evidenceParts = append(evidenceParts,
+				fmt.Sprintf("Repository %.1f years old", repoAge))
+		}
+	}
+
+	// Build final evidence string
+	evidence := "No ownership data available"
+	if len(evidenceParts) > 0 {
+		evidence = strings.Join(evidenceParts, "; ")
+	}
+
+	// Determine description based on risk points
+	description := "Stable long-term ownership"
+	if riskPoints == 2 {
+		description = "Recent suspicious ownership changes detected"
+	} else if riskPoints == 1 {
+		description = "Some ownership changes detected"
 	}
 
 	return models.CategoryScore{
-		Score:       2,
-		RiskPoints:  0,
-		Description: "Established package with stable ownership",
-		Evidence:    fmt.Sprintf("Repository %.1f years old", repoAge),
-		Verified:    true,
+		Score:       2 - riskPoints, // Invert: 0 risk points = score 2, 2 risk points = score 0
+		RiskPoints:  riskPoints,
+		Description: description,
+		Evidence:    evidence,
+		Verified:    verified,
 	}
 }
 

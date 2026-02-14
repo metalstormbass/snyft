@@ -86,6 +86,109 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	return pkg, nil
 }
 
+// GetOwnershipHistory analyzes author/maintainer changes across package releases
+func (c *PyPIClient) GetOwnershipHistory(packageName string) (*PyPIOwnershipHistory, error) {
+	url := fmt.Sprintf("%s/%s/json", c.baseURL, packageName)
+
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch PyPI package: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("PyPI API returned status %d", resp.StatusCode)
+	}
+
+	var pypiResp PyPIFullResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pypiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode PyPI response: %w", err)
+	}
+
+	history := &PyPIOwnershipHistory{
+		CurrentAuthor:     pypiResp.Info.Author,
+		HistoricalAuthors: []string{},
+		AuthorChanges:     0,
+		RecentTransfer:    false,
+	}
+
+	// Track unique authors across all releases
+	allAuthors := make(map[string]bool)
+	if pypiResp.Info.Author != "" {
+		allAuthors[pypiResp.Info.Author] = true
+	}
+
+	// Analyze releases for author changes
+	type releaseInfo struct {
+		author string
+		date   time.Time
+	}
+
+	releases := []releaseInfo{}
+
+	// Parse releases (PyPI provides releases as map[version][]ReleaseFile)
+	for _, releaseFiles := range pypiResp.Releases {
+		if len(releaseFiles) > 0 {
+			// Use upload time and uploader from first file
+			file := releaseFiles[0]
+			author := file.Uploader
+			if author != "" {
+				allAuthors[author] = true
+				releases = append(releases, releaseInfo{
+					author: author,
+					date:   file.UploadTime,
+				})
+			}
+		}
+	}
+
+	// Sort releases by date
+	for i := 0; i < len(releases)-1; i++ {
+		for j := i + 1; j < len(releases); j++ {
+			if releases[i].date.After(releases[j].date) {
+				releases[i], releases[j] = releases[j], releases[i]
+			}
+		}
+	}
+
+	// Detect author changes
+	previousAuthor := ""
+	for _, release := range releases {
+		if previousAuthor != "" && previousAuthor != release.author {
+			history.AuthorChanges++
+
+			// Check if this is a recent transfer (within last 6 months)
+			sixMonthsAgo := time.Now().AddDate(0, -6, 0)
+			if release.date.After(sixMonthsAgo) {
+				history.RecentTransfer = true
+				history.TransferDate = release.date
+			}
+		}
+		previousAuthor = release.author
+	}
+
+	// Build historical authors list (all authors except current)
+	for author := range allAuthors {
+		if author != history.CurrentAuthor && author != "" {
+			history.HistoricalAuthors = append(history.HistoricalAuthors, author)
+		}
+	}
+
+	return history, nil
+}
+
+// PyPIFullResponse includes releases data
+type PyPIFullResponse struct {
+	Info     PyPIInfo                               `json:"info"`
+	Releases map[string][]PyPIReleaseFile           `json:"releases"`
+}
+
+type PyPIReleaseFile struct {
+	Filename   string    `json:"filename"`
+	UploadTime time.Time `json:"upload_time"`
+	Uploader   string    `json:"uploader"`
+}
+
 // PyPIResponse represents the PyPI JSON API response
 type PyPIResponse struct {
 	Info    PyPIInfo              `json:"info"`
@@ -149,4 +252,13 @@ func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool
 	hasSignatures = signedCount > 0
 
 	return hasSignatures, signedCount, totalCount, nil
+}
+
+// PyPIOwnershipHistory represents ownership/maintainer changes over time
+type PyPIOwnershipHistory struct {
+	CurrentAuthor     string
+	HistoricalAuthors []string
+	AuthorChanges     int
+	RecentTransfer    bool
+	TransferDate      time.Time
 }
