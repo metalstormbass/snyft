@@ -229,6 +229,50 @@ func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 	return commits, nil
 }
 
+// CheckGitTag verifies if a specific version tag exists in the repository
+// Returns true if the tag exists, along with the tag URL
+func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return false, "", err
+	}
+
+	// Try common version tag formats: v1.2.3, 1.2.3, v1.2.3-beta, release-1.2.3
+	tagVariants := []string{
+		version,
+		"v" + version,
+		"V" + version,
+		"release-" + version,
+		"Release-" + version,
+	}
+
+	for _, tag := range tagVariants {
+		url := fmt.Sprintf("%s/repos/%s/%s/git/ref/tags/%s", c.baseURL, owner, repo, tag)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
+			return true, tagURL, nil
+		}
+	}
+
+	return false, "", nil
+}
+
 func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("HEAD", url, nil)
