@@ -25,36 +25,88 @@ program
 
 program
   .command('analyze')
-  .description('Analyze a project directory')
-  .argument('[path]', 'Project directory to analyze', '.')
+  .description('Analyze a project directory or specific manifest files')
+  .argument('[inputs...]', 'Project directory or manifest files (pom.xml, package.json, build.gradle, etc.)', ['.'])
   .option('-o, --output <dir>', 'Output directory for reports')
   .option('-f, --format <format>', 'Output format (console, json, markdown, all)', 'console')
-  .action(async (path, options) => {
+  .action(async (inputs, options) => {
     try {
-      const projectRoot = resolve(path);
-      console.log(`🔍 Analyzing project at: ${projectRoot}\n`);
+      // Determine if inputs are manifest files or a directory
+      const manifestFiles = [];
+      let projectRoot = null;
 
-      // Run coordinator
-      const coordinator = new Coordinator(projectRoot);
-      const results = await coordinator.analyze();
+      for (const input of inputs) {
+        const resolvedPath = resolve(input);
+        const inputStat = await import('fs/promises').then(fs => fs.stat(resolvedPath).catch(() => null));
 
-      // Generate reports
-      const reporter = new Reporter(results);
+        if (!inputStat) {
+          console.error(`❌ Error: Path not found: ${input}`);
+          process.exit(1);
+        }
 
-      if (options.format === 'console' || options.format === 'all') {
-        reporter.generateConsoleReport();
+        if (inputStat.isDirectory()) {
+          projectRoot = resolvedPath;
+        } else if (inputStat.isFile()) {
+          manifestFiles.push(resolvedPath);
+        }
       }
 
-      if (options.format === 'json') {
-        console.log(reporter.generateJSONReport());
-      }
+      // If manifest files provided, analyze them directly
+      if (manifestFiles.length > 0) {
+        console.log(`🔍 Analyzing ${manifestFiles.length} manifest file(s):\n`);
+        manifestFiles.forEach(f => console.log(`   - ${f}`));
+        console.log('');
 
-      if (options.format === 'markdown') {
-        console.log(reporter.generateMarkdownReport());
-      }
+        const { ManifestAnalyzer } = await import('./manifest-analyzer.js');
+        const analyzer = new ManifestAnalyzer(manifestFiles);
+        const results = await analyzer.analyze();
 
-      if (options.output) {
-        await reporter.saveReports(resolve(options.output));
+        // Generate reports
+        const reporter = new Reporter(results);
+
+        if (options.format === 'console' || options.format === 'all') {
+          reporter.generateConsoleReport();
+        }
+
+        if (options.format === 'json') {
+          console.log(reporter.generateJSONReport());
+        }
+
+        if (options.format === 'markdown') {
+          console.log(reporter.generateMarkdownReport());
+        }
+
+        if (options.output) {
+          await reporter.saveReports(resolve(options.output));
+        }
+      }
+      // Otherwise, analyze directory
+      else {
+        const root = projectRoot || resolve('.');
+        console.log(`🔍 Analyzing project at: ${root}\n`);
+
+        // Run coordinator
+        const coordinator = new Coordinator(root);
+        const results = await coordinator.analyze();
+
+        // Generate reports
+        const reporter = new Reporter(results);
+
+        if (options.format === 'console' || options.format === 'all') {
+          reporter.generateConsoleReport();
+        }
+
+        if (options.format === 'json') {
+          console.log(reporter.generateJSONReport());
+        }
+
+        if (options.format === 'markdown') {
+          console.log(reporter.generateMarkdownReport());
+        }
+
+        if (options.output) {
+          await reporter.saveReports(resolve(options.output));
+        }
       }
 
     } catch (error) {
