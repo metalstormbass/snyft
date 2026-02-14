@@ -36,7 +36,9 @@ type MavenPackage struct {
 func NewMavenClient() *MavenClient {
 	return &MavenClient{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			// Reduced timeout - individual requests should be fast
+			// Maven Central's APIs typically respond in < 1 second
+			Timeout: 10 * time.Second,
 		},
 		baseURL:   "https://repo1.maven.org/maven2",
 		searchURL: "https://search.maven.org/solrsearch/select",
@@ -54,7 +56,93 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	groupID := parts[0]
 	artifactID := parts[1]
 
-	// Search for the package
+	// PRIMARY: Try direct maven-metadata.xml access (faster and more reliable)
+	pkg, err := c.getPackageInfoDirect(groupID, artifactID)
+	if err == nil {
+		return pkg, nil
+	}
+
+	// FALLBACK 1: Try Solr search API
+	pkg, err = c.getPackageInfoViaSearch(groupID, artifactID)
+	if err == nil {
+		return pkg, nil
+	}
+
+	// FALLBACK 2: Try scraping
+	if shouldFallbackToScraping(nil, 0) {
+		pkg, scrapeErr := c.scrapeMavenPackageInfo(packageName)
+		if scrapeErr == nil {
+			return pkg, nil
+		}
+	}
+
+	// All methods failed
+	return nil, fmt.Errorf("failed to fetch package info: %w", err)
+}
+
+// getPackageInfoDirect fetches package info using direct maven-metadata.xml access
+// This is faster and more reliable than the search API
+func (c *MavenClient) getPackageInfoDirect(groupID, artifactID string) (*MavenPackage, error) {
+	// Convert groupId to path (com.example -> com/example)
+	groupPath := strings.ReplaceAll(groupID, ".", "/")
+
+	// Fetch maven-metadata.xml
+	metadataURL := fmt.Sprintf("%s/%s/%s/maven-metadata.xml",
+		c.baseURL, groupPath, artifactID)
+
+	resp, err := c.httpClient.Get(metadataURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch maven-metadata.xml: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("package not found in Maven Central")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Maven Central returned status %d", resp.StatusCode)
+	}
+
+	// Parse maven-metadata.xml
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read maven-metadata.xml: %w", err)
+	}
+
+	var metadata MavenMetadataXML
+	if err := xml.Unmarshal(body, &metadata); err != nil {
+		return nil, fmt.Errorf("failed to parse maven-metadata.xml: %w", err)
+	}
+
+	// Use release version, fallback to latest
+	version := metadata.Versioning.Release
+	if version == "" {
+		version = metadata.Versioning.Latest
+	}
+	if version == "" && len(metadata.Versioning.Versions) > 0 {
+		// Use last version in list
+		version = metadata.Versioning.Versions[len(metadata.Versioning.Versions)-1]
+	}
+
+	if version == "" {
+		return nil, fmt.Errorf("no version found in maven-metadata.xml")
+	}
+
+	pkg := &MavenPackage{
+		GroupID:       groupID,
+		ArtifactID:    artifactID,
+		LatestVersion: version,
+	}
+
+	// Try to fetch POM to get more metadata (ignore errors and continue with basic info)
+	_ = c.enrichFromPOM(pkg, groupID, artifactID, version)
+
+	return pkg, nil
+}
+
+// getPackageInfoViaSearch fetches package info using the Solr search API (fallback method)
+func (c *MavenClient) getPackageInfoViaSearch(groupID, artifactID string) (*MavenPackage, error) {
 	searchURL := fmt.Sprintf("%s?q=g:%s+AND+a:%s&rows=1&wt=json",
 		c.searchURL, groupID, artifactID)
 
@@ -65,11 +153,7 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Try scraping fallback on rate limit or auth errors
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
-			return c.scrapeMavenPackageInfo(packageName)
-		}
-		return nil, fmt.Errorf("maven Central returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("Maven Central search returned status %d", resp.StatusCode)
 	}
 
 	var searchResp MavenSearchResponse
@@ -78,7 +162,7 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	}
 
 	if len(searchResp.Response.Docs) == 0 {
-		return nil, fmt.Errorf("package not found: %s", packageName)
+		return nil, fmt.Errorf("package not found")
 	}
 
 	doc := searchResp.Response.Docs[0]
@@ -172,6 +256,20 @@ type MavenSCM struct {
 type MavenLicense struct {
 	Name string `xml:"name"`
 	URL  string `xml:"url"`
+}
+
+// MavenMetadataXML represents the maven-metadata.xml structure
+type MavenMetadataXML struct {
+	XMLName    xml.Name              `xml:"metadata"`
+	GroupID    string                `xml:"groupId"`
+	ArtifactID string                `xml:"artifactId"`
+	Versioning MavenMetadataVersioning `xml:"versioning"`
+}
+
+type MavenMetadataVersioning struct {
+	Latest   string   `xml:"latest"`
+	Release  string   `xml:"release"`
+	Versions []string `xml:"versions>version"`
 }
 
 // VerifySourceAvailability verifies that source code exists for the exact version
