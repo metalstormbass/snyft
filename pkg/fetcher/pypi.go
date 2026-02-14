@@ -44,7 +44,7 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch PyPI package: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("package not found: %s", packageName)
@@ -88,7 +88,17 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 
 // PyPIResponse represents the PyPI JSON API response
 type PyPIResponse struct {
-	Info PyPIInfo `json:"info"`
+	Info    PyPIInfo              `json:"info"`
+	Urls    []PyPIURL             `json:"urls"`
+	Releases map[string][]PyPIURL `json:"releases,omitempty"`
+}
+
+type PyPIURL struct {
+	Filename      string            `json:"filename"`
+	URL           string            `json:"url"`
+	HasSignature  bool              `json:"has_sig"`
+	Digests       map[string]string `json:"digests"`
+	PGPSignature  string            `json:"pgp_signature,omitempty"`
 }
 
 type PyPIInfo struct {
@@ -104,4 +114,39 @@ type PyPIProjectURLs struct {
 	Homepage   string `json:"Homepage"`
 	Source     string `json:"Source"`
 	Repository string `json:"Repository"`
+}
+
+// CheckPyPISignatures checks if a package has cryptographic signatures
+func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool, signedCount, totalCount int, err error) {
+	url := fmt.Sprintf("%s/%s/json", c.baseURL, packageName)
+
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return false, 0, 0, fmt.Errorf("failed to fetch PyPI package: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, 0, 0, fmt.Errorf("PyPI API returned status %d", resp.StatusCode)
+	}
+
+	var pypiResp PyPIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pypiResp); err != nil {
+		return false, 0, 0, fmt.Errorf("failed to decode PyPI response: %w", err)
+	}
+
+	// Check the latest release URLs for signatures
+	totalCount = len(pypiResp.Urls)
+	signedCount = 0
+
+	for _, url := range pypiResp.Urls {
+		// PyPI packages can have PGP signatures or use has_sig field
+		if url.HasSignature || url.PGPSignature != "" {
+			signedCount++
+		}
+	}
+
+	hasSignatures = signedCount > 0
+
+	return hasSignatures, signedCount, totalCount, nil
 }

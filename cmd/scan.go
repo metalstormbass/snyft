@@ -217,9 +217,10 @@ func outputResults(results []models.AnalysisResult) error {
 
 func printResult(result models.AnalysisResult) {
 	icon := "🟢"
-	if result.RiskLevel == "HIGH" {
+	switch result.RiskLevel {
+	case "HIGH":
 		icon = "🔴"
-	} else if result.RiskLevel == "MEDIUM" {
+	case "MEDIUM":
 		icon = "🟡"
 	}
 
@@ -377,9 +378,10 @@ func printCategoryScore(name string, score models.CategoryScore) {
 	}
 
 	riskIcon := "🟢"
-	if score.RiskPoints == 2 {
+	switch score.RiskPoints {
+	case 2:
 		riskIcon = "🔴"
-	} else if score.RiskPoints == 1 {
+	case 1:
 		riskIcon = "🟡"
 	}
 

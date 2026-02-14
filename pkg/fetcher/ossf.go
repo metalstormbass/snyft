@@ -43,7 +43,7 @@ func (c *OSSFClient) GetScorecard(repoURL string) (*OSSFScorecard, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OSSF scorecard: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("scorecard not found for repository")

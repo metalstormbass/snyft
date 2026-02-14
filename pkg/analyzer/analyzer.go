@@ -119,6 +119,11 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		a.analyzeOSSFScorecard(&result, repoURL)
 	}
 
+	// Analyze provenance (if available)
+	if repoURL != "" {
+		a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
+	}
+
 	// Calculate final risk score
 	a.calculateRiskScore(&result)
 
@@ -248,6 +253,46 @@ func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL s
 			Check:       "OSSF Scorecard Check",
 		})
 		result.RiskFactors = append(result.RiskFactors, "Low supply chain security score")
+	}
+}
+
+func (a *Analyzer) analyzeProvenance(result *models.AnalysisResult, repoURL string, ecosystem models.Ecosystem) {
+	// Get GitHub provenance information
+	if repoURL != "" {
+		provInfo, err := a.githubClient.GetProvenanceInfo(repoURL)
+		if err == nil {
+			result.Metadata.HasSLSAAttestation = provInfo.HasSLSAAttestation
+			result.Metadata.SLSALevel = provInfo.SLSALevel
+			result.Metadata.HasSigstoreSignature = provInfo.HasSigstoreSignature
+			result.Metadata.ReproducibleBuild = provInfo.ReproducibleBuild
+
+			// Update SignedReleases based on actual release data
+			if provInfo.TotalReleaseCount > 0 {
+				ratio := float64(provInfo.SignedReleaseCount) / float64(provInfo.TotalReleaseCount)
+				result.Metadata.SignedReleases = ratio >= 0.5 // At least 50% signed
+			}
+		}
+	}
+
+	// Check ecosystem-specific provenance
+	switch ecosystem {
+	case models.EcosystemNPM:
+		hasProvenance, provenanceURL, err := a.npmClient.CheckNPMProvenance(result.Dependency.Name)
+		if err == nil {
+			result.Metadata.HasNPMProvenance = hasProvenance
+			if hasProvenance {
+				result.Metadata.ProvenanceDetails = fmt.Sprintf("npm provenance: %s", provenanceURL)
+			}
+		}
+
+	case models.EcosystemPyPI:
+		hasSignatures, signedCount, totalCount, err := a.pypiClient.CheckPyPISignatures(result.Dependency.Name)
+		if err == nil {
+			result.Metadata.HasPyPISignatures = hasSignatures
+			if hasSignatures {
+				result.Metadata.ProvenanceDetails = fmt.Sprintf("PyPI signatures: %d/%d distributions signed", signedCount, totalCount)
+			}
+		}
 	}
 }
 
@@ -732,48 +777,98 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 }
 
 // scoreProvenance: reproducible/signed builds (0-2 pts)
+// Scoring: 0=no provenance, 1=partial provenance, 2=full provenance with signatures
 func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.CategoryScore {
-	// Check for signed releases and build reproducibility indicators
+	evidence := []string{}
+	provenanceScore := 0
+
+	// Check for SLSA attestations (highest quality provenance)
+	if result.Metadata.HasSLSAAttestation {
+		provenanceScore += 2
+		evidence = append(evidence, fmt.Sprintf("SLSA attestation (%s)", result.Metadata.SLSALevel))
+	}
+
+	// Check for Sigstore signatures
+	if result.Metadata.HasSigstoreSignature {
+		provenanceScore += 2
+		evidence = append(evidence, "Sigstore/Cosign signatures")
+	}
+
+	// Check for ecosystem-specific provenance
+	if result.Metadata.HasNPMProvenance {
+		provenanceScore += 2
+		evidence = append(evidence, "npm provenance attestations")
+	}
+
+	if result.Metadata.HasPyPISignatures {
+		provenanceScore += 2
+		evidence = append(evidence, "PyPI cryptographic signatures")
+	}
+
+	// Check for signed releases (GitHub releases with signatures)
 	if result.Metadata.SignedReleases {
-		return models.CategoryScore{
-			Score:       2,
-			RiskPoints:  0,
-			Description: "Releases are cryptographically signed",
-			Evidence:    "Signed releases detected",
-			Verified:    true,
-		}
+		provenanceScore += 1
+		evidence = append(evidence, "signed GitHub releases")
 	}
 
-	// Check OSSF Scorecard for signing/provenance checks
+	// Check for reproducible builds
+	if result.Metadata.ReproducibleBuild {
+		provenanceScore += 1
+		evidence = append(evidence, "reproducible build configuration")
+	}
+
+	// Check OSSF Scorecard for additional provenance indicators
 	if result.Metadata.OSSFChecks != nil {
-		if signingScore, exists := result.Metadata.OSSFChecks["Signed-Releases"]; exists {
-			if signingScore >= 8 {
-				return models.CategoryScore{
-					Score:       2,
-					RiskPoints:  0,
-					Description: "Good signing practices (OSSF)",
-					Evidence:    fmt.Sprintf("OSSF Signed-Releases score: %d/10", signingScore),
-					Verified:    true,
-				}
-			} else if signingScore >= 5 {
-				return models.CategoryScore{
-					Score:       0,
-					RiskPoints:  1,
-					Description: "Some signing practices (OSSF)",
-					Evidence:    fmt.Sprintf("OSSF Signed-Releases score: %d/10", signingScore),
-					Verified:    true,
-				}
-			}
+		if signingScore, exists := result.Metadata.OSSFChecks["Signed-Releases"]; exists && signingScore >= 7 {
+			provenanceScore += 1
+			evidence = append(evidence, fmt.Sprintf("OSSF Signed-Releases: %d/10", signingScore))
 		}
 	}
 
-	// No provenance information available
+	// Determine final risk level based on accumulated provenance indicators
+	// Strong indicators (SLSA, Sigstore, npm provenance, PyPI signatures) = 2 points each
+	// Weaker indicators (signed releases, reproducible builds, OSSF) = 1 point each
+	// Score >= 2: Full provenance (0 risk points) - at least one strong indicator
+	// Score 1: Partial provenance (1 risk point) - only weak indicators
+	// Score 0: No provenance (2 risk points)
+
+	var riskPoints int
+	var description string
+	var score int
+
+	if provenanceScore >= 2 {
+		// Full provenance - at least one strong indicator or multiple weak ones
+		riskPoints = 0
+		score = 2
+		description = "Full provenance with signatures"
+	} else if provenanceScore >= 1 {
+		// Partial provenance - only weak indicators
+		riskPoints = 1
+		score = 1
+		description = "Partial provenance"
+	} else {
+		// No provenance
+		riskPoints = 2
+		score = 0
+		description = "No provenance evidence"
+	}
+
+	evidenceStr := "No provenance data"
+	if len(evidence) > 0 {
+		evidenceStr = strings.Join(evidence, ", ")
+	}
+
+	// Add provenance details if available
+	if result.Metadata.ProvenanceDetails != "" {
+		evidenceStr = evidenceStr + "; " + result.Metadata.ProvenanceDetails
+	}
+
 	return models.CategoryScore{
-		Score:       0,
-		RiskPoints:  2,
-		Description: "No evidence of signed releases",
-		Evidence:    "No signing or provenance information found",
-		Verified:    true,
+		Score:       score,
+		RiskPoints:  riskPoints,
+		Description: description,
+		Evidence:    evidenceStr,
+		Verified:    len(evidence) > 0 || provenanceScore == 0,
 	}
 }
 

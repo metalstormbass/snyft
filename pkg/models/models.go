@@ -72,6 +72,15 @@ type PackageMetadata struct {
 	HasReleaseProcess bool    `json:"has_release_process"`
 	SignedReleases   bool     `json:"signed_releases"`
 
+	// Provenance information
+	HasSLSAAttestation  bool   `json:"has_slsa_attestation"`
+	SLSALevel           string `json:"slsa_level,omitempty"`           // e.g., "SLSA_LEVEL_3"
+	HasSigstoreSignature bool  `json:"has_sigstore_signature"`
+	HasNPMProvenance     bool  `json:"has_npm_provenance"`
+	HasPyPISignatures    bool  `json:"has_pypi_signatures"`
+	ReproducibleBuild    bool  `json:"reproducible_build"`
+	ProvenanceDetails    string `json:"provenance_details,omitempty"`  // Additional context
+
 	// Install-time execution
 	InstallScripts   map[string]string `json:"install_scripts,omitempty"` // postinstall, preinstall, etc.
 
@@ -107,6 +116,22 @@ type ReleaseInfo struct {
 	Assets      []string
 	Checksum    string
 	Signature   string
+}
+
+// ProvenanceInfo contains detailed provenance and attestation information
+type ProvenanceInfo struct {
+	HasSLSAAttestation   bool     `json:"has_slsa_attestation"`
+	SLSALevel            string   `json:"slsa_level,omitempty"`
+	SLSAAttestationURL   string   `json:"slsa_attestation_url,omitempty"`
+	HasSigstoreSignature bool     `json:"has_sigstore_signature"`
+	SigstoreBundle       string   `json:"sigstore_bundle,omitempty"`
+	HasNPMProvenance     bool     `json:"has_npm_provenance"`
+	NPMProvenanceURL     string   `json:"npm_provenance_url,omitempty"`
+	HasPyPISignatures    bool     `json:"has_pypi_signatures"`
+	SignedReleaseCount   int      `json:"signed_release_count"`
+	TotalReleaseCount    int      `json:"total_release_count"`
+	ReproducibleBuild    bool     `json:"reproducible_build"`
+	BuildSystem          string   `json:"build_system,omitempty"`
 }
 
 // SupplyChainScore represents a 0-14 point supply chain security scoring rubric
