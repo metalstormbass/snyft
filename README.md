@@ -4,17 +4,20 @@
   <img src="assets/snyft.png" alt="Snyft Logo" width="400"/>
 </p>
 
-**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a comprehensive 7-category scoring rubric to identify potential compromise risks.
+**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a comprehensive 9-category scoring rubric to identify potential compromise risks.
 
 ## Overview
 
-Unlike traditional vulnerability scanners focused on CVEs, Snyft assesses the **likelihood of supply chain compromise** by analyzing repository metadata, build practices, source code availability, and security signals. Each dependency is scored across 7 critical security categories, providing a **0-14 point risk assessment** (lower is better).
+Unlike traditional vulnerability scanners focused on CVEs, Snyft assesses the **likelihood of supply chain compromise** by analyzing repository metadata, build practices, source code availability, and security signals. Each dependency is scored across 9 critical security categories, providing a **0-18 point risk assessment** (lower is better).
 
 ### Key Features
 
-- **7-Category Risk Scoring**: Comprehensive supply chain security rubric (0-14 points)
+- **9-Category Risk Scoring**: Comprehensive supply chain security rubric (0-18 points)
 - **Primary Source Verification**: Validates exact version source code availability before analysis
+- **AI-Enhanced Analysis** (Optional): Claude AI-powered attack pattern detection and executive summaries
+- **Executive Summaries**: Actionable key findings with specific package examples and evidence
 - **Professional Reporting**: Multiple output formats (text, markdown, json, html)
+- **Multi-Platform Support**: Works with GitHub, GitLab, Bitbucket, and self-hosted instances
 - **Multi-Ecosystem Support**: JavaScript/Node.js, Python, Java/Maven
 - **API Resilience**: Web scraping fallbacks when APIs are unavailable
 - **Parallel Analysis**: Concurrent dependency scanning with progress indicators
@@ -51,6 +54,9 @@ tar -xzf snyft_*.tar.gz  # On macOS/Linux
 #### Prerequisites
 - **Go 1.24 or later** (required for macOS compatibility)
 - Optional: GitHub token for higher API rate limits (set `GITHUB_TOKEN` environment variable)
+- Optional: GitLab token for GitLab repositories (set `GITLAB_TOKEN` environment variable)
+- Optional: Bitbucket credentials for Bitbucket repositories (set `BITBUCKET_TOKEN` environment variable)
+- Optional: Claude API key for AI-enhanced analysis (set `CLAUDE_API_KEY` environment variable)
 
 #### Build Steps
 
@@ -120,22 +126,68 @@ CGO_ENABLED=0 go build -o snyft
 
 ## Supply Chain Scoring System
 
-Snyft uses a **7-category rubric** where each category is scored 0-2 risk points:
+Snyft uses a **9-category rubric** where each category is scored 0-2 risk points:
 
 | Category | Description | Risk Indicators |
 |----------|-------------|-----------------|
-| **1. Publisher Control** | Maintainer 2FA, signing, team structure | Single maintainer, no signing |
+| **1. Publisher Control** | Maintainer 2FA, signing, team structure, 8 critical checks | Single maintainer, no signing, no 2FA |
 | **2. Ownership Changes** | Package transfer detection | Recent maintainer changes |
 | **3. Release Anomalies** | Dormancy and sudden activity | Long gap → sudden release |
 | **4. Install Execution** | Install-time script analysis | postinstall scripts, dangerous patterns |
 | **5. Dependency Sprawl** | Transitive dependency count | Many transitive deps (50+) |
 | **6. Provenance** | Build attestations and signatures | No SLSA/Sigstore/provenance |
 | **7. Health** | Bus factor, CI quality, code review | Low bus factor, no CI/reviews |
+| **8. Governance** | Governance docs, maintainer responsiveness | No SECURITY.md, slow response, abandoned |
+| **9. Release Security** | CI publishing, branch protection, signed tags | Manual publishing, no branch protection |
 
-**Total Score**: 0-14 points
-- **0-3 points**: ✅ Low risk (good supply chain security)
-- **4-7 points**: ⚠️ Medium risk (some concerns)
-- **8-14 points**: 🔴 High risk (significant issues)
+**Total Score**: 0-18 points
+- **0-5 points**: ✅ Low risk (good supply chain security)
+- **6-12 points**: ⚠️ Medium risk (some concerns)
+- **13-18 points**: 🔴 High risk (significant issues)
+
+## AI-Enhanced Analysis (Optional)
+
+Snyft can optionally use Claude AI to enhance supply chain security analysis with semantic understanding and attack pattern detection.
+
+### Enabling AI Analysis
+
+```bash
+export CLAUDE_API_KEY=your-anthropic-api-key
+./snyft scan
+```
+
+Get an API key from: [Anthropic Console](https://console.anthropic.com/)
+
+### What AI Analysis Provides
+
+**Attack Pattern Matching**: Detects 8 documented supply chain attack patterns:
+1. **Typosquatting** - Package name manipulation
+2. **Account Takeover** - Maintainer compromise
+3. **Dependency Confusion** - Namespace collision
+4. **Malicious Install Script** - Installation code execution
+5. **Abandoned Package Takeover** - Compromised unmaintained packages
+6. **Build Chain Compromise** - CI/CD attacks
+7. **Transitive Dependency Poisoning** - Indirect compromise
+8. **Subdomain Takeover** - Repository URL hijacking
+
+**Executive Summaries**: Stakeholder-friendly risk explanations with:
+- Key risks identified
+- Business impact assessment
+- Recommended actions
+
+### Configuration Options
+
+Optional environment variables:
+- `CLAUDE_RATE_LIMIT`: Requests per minute (default: 50)
+- `CLAUDE_TIMEOUT`: Request timeout in seconds (default: 60)
+- `CLAUDE_ENABLE_CACHE`: Enable response caching (default: true)
+
+### Performance
+
+- Adds ~2-5 seconds per package (with caching)
+- Only runs when explicitly enabled
+- Uses rate limiting (50 req/min by default)
+- Responses cached for 24 hours
 
 ### Primary Verification Checks
 
@@ -177,7 +229,7 @@ Before scoring, Snyft performs critical source code verification:
 │ Package: vulnerable-pkg@1.2.3 (npm)
 │
 │  Risk Level: HIGH
-│  Supply Chain Score: 11/14 points (HIGH risk)
+│  Supply Chain Score: 15/18 points (HIGH risk)
 │  Repository: https://github.com/owner/vulnerable-pkg
 │  Source Available: ✗ No
 │
@@ -199,6 +251,10 @@ Before scoring, Snyft performs critical source code verification:
 │      No provenance evidence
 │    Health               1/2    ●     ✓
 │      Limited health: few contributors or missing CI/reviews
+│    Governance           0/2    ●     ✓
+│      No SECURITY.md, slow issue response
+│    Release Security     0/2    ●     ✓
+│      Manual publishing, no branch protection
 │
 │  Risk Findings:
 │    [HIGH] No verifiable source code found for this exact version
@@ -215,7 +271,7 @@ Before scoring, Snyft performs critical source code verification:
 │ Package: express@4.18.2 (npm)
 │
 │  Risk Level: LOW
-│  Supply Chain Score: 2/14 points (LOW risk)
+│  Supply Chain Score: 3/18 points (LOW risk)
 │  Repository: https://github.com/expressjs/express
 │  Source Available: ✓ Yes
 │  Build Infrastructure: CI detected: GitHub Actions, Travis CI
@@ -289,12 +345,23 @@ Before scoring, Snyft performs critical source code verification:
 snyft/
 ├── cmd/           # CLI commands (Cobra framework)
 ├── pkg/
-│   ├── analyzer/  # Core analysis engine with 7-category scoring
+│   ├── analyzer/  # Core analysis engine with 9-category scoring
 │   ├── fetcher/   # API clients + web scraping fallbacks
+│   │              # Multi-platform support (GitHub, GitLab, Bitbucket)
 │   ├── models/    # Data structures
 │   ├── parser/    # Manifest file parsers
 │   └── report/    # Multi-format report generators
 ```
+
+### Multi-Platform Support
+
+Snyft supports multiple Git hosting platforms through a unified `GitPlatformClient` interface:
+
+- **GitHub**: Full support with API and web scraping fallbacks
+- **GitLab**: Support for GitLab.com and self-hosted instances
+- **Bitbucket**: Support for Bitbucket Cloud and self-hosted instances
+
+The platform is automatically detected from repository URLs, ensuring seamless analysis across different hosting providers.
 
 ### Analysis Flow
 
@@ -303,8 +370,8 @@ snyft/
 3. **Deduplication**: Remove duplicate dependencies across manifests
 4. **Source Verification**: PRIMARY check - validate exact version source availability
 5. **Parallel Analysis**: Spawn worker goroutines for concurrent analysis
-6. **Scoring**: Calculate 7-category supply chain scores
-7. **Reporting**: Generate formatted output (text/markdown/json/html)
+6. **Scoring**: Calculate 9-category supply chain scores
+7. **Reporting**: Generate formatted output with executive summaries (text/markdown/json/html)
 
 ## Troubleshooting
 
@@ -315,18 +382,31 @@ Some APIs have rate limits that may affect large scans:
 | API | Unauthenticated | Authenticated |
 |-----|----------------|---------------|
 | GitHub | 60 req/hour | 5,000 req/hour |
+| GitLab | No strict limits | 5,000 req/hour |
+| Bitbucket | No strict limits | Higher limits with auth |
 | npm | No strict limits | - |
 | PyPI | No strict limits | - |
 | OSSF Scorecard | No strict limits | - |
 
-**Solution**: Set a GitHub token for higher rate limits:
+**Solution**: Set platform tokens for higher rate limits:
 
 ```bash
+# GitHub (recommended for GitHub-hosted projects)
 export GITHUB_TOKEN="ghp_your_token_here"
+
+# GitLab (for GitLab-hosted projects)
+export GITLAB_TOKEN="glpat_your_token_here"
+
+# Bitbucket (for Bitbucket-hosted projects)
+export BITBUCKET_TOKEN="your_token_here"
+
 ./snyft scan
 ```
 
-**Get a token**: [GitHub Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens)
+**Get tokens**:
+- GitHub: [Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens)
+- GitLab: [User Settings → Access Tokens](https://gitlab.com/-/profile/personal_access_tokens)
+- Bitbucket: [Personal settings → App passwords](https://bitbucket.org/account/settings/app-passwords/)
 
 ### Web Scraping Fallback
 
@@ -335,8 +415,10 @@ When APIs fail or rate limit, Snyft automatically falls back to web scraping:
 - **npm**: Scrapes npmjs.com package pages
 - **PyPI**: Scrapes pypi.org project pages
 - **GitHub**: Scrapes github.com for release/tag information
+- **GitLab**: Scrapes GitLab web interface for repository data
+- **Bitbucket**: Scrapes Bitbucket web interface for repository data
 
-This ensures analysis continues even with API restrictions.
+This ensures analysis continues even with API restrictions or across different hosting platforms.
 
 ### Performance Tips
 
