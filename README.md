@@ -100,17 +100,6 @@ npm start  # run analysis
 npm test   # run tests
 ```
 
-### Commits
-
-Use automated scripts to commit/push regularly:
-
-```bash
-./scripts/auto-commit.sh     # auto-commit and push
-./scripts/commit-check.sh    # check for uncommitted work
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow details.
-
 ## Architecture
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for multi-agent design.
