@@ -328,6 +328,7 @@ func (c *PyPIClient) scrapePyPIPackageInfo(packageName string) (*PyPIPackage, er
 	return pkg, nil
 }
 
+
 // PyPIOwnershipHistory represents ownership/maintainer changes over time
 type PyPIOwnershipHistory struct {
 	CurrentAuthor     string
