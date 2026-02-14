@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -392,7 +393,10 @@ func (c *PyPIClient) GetOwnershipHistory(packageName string) (*PyPIOwnershipHist
 	}
 
 	// Sort releases by date (oldest first)
-	// (simplified - in real implementation you'd sort properly)
+	sort.Slice(releases, func(i, j int) bool {
+		return releases[i].date.Before(releases[j].date)
+	})
+
 	if len(releases) > 1 {
 		previousAuthor := releases[0].author
 		for i := 1; i < len(releases); i++ {
