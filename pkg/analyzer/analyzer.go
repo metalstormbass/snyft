@@ -561,9 +561,9 @@ func packageMetadataFromMaven(pkg *fetcher.MavenPackage) models.PackageMetadata 
 	}
 }
 
-// calculateSupplyChainScore implements a 0-16 point supply chain security rubric
-// Each of 8 categories is scored 0-2 points (0=good, 2=high risk)
-// Total: 0-3=Low risk, 4-8=Medium risk, 9+=High risk
+// calculateSupplyChainScore implements a 0-18 point supply chain security rubric
+// Each of 9 categories is scored 0-2 points (0=good, 2=high risk)
+// Total: 0-5=Low risk, 6-12=Medium risk, 13+=High risk
 func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	score := &models.SupplyChainScore{
 		CategoryScores: models.CategoryScores{},
@@ -593,6 +593,9 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	// Category 8: Governance (documentation/responsiveness)
 	score.CategoryScores.Governance = a.scoreGovernance(result)
 
+	// Category 9: Release Security (CI publishing/branch protection/signed tags)
+	score.CategoryScores.ReleaseSecurity = a.scoreReleaseSecurity(result)
+
 	// Calculate total score
 	score.TotalScore = score.CategoryScores.PublisherControl.RiskPoints +
 		score.CategoryScores.OwnershipChanges.RiskPoints +
@@ -601,12 +604,13 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		score.CategoryScores.DependencySprawl.RiskPoints +
 		score.CategoryScores.Provenance.RiskPoints +
 		score.CategoryScores.Health.RiskPoints +
-		score.CategoryScores.Governance.RiskPoints
+		score.CategoryScores.Governance.RiskPoints +
+		score.CategoryScores.ReleaseSecurity.RiskPoints
 
-	// Determine risk level based on total score
-	if score.TotalScore >= 9 {
+	// Determine risk level based on total score (9 categories, 0-18 points)
+	if score.TotalScore >= 13 {
 		score.RiskLevel = "HIGH"
-	} else if score.TotalScore >= 4 {
+	} else if score.TotalScore >= 6 {
 		score.RiskLevel = "MEDIUM"
 	} else {
 		score.RiskLevel = "LOW"
