@@ -156,6 +156,79 @@ func (c *GitHubClient) HasAutomatedReleases(repoURL string) (bool, error) {
 	return len(releases) > 0, nil
 }
 
+// GetReleaseHistory fetches detailed release history for a repository
+func (c *GitHubClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRelease, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=%d", c.baseURL, owner, repo, limit)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var releases []GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, err
+	}
+
+	return releases, nil
+}
+
+// GetCommitActivity fetches recent commit activity for a repository
+func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]GitHubCommit, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/repos/%s/%s/commits?since=%s&per_page=100",
+		c.baseURL, owner, repo, since.Format(time.RFC3339))
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var commits []GitHubCommit
+	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+		return nil, err
+	}
+
+	return commits, nil
+}
+
 func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("HEAD", url, nil)
@@ -206,10 +279,26 @@ type GitHubLicense struct {
 }
 
 type GitHubRelease struct {
-	TagName string    `json:"tag_name"`
-	Name    string    `json:"name"`
-	Draft   bool      `json:"draft"`
-	Created time.Time `json:"created_at"`
+	TagName     string    `json:"tag_name"`
+	Name        string    `json:"name"`
+	Draft       bool      `json:"draft"`
+	Prerelease  bool      `json:"prerelease"`
+	CreatedAt   time.Time `json:"created_at"`
+	PublishedAt time.Time `json:"published_at"`
+}
+
+type GitHubCommit struct {
+	SHA    string                `json:"sha"`
+	Commit GitHubCommitDetails   `json:"commit"`
+}
+
+type GitHubCommitDetails struct {
+	Author    GitHubCommitAuthor `json:"author"`
+	Message   string             `json:"message"`
+}
+
+type GitHubCommitAuthor struct {
+	Date time.Time `json:"date"`
 }
 
 func parseGitHubURL(repoURL string) (owner, repo string, err error) {
