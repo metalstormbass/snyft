@@ -21,11 +21,22 @@ type JSONReport struct {
 		ScanDuration  float64 `json:"scan_duration_seconds"`
 	} `json:"summary"`
 	ExecutiveSummary struct {
-		KeyFindings []JSONCriticalIssue `json:"key_findings"`
-		Summary     string              `json:"summary"`
+		KeyFindings      []JSONCriticalIssue              `json:"key_findings"`
+		Summary          string                           `json:"summary"`
+		AIInsights       *JSONAIExecutiveSummary          `json:"ai_insights,omitempty"`
 	} `json:"executive_summary"`
 	Results         interface{} `json:"results"`
 	Recommendations []string    `json:"recommendations"`
+}
+
+// JSONAIExecutiveSummary represents AI-powered executive insights in JSON
+type JSONAIExecutiveSummary struct {
+	Summary           string   `json:"summary"`
+	KeyRisks          []string `json:"key_risks"`
+	BusinessImpact    string   `json:"business_impact"`
+	RecommendedAction string   `json:"recommended_action"`
+	Confidence        float64  `json:"confidence"`
+	GeneratedAt       string   `json:"generated_at"`
 }
 
 // JSONCriticalIssue represents a critical issue in JSON format
@@ -87,6 +98,22 @@ func (r *Reporter) generateJSON() error {
 			"Supply Chain Risk Assessment: Scanned %d packages with overall risk level: %s. "+
 				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
 			r.stats.TotalPackages, r.calculateOverallRisk())
+	}
+
+	// Add AI Executive Summary if available
+	for _, result := range r.results {
+		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
+			aiExec := result.AIAnalysis.ExecutiveSummary
+			report.ExecutiveSummary.AIInsights = &JSONAIExecutiveSummary{
+				Summary:           aiExec.Summary,
+				KeyRisks:          aiExec.KeyRisks,
+				BusinessImpact:    aiExec.BusinessImpact,
+				RecommendedAction: aiExec.RecommendedAction,
+				Confidence:        aiExec.Confidence,
+				GeneratedAt:       aiExec.GeneratedAt.Format("2006-01-02T15:04:05Z07:00"),
+			}
+			break // Only include the first one found
+		}
 	}
 
 	// Recommendations

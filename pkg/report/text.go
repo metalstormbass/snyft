@@ -203,6 +203,65 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 			}
 		}
 	}
+
+	// AI Executive Summary (if available from any package)
+	r.printAIExecutiveSummary(w)
+}
+
+// printAIExecutiveSummary prints AI-powered executive insights if available
+func (r *Reporter) printAIExecutiveSummary(w io.Writer) {
+	// Find the first package with AI analysis that has an executive summary
+	var executiveSummary *models.ExecutiveExplanation
+	for _, result := range r.results {
+		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
+			executiveSummary = result.AIAnalysis.ExecutiveSummary
+			break
+		}
+	}
+
+	if executiveSummary == nil {
+		return
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %s🤖 AI-Powered Risk Assessment%s\n", ColorBold+ColorCyan, ColorReset)
+	fmt.Fprintln(w)
+
+	// Summary
+	fmt.Fprintf(w, "  %s%s%s\n", ColorBold, executiveSummary.Summary, ColorReset)
+	fmt.Fprintln(w)
+
+	// Key Risks
+	if len(executiveSummary.KeyRisks) > 0 {
+		fmt.Fprintf(w, "  %sKey Risks Identified:%s\n", ColorBold, ColorReset)
+		for _, risk := range executiveSummary.KeyRisks {
+			fmt.Fprintf(w, "    %s•%s %s\n", ColorRed, ColorReset, risk)
+		}
+		fmt.Fprintln(w)
+	}
+
+	// Business Impact
+	if executiveSummary.BusinessImpact != "" {
+		fmt.Fprintf(w, "  %sBusiness Impact:%s\n", ColorBold, ColorReset)
+		fmt.Fprintf(w, "  %s\n", executiveSummary.BusinessImpact)
+		fmt.Fprintln(w)
+	}
+
+	// Recommended Action
+	if executiveSummary.RecommendedAction != "" {
+		fmt.Fprintf(w, "  %sRecommended Action:%s\n", ColorBold, ColorReset)
+		fmt.Fprintf(w, "  %s\n", executiveSummary.RecommendedAction)
+		fmt.Fprintln(w)
+	}
+
+	// Confidence
+	confidencePct := executiveSummary.Confidence * 100
+	confidenceColor := ColorGreen
+	if confidencePct < 50 {
+		confidenceColor = ColorYellow
+	}
+	fmt.Fprintf(w, "  %sAI Confidence:%s %s%.0f%%%s\n",
+		ColorBold, ColorReset, confidenceColor, confidencePct, ColorReset)
 }
 
 // printSectionHeader prints a section header
@@ -308,8 +367,139 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		}
 	}
 
+	// AI Analysis (if available)
+	if result.AIAnalysis != nil {
+		r.printPackageAIAnalysis(w, result.AIAnalysis, riskColor)
+	}
+
 	_, _ = fmt.Fprintf(w, "%s└%s\n", riskColor, strings.Repeat("─", 76)+ColorReset)
 	_, _ = fmt.Fprintln(w)
+}
+
+// printPackageAIAnalysis prints AI analysis results for a package
+func (r *Reporter) printPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnalysisResult, borderColor string) {
+	if aiAnalysis == nil {
+		return
+	}
+
+	// Attack Pattern Matches
+	if len(aiAnalysis.AttackPatterns) > 0 {
+		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+		_, _ = fmt.Fprintf(w, "%s│%s  %s🤖 AI-Detected Attack Patterns:%s\n",
+			borderColor, ColorReset,
+			ColorBold+ColorCyan, ColorReset)
+
+		for i, pattern := range aiAnalysis.AttackPatterns {
+			sevColor := r.getSeverityColor(pattern.Severity)
+			_, _ = fmt.Fprintf(w, "%s│%s    %s[%s]%s %s\n",
+				borderColor, ColorReset,
+				sevColor, pattern.Severity, ColorReset,
+				pattern.PatternName)
+
+			if pattern.Description != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "%s│%s       %s%s%s\n",
+					borderColor, ColorReset,
+					ColorDim, pattern.Description, ColorReset)
+			}
+
+			// Show confidence
+			confidencePct := pattern.Confidence * 100
+			_, _ = fmt.Fprintf(w, "%s│%s       %sConfidence: %.0f%%%s\n",
+				borderColor, ColorReset,
+				ColorDim, confidencePct, ColorReset)
+
+			// Show evidence in verbose mode
+			if r.config.Verbose && len(pattern.Evidence) > 0 {
+				_, _ = fmt.Fprintf(w, "%s│%s       %sEvidence:%s\n",
+					borderColor, ColorReset,
+					ColorDim, ColorReset)
+				for _, evidence := range pattern.Evidence {
+					_, _ = fmt.Fprintf(w, "%s│%s         %s• %s%s\n",
+						borderColor, ColorReset,
+						ColorDim, evidence, ColorReset)
+				}
+			}
+
+			// Show mitigation advice if available
+			if pattern.MitigationAdvice != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "%s│%s       %sMitigation: %s%s\n",
+					borderColor, ColorReset,
+					ColorDim+ColorGreen, pattern.MitigationAdvice, ColorReset)
+			}
+
+			if i < len(aiAnalysis.AttackPatterns)-1 {
+				_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+			}
+		}
+	}
+
+	// Semantic Findings
+	if len(aiAnalysis.SemanticFindings) > 0 && r.config.Verbose {
+		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+		_, _ = fmt.Fprintf(w, "%s│%s  %s🤖 AI-Detected Code Patterns:%s\n",
+			borderColor, ColorReset,
+			ColorBold+ColorCyan, ColorReset)
+
+		for i, finding := range aiAnalysis.SemanticFindings {
+			sevColor := r.getSeverityColor(finding.Severity)
+			_, _ = fmt.Fprintf(w, "%s│%s    %s[%s]%s %s\n",
+				borderColor, ColorReset,
+				sevColor, finding.Severity, ColorReset,
+				finding.Type)
+
+			if finding.Description != "" {
+				_, _ = fmt.Fprintf(w, "%s│%s       %s%s%s\n",
+					borderColor, ColorReset,
+					ColorDim, finding.Description, ColorReset)
+			}
+
+			// Show confidence
+			confidencePct := finding.Confidence * 100
+			_, _ = fmt.Fprintf(w, "%s│%s       %sConfidence: %.0f%%%s\n",
+				borderColor, ColorReset,
+				ColorDim, confidencePct, ColorReset)
+
+			// Show file location if available
+			if finding.FilePath != "" {
+				location := finding.FilePath
+				if finding.LineNumber > 0 {
+					location = fmt.Sprintf("%s:%d", location, finding.LineNumber)
+				}
+				_, _ = fmt.Fprintf(w, "%s│%s       %sLocation: %s%s\n",
+					borderColor, ColorReset,
+					ColorDim, location, ColorReset)
+			}
+
+			// Show evidence
+			if finding.Evidence != "" {
+				_, _ = fmt.Fprintf(w, "%s│%s       %sEvidence: %s%s\n",
+					borderColor, ColorReset,
+					ColorDim, finding.Evidence, ColorReset)
+			}
+
+			// Show risk explanation
+			if finding.RiskExplanation != "" {
+				_, _ = fmt.Fprintf(w, "%s│%s       %sRisk: %s%s\n",
+					borderColor, ColorReset,
+					ColorDim+ColorRed, finding.RiskExplanation, ColorReset)
+			}
+
+			if i < len(aiAnalysis.SemanticFindings)-1 {
+				_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+			}
+		}
+	}
+
+	// AI Analysis Notes
+	if aiAnalysis.AnalysisNotes != "" && r.config.Verbose {
+		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+		_, _ = fmt.Fprintf(w, "%s│%s  %s🤖 AI Analysis Notes:%s\n",
+			borderColor, ColorReset,
+			ColorBold+ColorCyan, ColorReset)
+		_, _ = fmt.Fprintf(w, "%s│%s  %s%s%s\n",
+			borderColor, ColorReset,
+			ColorDim, aiAnalysis.AnalysisNotes, ColorReset)
+	}
 }
 
 // printCategoryScoreTable prints category scores in a table format

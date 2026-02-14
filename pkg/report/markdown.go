@@ -94,6 +94,9 @@ func (r *Reporter) generateMarkdown() error {
 		}
 	}
 
+	// AI Executive Summary
+	r.printMarkdownAIExecutiveSummary(w)
+
 	_, _ = fmt.Fprintln(w, "---")
 	_, _ = fmt.Fprintln(w)
 
@@ -126,6 +129,58 @@ func (r *Reporter) generateMarkdown() error {
 	}
 
 	return nil
+}
+
+// printMarkdownAIExecutiveSummary prints AI-powered executive insights
+func (r *Reporter) printMarkdownAIExecutiveSummary(w io.Writer) {
+	// Find the first package with AI analysis that has an executive summary
+	var executiveSummary *models.ExecutiveExplanation
+	for _, result := range r.results {
+		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
+			executiveSummary = result.AIAnalysis.ExecutiveSummary
+			break
+		}
+	}
+
+	if executiveSummary == nil {
+		return
+	}
+
+	_, _ = fmt.Fprintln(w, "### 🤖 AI-Powered Risk Assessment")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "%s\n", executiveSummary.Summary)
+	_, _ = fmt.Fprintln(w)
+
+	// Key Risks
+	if len(executiveSummary.KeyRisks) > 0 {
+		_, _ = fmt.Fprintln(w, "**Key Risks Identified:**")
+		_, _ = fmt.Fprintln(w)
+		for _, risk := range executiveSummary.KeyRisks {
+			_, _ = fmt.Fprintf(w, "- 🔴 %s\n", risk)
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+
+	// Business Impact
+	if executiveSummary.BusinessImpact != "" {
+		_, _ = fmt.Fprintln(w, "**Business Impact:**")
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "%s\n", executiveSummary.BusinessImpact)
+		_, _ = fmt.Fprintln(w)
+	}
+
+	// Recommended Action
+	if executiveSummary.RecommendedAction != "" {
+		_, _ = fmt.Fprintln(w, "**Recommended Action:**")
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "%s\n", executiveSummary.RecommendedAction)
+		_, _ = fmt.Fprintln(w)
+	}
+
+	// Confidence
+	confidencePct := executiveSummary.Confidence * 100
+	_, _ = fmt.Fprintf(w, "*AI Confidence: %.0f%%*\n", confidencePct)
+	_, _ = fmt.Fprintln(w)
 }
 
 // printMarkdownPackage prints a package in markdown format
@@ -213,6 +268,88 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 		_, _ = fmt.Fprintln(w)
 	}
 
+	// AI Analysis
+	if result.AIAnalysis != nil {
+		r.printMarkdownPackageAIAnalysis(w, result.AIAnalysis)
+	}
+
 	_, _ = fmt.Fprintln(w, "---")
 	_, _ = fmt.Fprintln(w)
+}
+
+// printMarkdownPackageAIAnalysis prints AI analysis results for a package in markdown
+func (r *Reporter) printMarkdownPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnalysisResult) {
+	if aiAnalysis == nil {
+		return
+	}
+
+	// Attack Pattern Matches
+	if len(aiAnalysis.AttackPatterns) > 0 {
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "#### 🤖 AI-Detected Attack Patterns")
+		_, _ = fmt.Fprintln(w)
+
+		for _, pattern := range aiAnalysis.AttackPatterns {
+			_, _ = fmt.Fprintf(w, "- **[%s]** %s\n", pattern.Severity, pattern.PatternName)
+			if pattern.Description != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "  - *Description:* %s\n", pattern.Description)
+			}
+			confidencePct := pattern.Confidence * 100
+			_, _ = fmt.Fprintf(w, "  - *Confidence:* %.0f%%\n", confidencePct)
+
+			if r.config.Verbose && len(pattern.Evidence) > 0 {
+				_, _ = fmt.Fprintln(w, "  - *Evidence:*")
+				for _, evidence := range pattern.Evidence {
+					_, _ = fmt.Fprintf(w, "    - %s\n", evidence)
+				}
+			}
+
+			if pattern.MitigationAdvice != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "  - *Mitigation:* %s\n", pattern.MitigationAdvice)
+			}
+			_, _ = fmt.Fprintln(w)
+		}
+	}
+
+	// Semantic Findings
+	if len(aiAnalysis.SemanticFindings) > 0 && r.config.Verbose {
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "#### 🤖 AI-Detected Code Patterns")
+		_, _ = fmt.Fprintln(w)
+
+		for _, finding := range aiAnalysis.SemanticFindings {
+			_, _ = fmt.Fprintf(w, "- **[%s]** %s\n", finding.Severity, finding.Type)
+			if finding.Description != "" {
+				_, _ = fmt.Fprintf(w, "  - *Description:* %s\n", finding.Description)
+			}
+			confidencePct := finding.Confidence * 100
+			_, _ = fmt.Fprintf(w, "  - *Confidence:* %.0f%%\n", confidencePct)
+
+			if finding.FilePath != "" {
+				location := finding.FilePath
+				if finding.LineNumber > 0 {
+					location = fmt.Sprintf("%s:%d", location, finding.LineNumber)
+				}
+				_, _ = fmt.Fprintf(w, "  - *Location:* `%s`\n", location)
+			}
+
+			if finding.Evidence != "" {
+				_, _ = fmt.Fprintf(w, "  - *Evidence:* %s\n", finding.Evidence)
+			}
+
+			if finding.RiskExplanation != "" {
+				_, _ = fmt.Fprintf(w, "  - *Risk:* %s\n", finding.RiskExplanation)
+			}
+			_, _ = fmt.Fprintln(w)
+		}
+	}
+
+	// AI Analysis Notes
+	if aiAnalysis.AnalysisNotes != "" && r.config.Verbose {
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "#### 🤖 AI Analysis Notes")
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "%s\n", aiAnalysis.AnalysisNotes)
+		_, _ = fmt.Fprintln(w)
+	}
 }

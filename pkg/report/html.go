@@ -405,8 +405,66 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 		_, _ = fmt.Fprintln(w, "      </div>")
 	}
 
+	// AI Executive Summary
+	r.printHTMLAIExecutiveSummary(w)
+
 	_, _ = fmt.Fprintln(w, "    </section>")
 	return nil
+}
+
+// printHTMLAIExecutiveSummary prints AI-powered executive insights in HTML
+func (r *Reporter) printHTMLAIExecutiveSummary(w io.Writer) {
+	// Find the first package with AI analysis that has an executive summary
+	var executiveSummary *models.ExecutiveExplanation
+	for _, result := range r.results {
+		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
+			executiveSummary = result.AIAnalysis.ExecutiveSummary
+			break
+		}
+	}
+
+	if executiveSummary == nil {
+		return
+	}
+
+	_, _ = fmt.Fprintln(w, "      <div style=\"margin-top: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 25px; border-radius: 10px;\">")
+	_, _ = fmt.Fprintln(w, "        <h3 style=\"margin-top: 0; color: white;\">🤖 AI-Powered Risk Assessment</h3>")
+	_, _ = fmt.Fprintf(w, "        <p style=\"font-size: 16px; line-height: 1.8;\">%s</p>\n", html.EscapeString(executiveSummary.Summary))
+
+	// Key Risks
+	if len(executiveSummary.KeyRisks) > 0 {
+		_, _ = fmt.Fprintln(w, "        <div style=\"background: rgba(255,255,255,0.1); padding: 15px; border-radius: 5px; margin-top: 15px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"margin-top: 0; color: white;\">Key Risks Identified:</h4>")
+		_, _ = fmt.Fprintln(w, "          <ul style=\"margin: 10px 0; padding-left: 20px;\">")
+		for _, risk := range executiveSummary.KeyRisks {
+			_, _ = fmt.Fprintf(w, "            <li style=\"margin: 8px 0;\">%s</li>\n", html.EscapeString(risk))
+		}
+		_, _ = fmt.Fprintln(w, "          </ul>")
+		_, _ = fmt.Fprintln(w, "        </div>")
+	}
+
+	// Business Impact
+	if executiveSummary.BusinessImpact != "" {
+		_, _ = fmt.Fprintln(w, "        <div style=\"background: rgba(255,255,255,0.1); padding: 15px; border-radius: 5px; margin-top: 15px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"margin-top: 0; color: white;\">Business Impact:</h4>")
+		_, _ = fmt.Fprintf(w, "          <p style=\"margin: 0;\">%s</p>\n", html.EscapeString(executiveSummary.BusinessImpact))
+		_, _ = fmt.Fprintln(w, "        </div>")
+	}
+
+	// Recommended Action
+	if executiveSummary.RecommendedAction != "" {
+		_, _ = fmt.Fprintln(w, "        <div style=\"background: rgba(255,255,255,0.1); padding: 15px; border-radius: 5px; margin-top: 15px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"margin-top: 0; color: white;\">Recommended Action:</h4>")
+		_, _ = fmt.Fprintf(w, "          <p style=\"margin: 0;\">%s</p>\n", html.EscapeString(executiveSummary.RecommendedAction))
+		_, _ = fmt.Fprintln(w, "        </div>")
+	}
+
+	// Confidence
+	confidencePct := executiveSummary.Confidence * 100
+	_, _ = fmt.Fprintf(w, "        <div style=\"margin-top: 15px; font-size: 14px; opacity: 0.9;\">")
+	_, _ = fmt.Fprintf(w, "          <em>AI Confidence: %.0f%%</em>", confidencePct)
+	_, _ = fmt.Fprintln(w, "        </div>")
+	_, _ = fmt.Fprintln(w, "      </div>")
 }
 
 // printHTMLPackage prints a package in HTML format
@@ -520,7 +578,125 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 		_, _ = fmt.Fprintln(w, "        </div>")
 	}
 
+	// AI Analysis
+	if result.AIAnalysis != nil {
+		r.printHTMLPackageAIAnalysis(w, result.AIAnalysis)
+	}
+
 	_, _ = fmt.Fprintln(w, "      </div>")
+}
+
+// printHTMLPackageAIAnalysis prints AI analysis results for a package in HTML
+func (r *Reporter) printHTMLPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnalysisResult) {
+	if aiAnalysis == nil {
+		return
+	}
+
+	// Attack Pattern Matches
+	if len(aiAnalysis.AttackPatterns) > 0 {
+		_, _ = fmt.Fprintln(w, "        <div style=\"margin-top: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px; border-radius: 5px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"color: white; margin-top: 0;\">🤖 AI-Detected Attack Patterns</h4>")
+
+		for _, pattern := range aiAnalysis.AttackPatterns {
+			bgColor := "#fff9e6"
+			if pattern.Severity == "HIGH" || pattern.Severity == "CRITICAL" {
+				bgColor = "#ffe6e6"
+			}
+
+			_, _ = fmt.Fprintf(w, "          <div style=\"background: %s; padding: 12px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #dc3545;\">\n", bgColor)
+			_, _ = fmt.Fprintf(w, "            <div style=\"font-weight: bold; margin-bottom: 5px;\">\n")
+			_, _ = fmt.Fprintf(w, "              <span style=\"color: #dc3545;\">[%s]</span> %s\n",
+				html.EscapeString(pattern.Severity), html.EscapeString(pattern.PatternName))
+			_, _ = fmt.Fprintln(w, "            </div>")
+
+			if pattern.Description != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 13px; color: #666; margin: 5px 0;\">%s</div>\n",
+					html.EscapeString(pattern.Description))
+			}
+
+			confidencePct := pattern.Confidence * 100
+			_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 5px;\">Confidence: %.0f%%</div>\n", confidencePct)
+
+			if r.config.Verbose && len(pattern.Evidence) > 0 {
+				_, _ = fmt.Fprintln(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 8px;\">")
+				_, _ = fmt.Fprintln(w, "              <strong>Evidence:</strong>")
+				_, _ = fmt.Fprintln(w, "              <ul style=\"margin: 5px 0; padding-left: 20px;\">")
+				for _, evidence := range pattern.Evidence {
+					_, _ = fmt.Fprintf(w, "                <li>%s</li>\n", html.EscapeString(evidence))
+				}
+				_, _ = fmt.Fprintln(w, "              </ul>")
+				_, _ = fmt.Fprintln(w, "            </div>")
+			}
+
+			if pattern.MitigationAdvice != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #28a745; margin-top: 8px;\">")
+				_, _ = fmt.Fprintf(w, "              <strong>Mitigation:</strong> %s", html.EscapeString(pattern.MitigationAdvice))
+				_, _ = fmt.Fprintln(w, "            </div>")
+			}
+
+			_, _ = fmt.Fprintln(w, "          </div>")
+		}
+
+		_, _ = fmt.Fprintln(w, "        </div>")
+	}
+
+	// Semantic Findings
+	if len(aiAnalysis.SemanticFindings) > 0 && r.config.Verbose {
+		_, _ = fmt.Fprintln(w, "        <div style=\"margin-top: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px; border-radius: 5px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"color: white; margin-top: 0;\">🤖 AI-Detected Code Patterns</h4>")
+
+		for _, finding := range aiAnalysis.SemanticFindings {
+			bgColor := "#fff9e6"
+			if finding.Severity == "HIGH" || finding.Severity == "CRITICAL" {
+				bgColor = "#ffe6e6"
+			}
+
+			_, _ = fmt.Fprintf(w, "          <div style=\"background: %s; padding: 12px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;\">\n", bgColor)
+			_, _ = fmt.Fprintf(w, "            <div style=\"font-weight: bold; margin-bottom: 5px;\">\n")
+			_, _ = fmt.Fprintf(w, "              <span style=\"color: #dc3545;\">[%s]</span> %s\n",
+				html.EscapeString(finding.Severity), html.EscapeString(finding.Type))
+			_, _ = fmt.Fprintln(w, "            </div>")
+
+			if finding.Description != "" {
+				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 13px; color: #666; margin: 5px 0;\">%s</div>\n",
+					html.EscapeString(finding.Description))
+			}
+
+			confidencePct := finding.Confidence * 100
+			_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 5px;\">Confidence: %.0f%%</div>\n", confidencePct)
+
+			if finding.FilePath != "" {
+				location := finding.FilePath
+				if finding.LineNumber > 0 {
+					location = fmt.Sprintf("%s:%d", location, finding.LineNumber)
+				}
+				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 5px;\">Location: <code>%s</code></div>\n",
+					html.EscapeString(location))
+			}
+
+			if finding.Evidence != "" {
+				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 5px;\">Evidence: %s</div>\n",
+					html.EscapeString(finding.Evidence))
+			}
+
+			if finding.RiskExplanation != "" {
+				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #dc3545; margin-top: 5px;\">Risk: %s</div>\n",
+					html.EscapeString(finding.RiskExplanation))
+			}
+
+			_, _ = fmt.Fprintln(w, "          </div>")
+		}
+
+		_, _ = fmt.Fprintln(w, "        </div>")
+	}
+
+	// AI Analysis Notes
+	if aiAnalysis.AnalysisNotes != "" && r.config.Verbose {
+		_, _ = fmt.Fprintln(w, "        <div style=\"margin-top: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px; border-radius: 5px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"color: white; margin-top: 0;\">🤖 AI Analysis Notes</h4>")
+		_, _ = fmt.Fprintf(w, "          <p style=\"color: white; margin: 0;\">%s</p>\n", html.EscapeString(aiAnalysis.AnalysisNotes))
+		_, _ = fmt.Fprintln(w, "        </div>")
+	}
 }
 
 // stripANSI removes ANSI color codes from a string
