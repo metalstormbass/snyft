@@ -30,6 +30,53 @@ type SourceVerification struct {
 	Details            string   `json:"details"`               // Human-readable details
 }
 
+// AIAnalysisResult contains AI-powered supply chain security analysis
+type AIAnalysisResult struct {
+	Timestamp         time.Time              `json:"timestamp"`
+	ModelVersion      string                 `json:"model_version"`         // AI model used for analysis
+	OverallConfidence float64                `json:"overall_confidence"`    // 0.0-1.0
+	SemanticFindings  []SemanticFinding      `json:"semantic_findings,omitempty"`
+	AttackPatterns    []AttackPatternMatch   `json:"attack_patterns,omitempty"`
+	ExecutiveSummary  *ExecutiveExplanation  `json:"executive_summary,omitempty"`
+	AnalysisNotes     string                 `json:"analysis_notes,omitempty"` // Additional context from AI
+}
+
+// SemanticFinding represents a code pattern or behavior identified through AI analysis
+type SemanticFinding struct {
+	Type            string  `json:"type"`              // e.g., "obfuscation", "suspicious_network_call", "credential_harvesting"
+	Description     string  `json:"description"`       // What was found
+	Confidence      float64 `json:"confidence"`        // 0.0-1.0
+	Severity        string  `json:"severity"`          // HIGH, MEDIUM, LOW
+	FilePath        string  `json:"file_path,omitempty"`
+	LineNumber      int     `json:"line_number,omitempty"`
+	CodeSnippet     string  `json:"code_snippet,omitempty"`
+	Evidence        string  `json:"evidence"`          // Why this is concerning
+	RiskExplanation string  `json:"risk_explanation"`  // Impact if exploited
+}
+
+// AttackPatternMatch represents a match to a known supply chain attack pattern
+type AttackPatternMatch struct {
+	PatternName      string   `json:"pattern_name"`      // e.g., "Dependency Confusion", "Typosquatting"
+	Description      string   `json:"description"`       // Attack pattern description
+	Confidence       float64  `json:"confidence"`        // 0.0-1.0
+	Severity         string   `json:"severity"`          // HIGH, MEDIUM, LOW
+	Evidence         []string `json:"evidence"`          // List of evidence points
+	AcademicSource   string   `json:"academic_source,omitempty"`  // Citation for attack pattern
+	Indicators       []string `json:"indicators"`        // Specific indicators found
+	MitigationAdvice string   `json:"mitigation_advice,omitempty"`
+}
+
+// ExecutiveExplanation provides a business-friendly summary of AI findings
+type ExecutiveExplanation struct {
+	Summary           string    `json:"summary"`           // High-level summary for stakeholders
+	KeyRisks          []string  `json:"key_risks"`         // Top 3-5 risks in plain language
+	BusinessImpact    string    `json:"business_impact"`   // Potential business consequences
+	RecommendedAction string    `json:"recommended_action"` // What should be done
+	TechnicalDetails  string    `json:"technical_details,omitempty"` // Optional technical context
+	Confidence        float64   `json:"confidence"`        // 0.0-1.0 confidence in assessment
+	GeneratedAt       time.Time `json:"generated_at"`
+}
+
 // AnalysisResult contains the supply chain security analysis for a dependency
 type AnalysisResult struct {
 	Dependency            Dependency             `json:"dependency"`
@@ -44,6 +91,7 @@ type AnalysisResult struct {
 	Findings              []Finding              `json:"findings"`
 	Metadata              PackageMetadata        `json:"metadata"`
 	SupplyChainScore      *SupplyChainScore      `json:"supply_chain_score,omitempty"`
+	AIAnalysis            *AIAnalysisResult      `json:"ai_analysis,omitempty"`
 }
 
 // Finding represents a specific security finding
