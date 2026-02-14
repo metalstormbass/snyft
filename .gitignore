@@ -43,3 +43,12 @@ tmp/
 temp/
 *.tmp
 .cache/
+
+# Coverage and testing
+coverage/
+*.tgz
+
+# Snyft-specific reports
+reports/
+snyft-report-*.json
+snyft-report-*.md

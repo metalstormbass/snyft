@@ -1,0 +1,19 @@
+{
+  "name": "test-project",
+  "version": "1.0.0",
+  "description": "Example project for testing Snyft",
+  "type": "module",
+  "main": "src/main/javascript/app.js",
+  "scripts": {
+    "start": "node src/main/javascript/app.js",
+    "test": "jest",
+    "build": "webpack --mode production"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "webpack": "^5.89.0"
+  }
+}
