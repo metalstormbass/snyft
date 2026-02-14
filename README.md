@@ -14,6 +14,7 @@ Unlike traditional vulnerability scanners focused on CVEs, Snyft assesses the **
 
 - **9-Category Risk Scoring**: Comprehensive supply chain security rubric (0-18 points)
 - **Primary Source Verification**: Validates exact version source code availability before analysis
+- **AI-Enhanced Analysis** (Optional): Claude AI-powered attack pattern detection and executive summaries
 - **Executive Summaries**: Actionable key findings with specific package examples and evidence
 - **Professional Reporting**: Multiple output formats (text, markdown, json, html)
 - **Multi-Platform Support**: Works with GitHub, GitLab, Bitbucket, and self-hosted instances
@@ -55,6 +56,7 @@ tar -xzf snyft_*.tar.gz  # On macOS/Linux
 - Optional: GitHub token for higher API rate limits (set `GITHUB_TOKEN` environment variable)
 - Optional: GitLab token for GitLab repositories (set `GITLAB_TOKEN` environment variable)
 - Optional: Bitbucket credentials for Bitbucket repositories (set `BITBUCKET_TOKEN` environment variable)
+- Optional: Claude API key for AI-enhanced analysis (set `CLAUDE_API_KEY` environment variable)
 
 #### Build Steps
 
@@ -142,6 +144,50 @@ Snyft uses a **9-category rubric** where each category is scored 0-2 risk points
 - **0-5 points**: ✅ Low risk (good supply chain security)
 - **6-12 points**: ⚠️ Medium risk (some concerns)
 - **13-18 points**: 🔴 High risk (significant issues)
+
+## AI-Enhanced Analysis (Optional)
+
+Snyft can optionally use Claude AI to enhance supply chain security analysis with semantic understanding and attack pattern detection.
+
+### Enabling AI Analysis
+
+```bash
+export CLAUDE_API_KEY=your-anthropic-api-key
+./snyft scan
+```
+
+Get an API key from: [Anthropic Console](https://console.anthropic.com/)
+
+### What AI Analysis Provides
+
+**Attack Pattern Matching**: Detects 8 documented supply chain attack patterns:
+1. **Typosquatting** - Package name manipulation
+2. **Account Takeover** - Maintainer compromise
+3. **Dependency Confusion** - Namespace collision
+4. **Malicious Install Script** - Installation code execution
+5. **Abandoned Package Takeover** - Compromised unmaintained packages
+6. **Build Chain Compromise** - CI/CD attacks
+7. **Transitive Dependency Poisoning** - Indirect compromise
+8. **Subdomain Takeover** - Repository URL hijacking
+
+**Executive Summaries**: Stakeholder-friendly risk explanations with:
+- Key risks identified
+- Business impact assessment
+- Recommended actions
+
+### Configuration Options
+
+Optional environment variables:
+- `CLAUDE_RATE_LIMIT`: Requests per minute (default: 50)
+- `CLAUDE_TIMEOUT`: Request timeout in seconds (default: 60)
+- `CLAUDE_ENABLE_CACHE`: Enable response caching (default: true)
+
+### Performance
+
+- Adds ~2-5 seconds per package (with caching)
+- Only runs when explicitly enabled
+- Uses rate limiting (50 req/min by default)
+- Responses cached for 24 hours
 
 ### Primary Verification Checks
 
