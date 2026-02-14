@@ -458,6 +458,7 @@ func contains(slice []string, str string) bool {
 	return false
 }
 
+
 func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistory, error) {
 	url := fmt.Sprintf("%s/%s", c.baseURL, packageName)
 
