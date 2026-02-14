@@ -279,22 +279,30 @@ type GitHubLicense struct {
 }
 
 type GitHubRelease struct {
-	TagName     string    `json:"tag_name"`
-	Name        string    `json:"name"`
-	Draft       bool      `json:"draft"`
-	Prerelease  bool      `json:"prerelease"`
-	CreatedAt   time.Time `json:"created_at"`
-	PublishedAt time.Time `json:"published_at"`
+	TagName     string        `json:"tag_name"`
+	Name        string        `json:"name"`
+	Draft       bool          `json:"draft"`
+	Prerelease  bool          `json:"prerelease"`
+	CreatedAt   time.Time     `json:"created_at"`
+	PublishedAt time.Time     `json:"published_at"`
+	Assets      []GitHubAsset `json:"assets"`
+}
+
+type GitHubAsset struct {
+	Name               string `json:"name"`
+	ContentType        string `json:"content_type"`
+	Size               int64  `json:"size"`
+	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
 type GitHubCommit struct {
-	SHA    string                `json:"sha"`
-	Commit GitHubCommitDetails   `json:"commit"`
+	SHA    string              `json:"sha"`
+	Commit GitHubCommitDetails `json:"commit"`
 }
 
 type GitHubCommitDetails struct {
-	Author    GitHubCommitAuthor `json:"author"`
-	Message   string             `json:"message"`
+	Author  GitHubCommitAuthor `json:"author"`
+	Message string             `json:"message"`
 }
 
 type GitHubCommitAuthor struct {
@@ -334,4 +342,174 @@ func getLicenseName(license *GitHubLicense) string {
 		return ""
 	}
 	return license.Name
+}
+
+// GetProvenanceInfo checks for various provenance indicators in a GitHub repository
+func (c *GitHubClient) GetProvenanceInfo(repoURL string) (*models.ProvenanceInfo, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	info := &models.ProvenanceInfo{}
+
+	// Check for SLSA attestations
+	info.HasSLSAAttestation, info.SLSALevel = c.checkSLSAAttestation(owner, repo)
+
+	// Check for Sigstore signatures
+	info.HasSigstoreSignature = c.checkSigstoreSignatures(owner, repo)
+
+	// Check signed releases
+	signedCount, totalCount := c.checkSignedReleases(owner, repo)
+	info.SignedReleaseCount = signedCount
+	info.TotalReleaseCount = totalCount
+
+	// Check for reproducible build indicators
+	info.ReproducibleBuild = c.checkReproducibleBuild(owner, repo)
+
+	return info, nil
+}
+
+// checkSLSAAttestation checks for SLSA attestations in the repository
+func (c *GitHubClient) checkSLSAAttestation(owner, repo string) (bool, string) {
+	// Check for SLSA provenance files
+	slsaFiles := []string{
+		".slsa-provenance.json",
+		".github/workflows/slsa-generic-generator.yml",
+		".github/workflows/slsa.yml",
+	}
+
+	for _, file := range slsaFiles {
+		if c.fileExists(owner, repo, file) {
+			// If SLSA workflow exists, assume at least SLSA Level 2
+			return true, "SLSA_LEVEL_2"
+		}
+	}
+
+	// Check GitHub Actions for SLSA generator usage
+	// This would require parsing workflow files - simplified version
+	if c.fileExists(owner, repo, ".github/workflows") {
+		// If workflows exist, check for SLSA generator references
+		return false, ""
+	}
+
+	return false, ""
+}
+
+// checkSigstoreSignatures checks for Sigstore/Cosign signatures
+func (c *GitHubClient) checkSigstoreSignatures(owner, repo string) bool {
+	// Check for cosign signature files or Sigstore configuration
+	sigstoreFiles := []string{
+		".cosign",
+		".sigstore",
+		".rekor",
+	}
+
+	for _, file := range sigstoreFiles {
+		if c.fileExists(owner, repo, file) {
+			return true
+		}
+	}
+
+	// Check releases for .sig files (common signature extension)
+	releases, err := c.getReleases(owner, repo)
+	if err != nil {
+		return false
+	}
+
+	for _, release := range releases {
+		for _, asset := range release.Assets {
+			if strings.HasSuffix(asset.Name, ".sig") ||
+			   strings.HasSuffix(asset.Name, ".asc") ||
+			   strings.HasSuffix(asset.Name, ".minisig") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// checkSignedReleases checks how many releases have signatures
+func (c *GitHubClient) checkSignedReleases(owner, repo string) (signedCount, totalCount int) {
+	releases, err := c.getReleases(owner, repo)
+	if err != nil {
+		return 0, 0
+	}
+
+	totalCount = len(releases)
+	signedCount = 0
+
+	for _, release := range releases {
+		hasSignature := false
+		for _, asset := range release.Assets {
+			// Check for common signature file extensions
+			name := strings.ToLower(asset.Name)
+			if strings.HasSuffix(name, ".sig") ||
+			   strings.HasSuffix(name, ".asc") ||
+			   strings.HasSuffix(name, ".gpg") ||
+			   strings.HasSuffix(name, ".minisig") ||
+			   strings.Contains(name, "checksum") ||
+			   strings.Contains(name, "sha256") ||
+			   strings.Contains(name, "sha512") {
+				hasSignature = true
+				break
+			}
+		}
+		if hasSignature {
+			signedCount++
+		}
+	}
+
+	return signedCount, totalCount
+}
+
+// checkReproducibleBuild checks for reproducible build indicators
+func (c *GitHubClient) checkReproducibleBuild(owner, repo string) bool {
+	// Check for reproducible build configuration files
+	reproducibleFiles := []string{
+		".reproducible-build",
+		"reproducible-build.yml",
+		".github/workflows/reproducible.yml",
+		"BUILD.bazel", // Bazel is often used for reproducible builds
+	}
+
+	for _, file := range reproducibleFiles {
+		if c.fileExists(owner, repo, file) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// getReleases fetches all releases for a repository
+func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/releases", c.baseURL, owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var releases []GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, err
+	}
+
+	return releases, nil
 }

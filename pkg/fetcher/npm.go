@@ -128,6 +128,19 @@ type NPMDistTags struct {
 type NPMVersionDetails struct {
 	Version string            `json:"version"`
 	Scripts map[string]string `json:"scripts"`
+	Dist    NPMDist           `json:"dist"`
+}
+
+type NPMDist struct {
+	Tarball      string        `json:"tarball"`
+	Shasum       string        `json:"shasum"`
+	Integrity    string        `json:"integrity"`
+	Attestations *NPMAttestation `json:"attestations,omitempty"`
+}
+
+type NPMAttestation struct {
+	URL           string `json:"url"`
+	ProvenanceURL string `json:"provenance_url"`
 }
 
 func extractMaintainers(maintainers []NPMMaintainer) []string {
@@ -138,4 +151,33 @@ func extractMaintainers(maintainers []NPMMaintainer) []string {
 		}
 	}
 	return names
+}
+
+// CheckNPMProvenance checks if a package has npm provenance attestations
+func (c *NPMClient) CheckNPMProvenance(packageName string) (bool, string, error) {
+	url := fmt.Sprintf("%s/%s", c.baseURL, packageName)
+
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return false, "", fmt.Errorf("failed to fetch npm package: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, "", fmt.Errorf("npm registry returned status %d", resp.StatusCode)
+	}
+
+	var npmResp NPMRegistryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&npmResp); err != nil {
+		return false, "", fmt.Errorf("failed to decode npm response: %w", err)
+	}
+
+	// Check the latest version for provenance
+	if latest, ok := npmResp.Versions[npmResp.DistTags.Latest]; ok {
+		if latest.Dist.Attestations != nil && latest.Dist.Attestations.ProvenanceURL != "" {
+			return true, latest.Dist.Attestations.ProvenanceURL, nil
+		}
+	}
+
+	return false, "", nil
 }
