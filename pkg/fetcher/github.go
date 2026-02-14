@@ -1287,6 +1287,118 @@ type GitHubContent struct {
 	Type string `json:"type"`
 }
 
+// GetAverageIssueResponseTime calculates the average time to first response on issues
+// This helps assess maintainer responsiveness and governance quality
+func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return 0, err
+	}
+
+	// Fetch recent closed issues (limit to last 30 for performance)
+	url := fmt.Sprintf("%s/repos/%s/%s/issues?state=closed&per_page=30&sort=updated&direction=desc", c.baseURL, owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var issues []GitHubIssue
+	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+		return 0, err
+	}
+
+	if len(issues) == 0 {
+		return 0, fmt.Errorf("no closed issues found")
+	}
+
+	// Calculate average response time
+	totalResponseTime := 0.0
+	issuesWithResponse := 0
+
+	for _, issue := range issues {
+		// Skip pull requests (they have a pull_request field)
+		if issue.PullRequest != nil {
+			continue
+		}
+
+		// Fetch comments to find first response
+		commentsURL := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", c.baseURL, owner, repo, issue.Number)
+		commentsReq, err := http.NewRequest("GET", commentsURL, nil)
+		if err != nil {
+			continue
+		}
+
+		if c.token != "" {
+			commentsReq.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		commentsReq.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		commentsResp, err := c.httpClient.Do(commentsReq)
+		if err != nil {
+			continue
+		}
+
+		if commentsResp.StatusCode == http.StatusOK {
+			var comments []GitHubComment
+			if err := json.NewDecoder(commentsResp.Body).Decode(&comments); err == nil && len(comments) > 0 {
+				// Calculate time to first comment
+				firstCommentTime := comments[0].CreatedAt
+				issueCreatedTime := issue.CreatedAt
+				responseTime := firstCommentTime.Sub(issueCreatedTime).Hours() / 24 // Convert to days
+
+				totalResponseTime += responseTime
+				issuesWithResponse++
+			}
+		}
+		_ = commentsResp.Body.Close()
+
+		// Limit API calls to avoid rate limiting
+		if issuesWithResponse >= 10 {
+			break
+		}
+	}
+
+	if issuesWithResponse == 0 {
+		return 0, fmt.Errorf("no issues with responses found")
+	}
+
+	return totalResponseTime / float64(issuesWithResponse), nil
+}
+
+// GitHubIssue represents a GitHub issue
+type GitHubIssue struct {
+	Number      int                `json:"number"`
+	State       string             `json:"state"`
+	CreatedAt   time.Time          `json:"created_at"`
+	ClosedAt    *time.Time         `json:"closed_at"`
+	PullRequest *GitHubPullRequest `json:"pull_request,omitempty"`
+}
+
+// GitHubComment represents a GitHub issue comment
+type GitHubComment struct {
+	ID        int       `json:"id"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
 // GetPlatformName returns "GitHub" to identify this platform
 func (c *GitHubClient) GetPlatformName() string {
 	return "GitHub"
