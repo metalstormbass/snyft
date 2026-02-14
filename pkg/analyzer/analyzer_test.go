@@ -677,3 +677,83 @@ func TestConvertToModelAnalysis(t *testing.T) {
 		}
 	}
 }
+func TestScoreOwnershipChanges_FallbackBehavior(t *testing.T) {
+	analyzer := &Analyzer{
+		githubClient: fetcher.NewGitHubClient(),
+		npmClient:    fetcher.NewNPMClient(),
+		pypiClient:   fetcher.NewPyPIClient(),
+	}
+
+	// Test fallback to repository age when APIs fail
+	result := models.AnalysisResult{
+		RepositoryURL: "",
+		Dependency: models.Dependency{
+			Name:      "nonexistent-package-xyz-123456789",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			RepoCreatedAt: time.Now().AddDate(-2, 0, 0),
+			Maintainers:   []string{"alice", "bob", "charlie"},
+		},
+	}
+
+	score := analyzer.scoreOwnershipChanges(&result)
+
+	// Should have evidence
+	if score.Evidence == "" {
+		t.Error("scoreOwnershipChanges() evidence should not be empty")
+	}
+
+	// Should have a valid risk score
+	if score.RiskPoints < 0 || score.RiskPoints > 2 {
+		t.Errorf("scoreOwnershipChanges() risk points = %v, want 0-2", score.RiskPoints)
+	}
+}
+
+func TestCalculateSupplyChainScore_OwnershipChangesIntegration(t *testing.T) {
+	analyzer := &Analyzer{
+		githubClient: fetcher.NewGitHubClient(),
+		npmClient:    fetcher.NewNPMClient(),
+		pypiClient:   fetcher.NewPyPIClient(),
+		mavenClient:  fetcher.NewMavenClient(),
+		ossfClient:   fetcher.NewOSSFClient(),
+	}
+
+	result := models.AnalysisResult{
+		RepositoryURL: "",
+		Dependency: models.Dependency{
+			Name:      "nonexistent-package-xyz-123456789",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			RepoCreatedAt: time.Now().AddDate(-3, 0, 0),
+			Maintainers:   []string{"alice", "bob", "charlie", "dave"},
+			HasCI:         true,
+			CISystems:     []string{"GitHub Actions"},
+		},
+	}
+
+	analyzer.calculateSupplyChainScore(&result)
+
+	if result.SupplyChainScore == nil {
+		t.Fatal("calculateSupplyChainScore() should set SupplyChainScore")
+	}
+
+	// Check that ownership changes category is scored
+	ownershipScore := result.SupplyChainScore.CategoryScores.OwnershipChanges
+
+	// Should have evidence
+	if ownershipScore.Evidence == "" {
+		t.Error("OwnershipChanges evidence should not be empty")
+	}
+
+	// Should have a valid risk score
+	if ownershipScore.RiskPoints < 0 || ownershipScore.RiskPoints > 2 {
+		t.Errorf("OwnershipChanges risk points = %v, want 0-2", ownershipScore.RiskPoints)
+	}
+
+	// Total score should be in valid range
+	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 14 {
+		t.Errorf("TotalScore = %v, want 0-14", result.SupplyChainScore.TotalScore)
+	}
+}

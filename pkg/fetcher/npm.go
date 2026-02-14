@@ -126,21 +126,31 @@ type NPMDistTags struct {
 }
 
 type NPMVersionDetails struct {
-	Version string            `json:"version"`
-	Scripts map[string]string `json:"scripts"`
-	Dist    NPMDist           `json:"dist"`
+	Version     string            `json:"version"`
+	Scripts     map[string]string `json:"scripts"`
+	Maintainers []NPMMaintainer   `json:"maintainers"`
+	Dist        NPMDist           `json:"dist"`
 }
 
 type NPMDist struct {
-	Tarball      string        `json:"tarball"`
-	Shasum       string        `json:"shasum"`
-	Integrity    string        `json:"integrity"`
+	Tarball      string          `json:"tarball"`
+	Shasum       string          `json:"shasum"`
+	Integrity    string          `json:"integrity"`
 	Attestations *NPMAttestation `json:"attestations,omitempty"`
 }
 
 type NPMAttestation struct {
 	URL           string `json:"url"`
 	ProvenanceURL string `json:"provenance_url"`
+}
+
+// NPMOwnershipHistory represents ownership/maintainer changes over time
+type NPMOwnershipHistory struct {
+	CurrentMaintainers    []string
+	HistoricalMaintainers []string
+	MaintainerChanges     int
+	RecentTransfer        bool
+	TransferDate          time.Time
 }
 
 func extractMaintainers(maintainers []NPMMaintainer) []string {
@@ -180,4 +190,111 @@ func (c *NPMClient) CheckNPMProvenance(packageName string) (bool, string, error)
 	}
 
 	return false, "", nil
+}
+
+// GetOwnershipHistory analyzes maintainer changes across package versions
+func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistory, error) {
+	url := fmt.Sprintf("%s/%s", c.baseURL, packageName)
+
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch npm package: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("npm registry returned status %d", resp.StatusCode)
+	}
+
+	var npmResp NPMRegistryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&npmResp); err != nil {
+		return nil, fmt.Errorf("failed to decode npm response: %w", err)
+	}
+
+	history := &NPMOwnershipHistory{
+		CurrentMaintainers:    extractMaintainers(npmResp.Maintainers),
+		HistoricalMaintainers: []string{},
+		MaintainerChanges:     0,
+		RecentTransfer:        false,
+	}
+
+	// Track unique maintainers across all versions
+	allMaintainers := make(map[string]bool)
+	for _, m := range npmResp.Maintainers {
+		if m.Name != "" {
+			allMaintainers[m.Name] = true
+		}
+	}
+
+	// Analyze maintainer changes across versions (sample recent versions)
+	versionTimes := make(map[string]time.Time)
+	for version, timeStr := range npmResp.Time {
+		if version == "created" || version == "modified" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, timeStr); err == nil {
+			versionTimes[version] = t
+		}
+	}
+
+	// Check versions for maintainer changes
+	// Sample up to 10 most recent versions to detect changes
+	checkedVersions := 0
+	previousMaintainers := make(map[string]bool)
+
+	for version, versionInfo := range npmResp.Versions {
+		if checkedVersions >= 10 {
+			break
+		}
+
+		versionMaintainers := extractMaintainers(versionInfo.Maintainers)
+		currentSet := make(map[string]bool)
+
+		for _, m := range versionMaintainers {
+			allMaintainers[m] = true
+			currentSet[m] = true
+		}
+
+		// Detect changes from previous version
+		if checkedVersions > 0 {
+			// Check if maintainers are completely different
+			overlap := 0
+			for m := range currentSet {
+				if previousMaintainers[m] {
+					overlap++
+				}
+			}
+
+			// If there's no overlap and both have maintainers, it's a transfer
+			if overlap == 0 && len(currentSet) > 0 && len(previousMaintainers) > 0 {
+				history.MaintainerChanges++
+
+				// Check if this is a recent transfer (within last 6 months)
+				if versionTime, exists := versionTimes[version]; exists {
+					sixMonthsAgo := time.Now().AddDate(0, -6, 0)
+					if versionTime.After(sixMonthsAgo) {
+						history.RecentTransfer = true
+						history.TransferDate = versionTime
+					}
+				}
+			}
+		}
+
+		previousMaintainers = currentSet
+		checkedVersions++
+	}
+
+	// Build historical maintainers list (all maintainers not in current list)
+	currentSet := make(map[string]bool)
+	for _, m := range history.CurrentMaintainers {
+		currentSet[m] = true
+	}
+
+	for m := range allMaintainers {
+		if !currentSet[m] {
+			history.HistoricalMaintainers = append(history.HistoricalMaintainers, m)
+		}
+	}
+
+	return history, nil
 }
