@@ -36,7 +36,7 @@ Unlike traditional vulnerability scanners focused on CVEs, Snyft assesses the **
 
 ### Prerequisites
 
-- **Go 1.26 or later** (required for macOS compatibility)
+- **Go 1.24 or later** (required for macOS compatibility)
 - Optional: GitHub token for higher API rate limits (set `GITHUB_TOKEN` environment variable)
 
 ### Build from source
@@ -52,7 +52,7 @@ Or build manually with:
 CGO_ENABLED=0 go build -o snyft
 ```
 
-**Note for macOS users**: Go 1.26+ is required to properly generate LC_UUID load commands in the binary. Using `make build` ensures the correct build flags are set.
+**Note for macOS users**: Go 1.24+ is required to properly generate LC_UUID load commands in the binary. Using `make build` ensures the correct build flags are set.
 
 ## Usage
 
