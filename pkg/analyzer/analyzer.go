@@ -486,8 +486,51 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 }
 
 // scorePublisherControl: 2FA/signing/multi-maintainer (0-2 pts)
+// Score: 0=single maintainer no signing, 1=few maintainers OR signing, 2=multiple maintainers WITH signing
 func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.CategoryScore {
 	maintainerCount := len(result.Metadata.Maintainers)
+	evidenceParts := []string{}
+
+	// Check for signed commits
+	hasSignedCommits := false
+	if result.RepositoryURL != "" {
+		hasSigning, count, err := a.githubClient.CheckSignedCommits(result.RepositoryURL)
+		if err == nil {
+			hasSignedCommits = hasSigning
+			if hasSigning {
+				evidenceParts = append(evidenceParts, fmt.Sprintf("%d/30 commits signed", count))
+			} else {
+				evidenceParts = append(evidenceParts, "no signed commits detected")
+			}
+		}
+	}
+
+	// Check for signed releases
+	hasSignedReleases := false
+	if result.RepositoryURL != "" {
+		hasSigned, err := a.githubClient.CheckSignedReleases(result.RepositoryURL)
+		if err == nil && hasSigned {
+			hasSignedReleases = true
+			evidenceParts = append(evidenceParts, "releases have signatures")
+		}
+	}
+
+	// Combine signing indicators
+	hasSigning := hasSignedCommits || hasSignedReleases
+
+	// Add maintainer info to evidence
+	if maintainerCount > 0 {
+		evidenceParts = append(evidenceParts, fmt.Sprintf("%d maintainer(s)", maintainerCount))
+	} else {
+		evidenceParts = append(evidenceParts, "no maintainer data")
+	}
+
+	evidence := strings.Join(evidenceParts, "; ")
+
+	// Scoring logic:
+	// 0 points (2 risk): Single maintainer + no signing
+	// 1 point (1 risk): Few maintainers OR signing (but not both)
+	// 2 points (0 risk): Multiple maintainers + signing
 
 	if maintainerCount == 0 {
 		// Fallback: unable to verify maintainer count
@@ -495,34 +538,72 @@ func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.C
 			Score:       0,
 			RiskPoints:  1,
 			Description: "Unable to verify maintainer information",
-			Evidence:    "No maintainer data available from registry",
+			Evidence:    evidence,
 			Verified:    false,
 		}
 	}
 
-	if maintainerCount == 1 {
+	// Single maintainer with no signing = highest risk
+	if maintainerCount == 1 && !hasSigning {
 		return models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
-			Description: "Single maintainer (bus factor = 1)",
-			Evidence:    fmt.Sprintf("Only %d maintainer", maintainerCount),
-			Verified:    true,
-		}
-	} else if maintainerCount <= 3 {
-		return models.CategoryScore{
-			Score:       0,
-			RiskPoints:  1,
-			Description: "Few maintainers (limited redundancy)",
-			Evidence:    fmt.Sprintf("%d maintainers", maintainerCount),
+			Description: "Single maintainer with no commit/release signing",
+			Evidence:    evidence,
 			Verified:    true,
 		}
 	}
 
+	// Single maintainer WITH signing = moderate risk
+	if maintainerCount == 1 && hasSigning {
+		return models.CategoryScore{
+			Score:       1,
+			RiskPoints:  1,
+			Description: "Single maintainer but has signing controls",
+			Evidence:    evidence,
+			Verified:    true,
+		}
+	}
+
+	// Few maintainers (2-3) with no signing = moderate risk
+	if maintainerCount <= 3 && !hasSigning {
+		return models.CategoryScore{
+			Score:       1,
+			RiskPoints:  1,
+			Description: "Few maintainers without signing controls",
+			Evidence:    evidence,
+			Verified:    true,
+		}
+	}
+
+	// Few maintainers WITH signing = low risk
+	if maintainerCount <= 3 && hasSigning {
+		return models.CategoryScore{
+			Score:       2,
+			RiskPoints:  0,
+			Description: "Few maintainers with signing controls",
+			Evidence:    evidence,
+			Verified:    true,
+		}
+	}
+
+	// Multiple maintainers (4+) without signing = moderate risk
+	if maintainerCount > 3 && !hasSigning {
+		return models.CategoryScore{
+			Score:       1,
+			RiskPoints:  1,
+			Description: "Multiple maintainers but no signing controls",
+			Evidence:    evidence,
+			Verified:    true,
+		}
+	}
+
+	// Multiple maintainers WITH signing = lowest risk
 	return models.CategoryScore{
 		Score:       2,
 		RiskPoints:  0,
-		Description: "Multiple maintainers (good redundancy)",
-		Evidence:    fmt.Sprintf("%d maintainers", maintainerCount),
+		Description: "Multiple maintainers with signing controls",
+		Evidence:    evidence,
 		Verified:    true,
 	}
 }

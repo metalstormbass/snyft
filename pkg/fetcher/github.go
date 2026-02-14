@@ -302,9 +302,10 @@ type GitHubCommit struct {
 }
 
 type GitHubCommitInfo struct {
-	Author    GitHubCommitAuthor `json:"author"`
-	Committer GitHubCommitAuthor `json:"committer"`
-	Message   string             `json:"message"`
+	Author       GitHubCommitAuthor       `json:"author"`
+	Committer    GitHubCommitAuthor       `json:"committer"`
+	Message      string                   `json:"message"`
+	Verification GitHubCommitVerification `json:"verification"`
 }
 
 type GitHubCommitAuthor struct {
@@ -322,6 +323,12 @@ type CommitAuthorStats struct {
 	AuthorLastCommit   map[string]time.Time
 	RecentAuthors      []string // Authors with commits in last 90 days
 	HistoricalAuthors  []string // Authors with no recent commits
+}
+
+type GitHubCommitVerification struct {
+	Verified  bool   `json:"verified"`
+	Reason    string `json:"reason"`
+	Signature string `json:"signature"`
 }
 
 func parseGitHubURL(repoURL string) (owner, repo string, err error) {
@@ -669,4 +676,106 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 	}
 
 	return stats, nil
+}
+
+// CheckSignedCommits checks if recent commits in the repository are GPG signed
+func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return false, 0, err
+	}
+
+	// Get recent commits (last 30)
+	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=30", c.baseURL, owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false, 0, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, 0, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+
+	var commits []GitHubCommit
+	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+		return false, 0, err
+	}
+
+	if len(commits) == 0 {
+		return false, 0, nil
+	}
+
+	// Count verified commits
+	verifiedCount := 0
+	for _, commit := range commits {
+		if commit.Commit.Verification.Verified {
+			verifiedCount++
+		}
+	}
+
+	// Consider "signed commits enabled" if >50% of recent commits are signed
+	hasSigning := float64(verifiedCount)/float64(len(commits)) > 0.5
+
+	return hasSigning, verifiedCount, nil
+}
+
+// CheckSignedReleases checks if releases have GPG signatures
+func (c *GitHubClient) CheckSignedReleases(repoURL string) (bool, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return false, err
+	}
+
+	url := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=10", c.baseURL, owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, nil
+	}
+
+	var releases []GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return false, err
+	}
+
+	if len(releases) == 0 {
+		return false, nil
+	}
+
+	// Check for signature files (.asc, .sig) in release assets
+	for _, release := range releases {
+		for _, asset := range release.Assets {
+			name := strings.ToLower(asset.Name)
+			if strings.HasSuffix(name, ".asc") || strings.HasSuffix(name, ".sig") || strings.HasSuffix(name, ".gpg") {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
 }

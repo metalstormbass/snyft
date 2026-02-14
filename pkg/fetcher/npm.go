@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -237,16 +238,33 @@ func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistor
 		}
 	}
 
+	// Sort versions by time (oldest first) to detect changes chronologically
+	type versionEntry struct {
+		version string
+		time    time.Time
+	}
+	sortedVersions := make([]versionEntry, 0, len(versionTimes))
+	for version, vTime := range versionTimes {
+		if _, exists := npmResp.Versions[version]; exists {
+			sortedVersions = append(sortedVersions, versionEntry{version: version, time: vTime})
+		}
+	}
+	sort.Slice(sortedVersions, func(i, j int) bool {
+		return sortedVersions[i].time.Before(sortedVersions[j].time)
+	})
+
 	// Check versions for maintainer changes
 	// Sample up to 10 most recent versions to detect changes
 	checkedVersions := 0
 	previousMaintainers := make(map[string]bool)
 
-	for version, versionInfo := range npmResp.Versions {
+	for _, entry := range sortedVersions {
 		if checkedVersions >= 10 {
 			break
 		}
 
+		version := entry.version
+		versionInfo := npmResp.Versions[version]
 		versionMaintainers := extractMaintainers(versionInfo.Maintainers)
 		currentSet := make(map[string]bool)
 
@@ -270,12 +288,10 @@ func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistor
 				history.MaintainerChanges++
 
 				// Check if this is a recent transfer (within last 6 months)
-				if versionTime, exists := versionTimes[version]; exists {
-					sixMonthsAgo := time.Now().AddDate(0, -6, 0)
-					if versionTime.After(sixMonthsAgo) {
-						history.RecentTransfer = true
-						history.TransferDate = versionTime
-					}
+				sixMonthsAgo := time.Now().AddDate(0, -6, 0)
+				if entry.time.After(sixMonthsAgo) {
+					history.RecentTransfer = true
+					history.TransferDate = entry.time
 				}
 			}
 		}
