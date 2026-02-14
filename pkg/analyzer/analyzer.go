@@ -204,7 +204,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 	result.Metadata.HasCI = len(ciSystems) > 0
 
 	if len(ciSystems) > 0 {
-		result.BuildInfrastructure = fmt.Sprintf("CI detected: %v", ciSystems)
+		result.BuildInfrastructure = "CI detected: " + strings.Join(ciSystems, ", ")
 	} else {
 		result.BuildInfrastructure = "No CI detected"
 		result.Findings = append(result.Findings, models.Finding{
