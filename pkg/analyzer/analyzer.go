@@ -121,6 +121,9 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	// Calculate final risk score
 	a.calculateRiskScore(&result)
 
+	// Calculate supply chain score (0-14 point rubric)
+	a.calculateSupplyChainScore(&result)
+
 	return result
 }
 
@@ -282,12 +285,13 @@ func (a *Analyzer) calculateRiskScore(result *models.AnalysisResult) {
 // Helper functions to convert package info to metadata
 func packageMetadataFromNPM(pkg *fetcher.NPMPackage) models.PackageMetadata {
 	return models.PackageMetadata{
-		DownloadCount: pkg.Downloads,
-		PublishedAt:   pkg.PublishedAt,
-		LatestVersion: pkg.LatestVersion,
-		Maintainers:   pkg.Maintainers,
-		License:       pkg.License,
-		Homepage:      pkg.Homepage,
+		DownloadCount:  pkg.Downloads,
+		PublishedAt:    pkg.PublishedAt,
+		LatestVersion:  pkg.LatestVersion,
+		Maintainers:    pkg.Maintainers,
+		License:        pkg.License,
+		Homepage:       pkg.Homepage,
+		InstallScripts: pkg.Scripts,
 	}
 }
 
@@ -307,5 +311,377 @@ func packageMetadataFromMaven(pkg *fetcher.MavenPackage) models.PackageMetadata 
 		PublishedAt:   pkg.PublishedAt,
 		LatestVersion: pkg.LatestVersion,
 		License:       pkg.License,
+	}
+}
+
+// calculateSupplyChainScore implements a 0-14 point supply chain security rubric
+// Each of 7 categories is scored 0-2 points (0=good, 2=high risk)
+// Total: 0-3=Low risk, 4-7=Medium risk, 8+=High risk
+func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
+	score := &models.SupplyChainScore{
+		CategoryScores: models.CategoryScores{},
+	}
+
+	// Category 1: Publisher Control (2FA/signing/multi-maintainer)
+	score.CategoryScores.PublisherControl = a.scorePublisherControl(result)
+
+	// Category 2: Ownership Changes/Transfers
+	score.CategoryScores.OwnershipChanges = a.scoreOwnershipChanges(result)
+
+	// Category 3: Release Anomalies (dormant→sudden activity)
+	score.CategoryScores.ReleaseAnomalies = a.scoreReleaseAnomalies(result)
+
+	// Category 4: Install-time Execution (postinstall scripts)
+	score.CategoryScores.InstallExecution = a.scoreInstallExecution(result)
+
+	// Category 5: Dependency Sprawl (transitive dependencies)
+	score.CategoryScores.DependencySprawl = a.scoreDependencySprawl(result)
+
+	// Category 6: Provenance (reproducible/signed builds)
+	score.CategoryScores.Provenance = a.scoreProvenance(result)
+
+	// Category 7: Health (bus factor/review process/CI)
+	score.CategoryScores.Health = a.scoreHealth(result)
+
+	// Calculate total score
+	score.TotalScore = score.CategoryScores.PublisherControl.RiskPoints +
+		score.CategoryScores.OwnershipChanges.RiskPoints +
+		score.CategoryScores.ReleaseAnomalies.RiskPoints +
+		score.CategoryScores.InstallExecution.RiskPoints +
+		score.CategoryScores.DependencySprawl.RiskPoints +
+		score.CategoryScores.Provenance.RiskPoints +
+		score.CategoryScores.Health.RiskPoints
+
+	// Determine risk level based on total score
+	if score.TotalScore >= 8 {
+		score.RiskLevel = "HIGH"
+	} else if score.TotalScore >= 4 {
+		score.RiskLevel = "MEDIUM"
+	} else {
+		score.RiskLevel = "LOW"
+	}
+
+	result.SupplyChainScore = score
+}
+
+// scorePublisherControl: 2FA/signing/multi-maintainer (0-2 pts)
+func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.CategoryScore {
+	maintainerCount := len(result.Metadata.Maintainers)
+
+	if maintainerCount == 0 {
+		// Fallback: unable to verify maintainer count
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  1,
+			Description: "Unable to verify maintainer information",
+			Evidence:    "No maintainer data available from registry",
+			Verified:    false,
+		}
+	}
+
+	if maintainerCount == 1 {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  2,
+			Description: "Single maintainer (bus factor = 1)",
+			Evidence:    fmt.Sprintf("Only %d maintainer", maintainerCount),
+			Verified:    true,
+		}
+	} else if maintainerCount <= 3 {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  1,
+			Description: "Few maintainers (limited redundancy)",
+			Evidence:    fmt.Sprintf("%d maintainers", maintainerCount),
+			Verified:    true,
+		}
+	}
+
+	return models.CategoryScore{
+		Score:       2,
+		RiskPoints:  0,
+		Description: "Multiple maintainers (good redundancy)",
+		Evidence:    fmt.Sprintf("%d maintainers", maintainerCount),
+		Verified:    true,
+	}
+}
+
+// scoreOwnershipChanges: ownership transfers (0-2 pts)
+func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.CategoryScore {
+	// Check for recent repository transfers or maintainer changes
+	// For now, use repository age and maintainer count as proxy
+
+	if result.Metadata.RepoCreatedAt.IsZero() {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  1,
+			Description: "Unable to verify ownership history",
+			Evidence:    "Repository creation date unavailable",
+			Verified:    false,
+		}
+	}
+
+	repoAge := time.Since(result.Metadata.RepoCreatedAt).Hours() / 24 / 365
+
+	// Very new packages with single maintainer = higher risk
+	if repoAge < 0.5 && len(result.Metadata.Maintainers) == 1 {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  2,
+			Description: "New package with single maintainer",
+			Evidence:    fmt.Sprintf("Repository %.1f years old, 1 maintainer", repoAge),
+			Verified:    true,
+		}
+	}
+
+	if repoAge < 1.0 {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  1,
+			Description: "Relatively new package",
+			Evidence:    fmt.Sprintf("Repository %.1f years old", repoAge),
+			Verified:    true,
+		}
+	}
+
+	return models.CategoryScore{
+		Score:       2,
+		RiskPoints:  0,
+		Description: "Established package with stable ownership",
+		Evidence:    fmt.Sprintf("Repository %.1f years old", repoAge),
+		Verified:    true,
+	}
+}
+
+// scoreReleaseAnomalies: dormant→sudden activity (0-2 pts)
+func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.CategoryScore {
+	if result.Metadata.RepoLastCommit.IsZero() {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  1,
+			Description: "Unable to verify release patterns",
+			Evidence:    "No commit history available",
+			Verified:    false,
+		}
+	}
+
+	daysSinceLastCommit := time.Since(result.Metadata.RepoLastCommit).Hours() / 24
+	daysSinceCreated := time.Since(result.Metadata.RepoCreatedAt).Hours() / 24
+
+	// Check for dormancy followed by sudden activity
+	if daysSinceCreated > 365 && daysSinceLastCommit < 30 {
+		// Old package with very recent activity - need to check if it was dormant
+		daysSinceUpdate := time.Since(result.Metadata.RepoUpdatedAt).Hours() / 24
+		if daysSinceUpdate < 60 && result.Metadata.RepoLastCommit.After(result.Metadata.RepoCreatedAt.AddDate(1, 0, 0)) {
+			return models.CategoryScore{
+				Score:       0,
+				RiskPoints:  2,
+				Description: "Potential dormant package reactivation",
+				Evidence:    fmt.Sprintf("Package created %.0f days ago, recent activity in last %.0f days", daysSinceCreated, daysSinceLastCommit),
+				Verified:    true,
+			}
+		}
+	}
+
+	// Very inactive (dormant)
+	if daysSinceLastCommit > 365 {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  1,
+			Description: "Package appears dormant",
+			Evidence:    fmt.Sprintf("No commits in %.0f days", daysSinceLastCommit),
+			Verified:    true,
+		}
+	}
+
+	return models.CategoryScore{
+		Score:       2,
+		RiskPoints:  0,
+		Description: "Regular, consistent activity",
+		Evidence:    fmt.Sprintf("Last commit %.0f days ago", daysSinceLastCommit),
+		Verified:    true,
+	}
+}
+
+// scoreInstallExecution: postinstall scripts (0-2 pts)
+func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.CategoryScore {
+	if result.Metadata.InstallScripts == nil || len(result.Metadata.InstallScripts) == 0 {
+		// No install scripts - lowest risk
+		return models.CategoryScore{
+			Score:       2,
+			RiskPoints:  0,
+			Description: "No install-time scripts",
+			Evidence:    "No postinstall, preinstall, or install scripts detected",
+			Verified:    true,
+		}
+	}
+
+	// Check for dangerous install-time scripts
+	dangerousScripts := []string{"postinstall", "preinstall", "install"}
+	foundScripts := []string{}
+
+	for _, scriptName := range dangerousScripts {
+		if script, exists := result.Metadata.InstallScripts[scriptName]; exists && script != "" {
+			foundScripts = append(foundScripts, scriptName)
+		}
+	}
+
+	if len(foundScripts) == 0 {
+		// Has scripts but none are install-time
+		return models.CategoryScore{
+			Score:       2,
+			RiskPoints:  0,
+			Description: "No install-time scripts",
+			Evidence:    fmt.Sprintf("Package has scripts but no install hooks"),
+			Verified:    true,
+		}
+	}
+
+	if len(foundScripts) >= 2 {
+		// Multiple install scripts = higher risk
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  2,
+			Description: "Multiple install-time scripts detected",
+			Evidence:    fmt.Sprintf("Scripts: %v", foundScripts),
+			Verified:    true,
+		}
+	}
+
+	// Single install script = moderate risk
+	return models.CategoryScore{
+		Score:       0,
+		RiskPoints:  1,
+		Description: "Install-time script detected",
+		Evidence:    fmt.Sprintf("Script: %v", foundScripts),
+		Verified:    true,
+	}
+}
+
+// scoreDependencySprawl: transitive dependencies (0-2 pts)
+func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.CategoryScore {
+	// For now, use heuristics based on ecosystem and package popularity
+	// Future enhancement: actually count transitive dependencies
+
+	// Popular packages tend to have more dependencies
+	if result.Metadata.RepoStars > 1000 || result.Metadata.DownloadCount > 1000000 {
+		return models.CategoryScore{
+			Score:       2,
+			RiskPoints:  0,
+			Description: "Popular package (likely audited dependencies)",
+			Evidence:    fmt.Sprintf("%d stars, %d downloads", result.Metadata.RepoStars, result.Metadata.DownloadCount),
+			Verified:    true,
+		}
+	}
+
+	// Low popularity = unknown dependency tree
+	if result.Metadata.RepoStars < 10 {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  2,
+			Description: "Unknown dependency tree (low adoption)",
+			Evidence:    fmt.Sprintf("%d stars", result.Metadata.RepoStars),
+			Verified:    false,
+		}
+	}
+
+	return models.CategoryScore{
+		Score:       0,
+		RiskPoints:  1,
+		Description: "Moderate adoption (some dependency risk)",
+		Evidence:    fmt.Sprintf("%d stars", result.Metadata.RepoStars),
+		Verified:    false,
+	}
+}
+
+// scoreProvenance: reproducible/signed builds (0-2 pts)
+func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.CategoryScore {
+	// Check for signed releases and build reproducibility indicators
+	if result.Metadata.SignedReleases {
+		return models.CategoryScore{
+			Score:       2,
+			RiskPoints:  0,
+			Description: "Releases are cryptographically signed",
+			Evidence:    "Signed releases detected",
+			Verified:    true,
+		}
+	}
+
+	// Check OSSF Scorecard for signing/provenance checks
+	if result.Metadata.OSSFChecks != nil {
+		if signingScore, exists := result.Metadata.OSSFChecks["Signed-Releases"]; exists {
+			if signingScore >= 8 {
+				return models.CategoryScore{
+					Score:       2,
+					RiskPoints:  0,
+					Description: "Good signing practices (OSSF)",
+					Evidence:    fmt.Sprintf("OSSF Signed-Releases score: %d/10", signingScore),
+					Verified:    true,
+				}
+			} else if signingScore >= 5 {
+				return models.CategoryScore{
+					Score:       0,
+					RiskPoints:  1,
+					Description: "Some signing practices (OSSF)",
+					Evidence:    fmt.Sprintf("OSSF Signed-Releases score: %d/10", signingScore),
+					Verified:    true,
+				}
+			}
+		}
+	}
+
+	// No provenance information available
+	return models.CategoryScore{
+		Score:       0,
+		RiskPoints:  2,
+		Description: "No evidence of signed releases",
+		Evidence:    "No signing or provenance information found",
+		Verified:    true,
+	}
+}
+
+// scoreHealth: bus factor/review process/CI (0-2 pts)
+func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategoryScore {
+	healthScore := 0
+	evidence := []string{}
+
+	// Check CI presence (worth 1 point)
+	if result.Metadata.HasCI {
+		healthScore++
+		evidence = append(evidence, fmt.Sprintf("CI: %v", result.Metadata.CISystems))
+	} else {
+		evidence = append(evidence, "No CI detected")
+	}
+
+	// Check bus factor (worth 1 point)
+	maintainerCount := len(result.Metadata.Maintainers)
+	if maintainerCount >= 3 {
+		healthScore++
+		evidence = append(evidence, fmt.Sprintf("%d maintainers", maintainerCount))
+	} else if maintainerCount > 0 {
+		evidence = append(evidence, fmt.Sprintf("Only %d maintainer(s)", maintainerCount))
+	}
+
+	// Convert health score to risk points (invert: high health = low risk)
+	riskPoints := 2 - healthScore
+	if riskPoints < 0 {
+		riskPoints = 0
+	}
+
+	description := "Poor health indicators"
+	if healthScore >= 2 {
+		description = "Good health indicators"
+	} else if healthScore == 1 {
+		description = "Moderate health indicators"
+	}
+
+	verified := maintainerCount > 0 || result.Metadata.HasCI
+
+	return models.CategoryScore{
+		Score:       healthScore,
+		RiskPoints:  riskPoints,
+		Description: description,
+		Evidence:    fmt.Sprintf("%s", evidence),
+		Verified:    verified,
 	}
 }

@@ -24,6 +24,7 @@ type NPMPackage struct {
 	Downloads     int64
 	PublishedAt   time.Time
 	Maintainers   []string
+	Scripts       map[string]string // Install-time scripts (postinstall, preinstall, etc.)
 }
 
 // NewNPMClient creates a new npm registry client
@@ -65,6 +66,7 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 		License:       npmResp.License,
 		Homepage:      npmResp.Homepage,
 		Maintainers:   extractMaintainers(npmResp.Maintainers),
+		Scripts:       make(map[string]string),
 	}
 
 	// Extract repository URL
@@ -74,9 +76,10 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 		pkg.RepositoryURL = cleanRepositoryURL(npmResp.Repository.TypeString)
 	}
 
-	// Get latest version info
+	// Get latest version info and scripts
 	if latest, ok := npmResp.Versions[npmResp.DistTags.Latest]; ok {
 		pkg.Version = latest.Version
+		pkg.Scripts = latest.Scripts
 	}
 
 	// Get published time for the latest version
@@ -123,7 +126,8 @@ type NPMDistTags struct {
 }
 
 type NPMVersionDetails struct {
-	Version string `json:"version"`
+	Version string            `json:"version"`
+	Scripts map[string]string `json:"scripts"`
 }
 
 func extractMaintainers(maintainers []NPMMaintainer) []string {

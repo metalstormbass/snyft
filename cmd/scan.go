@@ -225,11 +225,32 @@ func printResult(result models.AnalysisResult) {
 
 	fmt.Printf("%s %s@%s (%s) - %s\n", icon, result.Dependency.Name, result.Dependency.Version, result.Dependency.Ecosystem, result.RiskLevel)
 
+	// Show supply chain score (always display for context)
+	if result.SupplyChainScore != nil {
+		fmt.Printf("   Supply Chain Score: %d/14 points (%s risk)\n",
+			result.SupplyChainScore.TotalScore, result.SupplyChainScore.RiskLevel)
+	}
+
 	if verbose {
 		fmt.Printf("   Repository: %s\n", result.RepositoryURL)
 		fmt.Printf("   Source Available: %v\n", result.SourceCodeAvailable)
 		fmt.Printf("   Build Infrastructure: %s\n", result.BuildInfrastructure)
 		fmt.Printf("   Risk Score: %d/100\n", result.RiskScore)
+
+		// Display detailed supply chain scoring breakdown
+		if result.SupplyChainScore != nil {
+			fmt.Printf("\n   Supply Chain Security Rubric (0-14 points):\n")
+			cs := result.SupplyChainScore.CategoryScores
+
+			printCategoryScore("Publisher Control", cs.PublisherControl)
+			printCategoryScore("Ownership Changes", cs.OwnershipChanges)
+			printCategoryScore("Release Anomalies", cs.ReleaseAnomalies)
+			printCategoryScore("Install Execution", cs.InstallExecution)
+			printCategoryScore("Dependency Sprawl", cs.DependencySprawl)
+			printCategoryScore("Provenance", cs.Provenance)
+			printCategoryScore("Health", cs.Health)
+			fmt.Println()
+		}
 
 		// Show all security checks performed
 		fmt.Printf("   Security Checks Performed:\n")
@@ -346,4 +367,25 @@ func getCheckIcon(checkName string, failedChecks map[string]bool) string {
 		return "❌"
 	}
 	return "✅"
+}
+
+// printCategoryScore prints a supply chain category score
+func printCategoryScore(name string, score models.CategoryScore) {
+	verifiedIcon := "✅"
+	if !score.Verified {
+		verifiedIcon = "⚠️"
+	}
+
+	riskIcon := "🟢"
+	if score.RiskPoints == 2 {
+		riskIcon = "🔴"
+	} else if score.RiskPoints == 1 {
+		riskIcon = "🟡"
+	}
+
+	fmt.Printf("      %s %s %s: %d points | %s\n",
+		verifiedIcon, riskIcon, name, score.RiskPoints, score.Description)
+	if score.Evidence != "" {
+		fmt.Printf("         Evidence: %s\n", score.Evidence)
+	}
 }
