@@ -57,10 +57,10 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to search Maven Central: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Maven Central returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("maven Central returned status %d", resp.StatusCode)
 	}
 
 	var searchResp MavenSearchResponse
@@ -96,7 +96,7 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("POM not found")

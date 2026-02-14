@@ -45,7 +45,7 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch npm package: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("package not found: %s", packageName)
@@ -161,7 +161,7 @@ func (c *NPMClient) CheckNPMProvenance(packageName string) (bool, string, error)
 	if err != nil {
 		return false, "", fmt.Errorf("failed to fetch npm package: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false, "", fmt.Errorf("npm registry returned status %d", resp.StatusCode)

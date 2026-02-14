@@ -44,7 +44,7 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch PyPI package: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("package not found: %s", packageName)
@@ -124,7 +124,7 @@ func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool
 	if err != nil {
 		return false, 0, 0, fmt.Errorf("failed to fetch PyPI package: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false, 0, 0, fmt.Errorf("PyPI API returned status %d", resp.StatusCode)

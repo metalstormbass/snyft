@@ -14,7 +14,7 @@ func parseRequirementsTxt(path string) ([]models.Dependency, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open requirements.txt: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var deps []models.Dependency
 	scanner := bufio.NewScanner(file)
