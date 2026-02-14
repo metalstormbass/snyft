@@ -6,9 +6,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
@@ -56,6 +59,10 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		// Try scraping fallback on rate limit or auth errors
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapeRepositoryInfo(repoURL, owner, repo)
+		}
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -81,6 +88,80 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		License:       getLicenseName(ghRepo.License),
 		Topics:        ghRepo.Topics,
 	}, nil
+}
+
+// scrapeRepositoryInfo scrapes repository information from the GitHub web page
+// Used as a fallback when the API is rate-limited or returns auth errors
+func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*models.RepositoryInfo, error) {
+	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return nil, fmt.Errorf("scraping fallback failed: %w", err)
+	}
+
+	info := &models.RepositoryInfo{
+		URL:   pageURL,
+		Owner: owner,
+		Name:  repo,
+	}
+
+	// Extract description
+	doc.Find("p.f4.my-3").Each(func(i int, s *goquery.Selection) {
+		info.Description = strings.TrimSpace(s.Text())
+	})
+
+	// Extract stars, forks, watchers from the sidebar
+	doc.Find("a[href$='/stargazers']").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		info.Stars = extractNumber(text)
+	})
+
+	doc.Find("a[href$='/forks']").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		info.Forks = extractNumber(text)
+	})
+
+	doc.Find("a[href$='/watchers']").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		info.Watchers = extractNumber(text)
+	})
+
+	// Extract last commit date from the commit bar
+	doc.Find("relative-time").Each(func(i int, s *goquery.Selection) {
+		if datetime, exists := s.Attr("datetime"); exists && i == 0 {
+			if t, err := time.Parse(time.RFC3339, datetime); err == nil {
+				info.PushedAt = t
+			}
+		}
+	})
+
+	// Set current time for updated_at as approximation
+	info.UpdatedAt = time.Now()
+
+	return info, nil
+}
+
+// scrapeContributorCount scrapes the contributor count from GitHub web page
+func (c *GitHubClient) scrapeContributorCount(owner, repo string) (int, error) {
+	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return 0, fmt.Errorf("failed to scrape contributors: %w", err)
+	}
+
+	contributors := 0
+	// Find the contributors link
+	doc.Find("a[href*='/graphs/contributors']").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		// Extract number from text like "123 contributors"
+		re := regexp.MustCompile(`(\d+)`)
+		matches := re.FindStringSubmatch(text)
+		if len(matches) > 1 {
+			contributors, _ = strconv.Atoi(matches[1])
+		}
+	})
+
+	return contributors, nil
 }
 
 // DetectCISystems checks for common CI/CD systems in the repository

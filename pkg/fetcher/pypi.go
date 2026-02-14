@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
@@ -53,6 +56,10 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// Try scraping fallback on rate limit or auth errors
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapePyPIPackageInfo(packageName)
+		}
 		return nil, fmt.Errorf("PyPI API returned status %d", resp.StatusCode)
 	}
 
@@ -254,6 +261,69 @@ func (c *PyPIClient) VerifySourceAvailability(packageName, version string, repoU
 	}
 
 	return result
+}
+
+// scrapePyPIPackageInfo scrapes package information from pypi.org web page
+// Used as a fallback when the PyPI API fails
+func (c *PyPIClient) scrapePyPIPackageInfo(packageName string) (*PyPIPackage, error) {
+	pageURL := fmt.Sprintf("https://pypi.org/project/%s/", packageName)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return nil, fmt.Errorf("scraping fallback failed: %w", err)
+	}
+
+	pkg := &PyPIPackage{
+		Name:        packageName,
+		Maintainers: []string{},
+	}
+
+	// Extract version
+	doc.Find("h1.package-header__name").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		// Version is typically after the package name
+		parts := strings.Fields(text)
+		if len(parts) > 1 {
+			pkg.LatestVersion = parts[len(parts)-1]
+		}
+	})
+
+	// Extract maintainers/authors
+	doc.Find("span.sidebar-section__maintainer a").Each(func(i int, s *goquery.Selection) {
+		maintainer := strings.TrimSpace(s.Text())
+		if maintainer != "" {
+			pkg.Maintainers = append(pkg.Maintainers, maintainer)
+		}
+	})
+
+	// Extract license
+	doc.Find("p:contains('License:')").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		// Remove "License: " prefix
+		pkg.License = strings.TrimPrefix(text, "License:")
+		pkg.License = strings.TrimSpace(pkg.License)
+	})
+
+	// Extract repository URL from project links
+	doc.Find("a.vertical-tabs__tab[href*='github.com']").Each(func(i int, s *goquery.Selection) {
+		if href, exists := s.Attr("href"); exists {
+			pkg.RepositoryURL = href
+		}
+	})
+
+	// Extract download stats if available
+	doc.Find("p:contains('downloads')").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		// Try to extract download number
+		parts := strings.Fields(text)
+		for _, part := range parts {
+			if num, err := strconv.ParseInt(strings.ReplaceAll(part, ",", ""), 10, 64); err == nil && num > 0 {
+				pkg.Downloads = num
+				break
+			}
+		}
+	})
+
+	return pkg, nil
 }
 
 // PyPIOwnershipHistory represents ownership/maintainer changes over time
