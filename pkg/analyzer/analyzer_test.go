@@ -594,67 +594,6 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 	}
 }
 
-func TestScoreHealth_EdgeCases(t *testing.T) {
-	tests := []struct {
-		name   string
-		result *models.AnalysisResult
-	}{
-		{
-			name: "Empty metadata",
-			result: &models.AnalysisResult{
-				Metadata: models.PackageMetadata{},
-			},
-		},
-		{
-			name: "Negative values (should handle gracefully)",
-			result: &models.AnalysisResult{
-				Metadata: models.PackageMetadata{
-					BusFactor:      -1, // Invalid but should not crash
-					CIQualityScore: -5,
-					CodeReviewRate: -10,
-				},
-			},
-		},
-		{
-			name: "Very high values",
-			result: &models.AnalysisResult{
-				Metadata: models.PackageMetadata{
-					BusFactor:         1000,
-					TopContributorPct: 150.0, // Invalid but should not crash
-					CIQualityScore:    100,
-					CodeReviewRate:    200.0,
-				},
-			},
-		},
-	}
-
-	modelAnalysis := convertToModelAnalysis(scriptAnalysis)
-
-	if modelAnalysis.HasDangerousPatterns != scriptAnalysis.HasDangerousPatterns {
-		t.Error("HasDangerousPatterns not converted correctly")
-	}
-	if modelAnalysis.RiskLevel != scriptAnalysis.RiskLevel {
-		t.Error("RiskLevel not converted correctly")
-	}
-	if len(modelAnalysis.DangerousPatterns) != len(scriptAnalysis.DangerousPatterns) {
-		t.Errorf("Expected %d patterns, got %d", len(scriptAnalysis.DangerousPatterns), len(modelAnalysis.DangerousPatterns))
-	}
-
-	for i, p := range modelAnalysis.DangerousPatterns {
-		if p.Pattern != scriptAnalysis.DangerousPatterns[i].Pattern {
-			t.Errorf("Pattern %d not converted correctly", i)
-		}
-		if p.Description != scriptAnalysis.DangerousPatterns[i].Description {
-			t.Errorf("Description %d not converted correctly", i)
-		}
-		if p.Severity != scriptAnalysis.DangerousPatterns[i].Severity {
-			t.Errorf("Severity %d not converted correctly", i)
-		}
-		if p.Match != scriptAnalysis.DangerousPatterns[i].Match {
-			t.Errorf("Match %d not converted correctly", i)
-		}
-	}
-}
 func TestScoreOwnershipChanges_FallbackBehavior(t *testing.T) {
 	analyzer := &Analyzer{
 		githubClient: fetcher.NewGitHubClient(),
