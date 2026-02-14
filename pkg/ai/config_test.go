@@ -60,16 +60,16 @@ func TestLoadFromEnv(t *testing.T) {
 	defer func() {
 		for key, val := range originalEnv {
 			if val == "" {
-				os.Unsetenv(key)
+				_ = os.Unsetenv(key)
 			} else {
-				os.Setenv(key, val)
+				_ = os.Setenv(key, val)
 			}
 		}
 	}()
 
 	t.Run("API key from CLAUDE_API_KEY", func(t *testing.T) {
-		os.Setenv("CLAUDE_API_KEY", "test-key-123")
-		defer os.Unsetenv("CLAUDE_API_KEY")
+		_ = os.Setenv("CLAUDE_API_KEY", "test-key-123")
+		defer func() { _ = os.Unsetenv("CLAUDE_API_KEY") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -82,9 +82,9 @@ func TestLoadFromEnv(t *testing.T) {
 	})
 
 	t.Run("API key fallback to ANTHROPIC_API_KEY", func(t *testing.T) {
-		os.Unsetenv("CLAUDE_API_KEY")
-		os.Setenv("ANTHROPIC_API_KEY", "anthropic-key-456")
-		defer os.Unsetenv("ANTHROPIC_API_KEY")
+		_ = os.Unsetenv("CLAUDE_API_KEY")
+		_ = os.Setenv("ANTHROPIC_API_KEY", "anthropic-key-456")
+		defer func() { _ = os.Unsetenv("ANTHROPIC_API_KEY") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -97,8 +97,8 @@ func TestLoadFromEnv(t *testing.T) {
 	})
 
 	t.Run("custom base URL", func(t *testing.T) {
-		os.Setenv("CLAUDE_BASE_URL", "https://custom.api.com")
-		defer os.Unsetenv("CLAUDE_BASE_URL")
+		_ = os.Setenv("CLAUDE_BASE_URL", "https://custom.api.com")
+		defer func() { _ = os.Unsetenv("CLAUDE_BASE_URL") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -111,8 +111,8 @@ func TestLoadFromEnv(t *testing.T) {
 	})
 
 	t.Run("custom timeout", func(t *testing.T) {
-		os.Setenv("CLAUDE_TIMEOUT", "30s")
-		defer os.Unsetenv("CLAUDE_TIMEOUT")
+		_ = os.Setenv("CLAUDE_TIMEOUT", "30s")
+		defer func() { _ = os.Unsetenv("CLAUDE_TIMEOUT") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -125,8 +125,8 @@ func TestLoadFromEnv(t *testing.T) {
 	})
 
 	t.Run("custom max retries", func(t *testing.T) {
-		os.Setenv("CLAUDE_MAX_RETRIES", "5")
-		defer os.Unsetenv("CLAUDE_MAX_RETRIES")
+		_ = os.Setenv("CLAUDE_MAX_RETRIES", "5")
+		defer func() { _ = os.Unsetenv("CLAUDE_MAX_RETRIES") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -139,8 +139,8 @@ func TestLoadFromEnv(t *testing.T) {
 	})
 
 	t.Run("custom rate limit", func(t *testing.T) {
-		os.Setenv("CLAUDE_RATE_LIMIT", "100")
-		defer os.Unsetenv("CLAUDE_RATE_LIMIT")
+		_ = os.Setenv("CLAUDE_RATE_LIMIT", "100")
+		defer func() { _ = os.Unsetenv("CLAUDE_RATE_LIMIT") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -153,8 +153,8 @@ func TestLoadFromEnv(t *testing.T) {
 	})
 
 	t.Run("feature flags", func(t *testing.T) {
-		os.Setenv("CLAUDE_ENABLE_RETRY", "false")
-		defer os.Unsetenv("CLAUDE_ENABLE_RETRY")
+		_ = os.Setenv("CLAUDE_ENABLE_RETRY", "false")
+		defer func() { _ = os.Unsetenv("CLAUDE_ENABLE_RETRY") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {

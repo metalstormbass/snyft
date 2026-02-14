@@ -156,50 +156,50 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 
 	// Risk Impact Summary
 	if r.stats.HighRisk > 0 || r.stats.MediumRisk > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "  %sRisk Impact Summary:%s\n", ColorBold, ColorReset)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "  %sRisk Impact Summary:%s\n", ColorBold, ColorReset)
 		if r.stats.HighRisk > 0 {
-			fmt.Fprintf(w, "  %s⚠  ATTENTION REQUIRED:%s %d package%s identified with HIGH supply chain risk.\n",
+			_, _ = fmt.Fprintf(w, "  %s⚠  ATTENTION REQUIRED:%s %d package%s identified with HIGH supply chain risk.\n",
 				ColorRed+ColorBold, ColorReset, r.stats.HighRisk, pluralize(r.stats.HighRisk))
-			fmt.Fprintln(w, "     These packages exhibit patterns commonly associated with compromised")
-			fmt.Fprintln(w, "     dependencies and require immediate review.")
+			_, _ = fmt.Fprintln(w, "     These packages exhibit patterns commonly associated with compromised")
+			_, _ = fmt.Fprintln(w, "     dependencies and require immediate review.")
 		}
 		if r.stats.MediumRisk > 0 {
-			fmt.Fprintf(w, "  %s⚠  MONITORING RECOMMENDED:%s %d package%s with MEDIUM risk factors.\n",
+			_, _ = fmt.Fprintf(w, "  %s⚠  MONITORING RECOMMENDED:%s %d package%s with MEDIUM risk factors.\n",
 				ColorYellow+ColorBold, ColorReset, r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
-			fmt.Fprintln(w, "     These packages show some concerning patterns that warrant closer monitoring.")
+			_, _ = fmt.Fprintln(w, "     These packages show some concerning patterns that warrant closer monitoring.")
 		}
 	}
 
 	// Key Findings - Critical Issues
 	criticalIssues := r.extractCriticalIssues(5)
 	if len(criticalIssues) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "  %sTop Priority Findings:%s\n", ColorBold, ColorReset)
-		fmt.Fprintln(w, "  The following issues represent the highest supply chain compromise risks:")
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "  %sTop Priority Findings:%s\n", ColorBold, ColorReset)
+		_, _ = fmt.Fprintln(w, "  The following issues represent the highest supply chain compromise risks:")
+		_, _ = fmt.Fprintln(w)
 
 		for i, issue := range criticalIssues {
 			issueColor := r.getRiskColor(issue.RiskLevel)
-			fmt.Fprintf(w, "    %s%d.%s %s%s@%s%s (%s)\n",
+			_, _ = fmt.Fprintf(w, "    %s%d.%s %s%s@%s%s (%s)\n",
 				ColorBold, i+1, ColorReset,
 				issueColor+ColorBold, issue.PackageName, issue.PackageVersion, ColorReset,
 				issue.Ecosystem)
-			fmt.Fprintf(w, "       %s[%s SEVERITY]%s %s\n",
+			_, _ = fmt.Fprintf(w, "       %s[%s SEVERITY]%s %s\n",
 				r.getSeverityColor(issue.Severity), issue.Severity, ColorReset,
 				issue.Description)
 			if issue.Evidence != "" {
-				fmt.Fprintf(w, "       %sEvidence:%s %s\n",
+				_, _ = fmt.Fprintf(w, "       %sEvidence:%s %s\n",
 					ColorDim, ColorReset, issue.Evidence)
 			}
 			// Add impact context
 			impact := r.getRiskImpactDescription(issue.Severity)
 			if impact != "" {
-				fmt.Fprintf(w, "       %sImpact:%s %s\n",
+				_, _ = fmt.Fprintf(w, "       %sImpact:%s %s\n",
 					ColorDim, ColorReset, impact)
 			}
 			if i < len(criticalIssues)-1 {
-				fmt.Fprintln(w)
+				_, _ = fmt.Fprintln(w)
 			}
 		}
 	}

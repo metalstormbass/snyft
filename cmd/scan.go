@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metalstormbass/snyft/pkg/ai"
 	"github.com/metalstormbass/snyft/pkg/analyzer"
 	"github.com/metalstormbass/snyft/pkg/models"
 	"github.com/metalstormbass/snyft/pkg/parser"
@@ -20,6 +21,13 @@ var (
 	outputFile  string
 	verbose     bool
 	outputFormat string
+
+	// AI configuration flags
+	aiEnabled      bool
+	aiAPIKey       string
+	aiTimeout      int
+	aiDisableCache bool
+	aiDisableRetry bool
 )
 
 var scanCmd = &cobra.Command{
@@ -37,6 +45,13 @@ func init() {
 	scanCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file for results (default: stdout)")
 	scanCmd.Flags().BoolVarP(&verbose, "verbose", "v", true, "Verbose output with detailed analysis")
 	scanCmd.Flags().StringVarP(&outputFormat, "format", "f", "text", "Output format: text, markdown, json, or html")
+
+	// AI feature flags
+	scanCmd.Flags().BoolVar(&aiEnabled, "ai", false, "Enable AI-powered analysis (requires CLAUDE_API_KEY or --ai-api-key)")
+	scanCmd.Flags().StringVar(&aiAPIKey, "ai-api-key", "", "Claude API key for AI analysis (alternative to CLAUDE_API_KEY env var)")
+	scanCmd.Flags().IntVar(&aiTimeout, "ai-timeout", 60, "Timeout in seconds for AI operations")
+	scanCmd.Flags().BoolVar(&aiDisableCache, "ai-disable-cache", false, "Disable AI response caching")
+	scanCmd.Flags().BoolVar(&aiDisableRetry, "ai-disable-retry", false, "Disable retry on AI API failures")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
@@ -86,8 +101,41 @@ func runScan(cmd *cobra.Command, args []string) error {
 	fmt.Printf("📦 Found %d dependencies across all manifests\n", len(dependencies))
 	fmt.Println()
 
+	// Configure AI if enabled
+	var aiConfig *ai.Config
+	if aiEnabled {
+		// Load base config from environment
+		aiConfig, err = ai.LoadFromEnv()
+		if err != nil {
+			// Create default config if env loading fails
+			aiConfig = ai.DefaultConfig()
+		}
+
+		// Override with CLI flags if provided
+		if aiAPIKey != "" {
+			aiConfig.APIKey = aiAPIKey
+		}
+
+		if aiConfig.APIKey == "" {
+			fmt.Println("⚠️  AI analysis enabled but no API key provided. Set CLAUDE_API_KEY or use --ai-api-key")
+			fmt.Println("    Continuing without AI analysis...")
+			aiConfig = nil
+		} else {
+			if aiTimeout > 0 {
+				aiConfig.Timeout = time.Duration(aiTimeout) * time.Second
+			}
+			if aiDisableCache {
+				aiConfig.EnableCache = false
+			}
+			if aiDisableRetry {
+				aiConfig.EnableRetry = false
+			}
+			fmt.Printf("🤖 AI analysis enabled (timeout: %v)\n", aiConfig.Timeout)
+		}
+	}
+
 	// Analyze dependencies in parallel
-	results := analyzeDependencies(dependencies, workers, reporter)
+	results := analyzeDependencies(dependencies, workers, reporter, aiConfig)
 
 	// Clear progress line
 	reporter.ClearProgress()
@@ -157,7 +205,7 @@ func findManifestFiles(dir string) ([]string, error) {
 	return manifestFiles, err
 }
 
-func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter) []models.AnalysisResult {
+func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, aiConfig *ai.Config) []models.AnalysisResult {
 	results := make([]models.AnalysisResult, len(deps))
 	jobs := make(chan int, len(deps))
 	var wg sync.WaitGroup
@@ -166,8 +214,15 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 
 	startTime := time.Now()
 
-	// Create analyzer
-	a := analyzer.NewAnalyzer()
+	// Create analyzer with AI configuration
+	var a *analyzer.Analyzer
+	if aiConfig != nil {
+		a = analyzer.NewAnalyzer(analyzer.WithAIConfig(aiConfig))
+	} else {
+		// Create analyzer without AI if not explicitly enabled via flags
+		// This prevents automatic AI initialization from env vars unless --ai is used
+		a = analyzer.NewAnalyzer(analyzer.WithAIDisabled())
+	}
 
 	// Start workers
 	for w := 0; w < numWorkers; w++ {

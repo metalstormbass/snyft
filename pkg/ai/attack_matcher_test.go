@@ -330,7 +330,7 @@ func TestMatchAgainstKnownAttacks_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	t.Run("high-risk package with account takeover indicators", func(t *testing.T) {
 		// Simulate a package that looks like ua-parser-js attack

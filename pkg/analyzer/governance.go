@@ -196,11 +196,14 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 	}
 
 	// Determine description based on risk level
-	description := "Poor governance: no documentation or unresponsive"
-	if riskPoints == 0 {
+	var description string
+	switch riskPoints {
+	case 0:
 		description = "Strong governance: documented policies and responsive maintenance"
-	} else if riskPoints == 1 {
+	case 1:
 		description = "Moderate governance: some documentation or moderate responsiveness"
+	default:
+		description = "Poor governance: no documentation or unresponsive"
 	}
 
 	// Special case for abandonment
