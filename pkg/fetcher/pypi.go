@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -162,7 +163,7 @@ func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool
 
 // VerifySourceAvailability verifies that source code exists for the exact version
 // Checks: 1) sdist (source distribution) is available, 2) matching git tag exists
-func (c *PyPIClient) VerifySourceAvailability(packageName, version string, repoURL string, githubClient *GitHubClient) *models.SourceVerification {
+func (c *PyPIClient) VerifySourceAvailability(packageName, version string, repoURL string, gitClient GitPlatformClient) *models.SourceVerification {
 	result := &models.SourceVerification{
 		Verified:           false,
 		HasSourcePackage:   false,
@@ -235,8 +236,9 @@ func (c *PyPIClient) VerifySourceAvailability(packageName, version string, repoU
 	}
 
 	// Check for matching git tag in repository
-	if repoURL != "" && githubClient != nil {
-		tagExists, tagURL, err := githubClient.CheckGitTag(repoURL, version)
+	// Note: gitClient is an interface, so we need to check if the underlying value is nil
+	if repoURL != "" && gitClient != nil && !reflect.ValueOf(gitClient).IsNil() {
+		tagExists, tagURL, err := gitClient.CheckGitTag(repoURL, version)
 		if err != nil {
 			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to check git tag: %v", err))
 		} else if tagExists {
