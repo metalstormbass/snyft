@@ -544,7 +544,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Score:       0,
 			RiskPoints:  2,
 			Description: "Multiple install-time scripts detected",
-			Evidence:    fmt.Sprintf("Scripts: %v", foundScripts),
+			Evidence:    "Scripts: " + strings.Join(foundScripts, ", "),
 			Verified:    true,
 		}
 	}
@@ -554,7 +554,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 		Score:       0,
 		RiskPoints:  1,
 		Description: "Install-time script detected",
-		Evidence:    fmt.Sprintf("Script: %v", foundScripts),
+		Evidence:    "Script: " + strings.Join(foundScripts, ", "),
 		Verified:    true,
 	}
 }
