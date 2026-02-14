@@ -6,8 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -141,28 +139,6 @@ func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*model
 	return info, nil
 }
 
-// scrapeContributorCount scrapes the contributor count from GitHub web page
-func (c *GitHubClient) scrapeContributorCount(owner, repo string) (int, error) {
-	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
-	doc, err := scrapeWithUserAgent(pageURL)
-	if err != nil {
-		return 0, fmt.Errorf("failed to scrape contributors: %w", err)
-	}
-
-	contributors := 0
-	// Find the contributors link
-	doc.Find("a[href*='/graphs/contributors']").Each(func(i int, s *goquery.Selection) {
-		text := strings.TrimSpace(s.Text())
-		// Extract number from text like "123 contributors"
-		re := regexp.MustCompile(`(\d+)`)
-		matches := re.FindStringSubmatch(text)
-		if len(matches) > 1 {
-			contributors, _ = strconv.Atoi(matches[1])
-		}
-	})
-
-	return contributors, nil
-}
 
 // DetectCISystems checks for common CI/CD systems in the repository
 func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
@@ -997,7 +973,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -1069,7 +1045,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return stats, nil // Return empty stats if we can't fetch PRs
@@ -1123,7 +1099,7 @@ func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false
@@ -1160,7 +1136,7 @@ func (c *GitHubClient) getBranchProtection(owner, repo string) *GitHubBranchProt
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil
@@ -1240,7 +1216,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to fetch workflows")

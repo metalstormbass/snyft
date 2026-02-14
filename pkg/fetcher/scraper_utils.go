@@ -32,7 +32,7 @@ func scrapeWithUserAgent(url string) (*goquery.Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch page: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -53,7 +53,7 @@ func extractNumber(text string) int {
 	text = strings.TrimSpace(text)
 	text = strings.ReplaceAll(text, ",", "")
 
-	var multiplier int = 1
+	multiplier := 1
 
 	// Handle k/K suffix for thousands
 	if strings.HasSuffix(strings.ToLower(text), "k") {

@@ -13,7 +13,7 @@ func TestGitHubScrapingFallback(t *testing.T) {
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/test/repo" {
 			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"message": "API rate limit exceeded"}`))
+			_, _ = w.Write([]byte(`{"message": "API rate limit exceeded"}`))
 		}
 	}))
 	defer apiServer.Close()
@@ -38,7 +38,7 @@ func TestNPMScrapingFallback(t *testing.T) {
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/test-package" {
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"error": "Too many requests"}`))
+			_, _ = w.Write([]byte(`{"error": "Too many requests"}`))
 		}
 	}))
 	defer apiServer.Close()
@@ -61,7 +61,7 @@ func TestPyPIScrapingFallback(t *testing.T) {
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/pypi/test-package/json" {
 			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"message": "Forbidden"}`))
+			_, _ = w.Write([]byte(`{"message": "Forbidden"}`))
 		}
 	}))
 	defer apiServer.Close()
@@ -83,7 +83,7 @@ func TestPyPIScrapingFallback(t *testing.T) {
 func TestMavenScrapingFallback(t *testing.T) {
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`{"error": "Access denied"}`))
+		_, _ = w.Write([]byte(`{"error": "Access denied"}`))
 	}))
 	defer apiServer.Close()
 

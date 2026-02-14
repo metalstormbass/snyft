@@ -298,9 +298,8 @@ func (c *MavenClient) scrapeMavenPackageInfo(packageName string) (*MavenPackage,
 		text := strings.TrimSpace(s.Text())
 		// Extract number from text
 		numStr := strings.ReplaceAll(text, ",", "")
-		if _, err := strconv.Atoi(numStr); err == nil {
-			// Usage stat found (not used in MavenPackage struct, but logged for info)
-		}
+		// Parse usage count (not currently stored in MavenPackage struct)
+		_, _ = strconv.Atoi(numStr)
 	})
 
 	return pkg, nil
