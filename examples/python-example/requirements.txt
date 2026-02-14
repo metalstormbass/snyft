@@ -1,0 +1,7 @@
+# Example Python dependencies for testing Snyft
+requests==2.31.0
+flask==3.0.0
+numpy==1.24.0
+pandas==2.1.0
+pytest==7.4.0
+black==23.10.0
