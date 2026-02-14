@@ -109,15 +109,15 @@ func TestDetectReleaseAnomaly(t *testing.T) {
 		{
 			name: "Single release",
 			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -1, 0), Draft: false, Prerelease: false},
+				{CreatedAt: time.Now().AddDate(0, -1, 0), Draft: false, Prerelease: false},
 			},
 			expectedRisk: nil,
 		},
 		{
 			name: "Suspicious reactivation - long dormancy then recent release",
 			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -1, 0), Draft: false, Prerelease: false},  // 1 month ago
-				{PublishedAt: time.Now().AddDate(-2, 0, 0), Draft: false, Prerelease: false}, // 2 years ago
+				{CreatedAt: time.Now().AddDate(0, -1, 0), Draft: false, Prerelease: false},  // 1 month ago
+				{CreatedAt: time.Now().AddDate(-2, 0, 0), Draft: false, Prerelease: false}, // 2 years ago
 			},
 			expectedRisk: intPtr(2),
 			expectedDesc: "Suspicious reactivation",
@@ -125,21 +125,21 @@ func TestDetectReleaseAnomaly(t *testing.T) {
 		{
 			name: "Regular release pattern - consistent frequency",
 			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -3, 0), Draft: false, Prerelease: false},  // 3 months ago
-				{PublishedAt: time.Now().AddDate(0, -6, 0), Draft: false, Prerelease: false},  // 6 months ago
-				{PublishedAt: time.Now().AddDate(0, -9, 0), Draft: false, Prerelease: false},  // 9 months ago
-				{PublishedAt: time.Now().AddDate(-1, 0, 0), Draft: false, Prerelease: false}, // 12 months ago
+				{CreatedAt: time.Now().AddDate(0, -3, 0), Draft: false, Prerelease: false},  // 3 months ago
+				{CreatedAt: time.Now().AddDate(0, -6, 0), Draft: false, Prerelease: false},  // 6 months ago
+				{CreatedAt: time.Now().AddDate(0, -9, 0), Draft: false, Prerelease: false},  // 9 months ago
+				{CreatedAt: time.Now().AddDate(-1, 0, 0), Draft: false, Prerelease: false}, // 12 months ago
 			},
 			expectedRisk: nil, // No anomaly
 		},
 		{
 			name: "Unusual pattern - sudden spike in release frequency",
 			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, 0, -3), Draft: false, Prerelease: false},  // 3 days ago
-				{PublishedAt: time.Now().AddDate(0, 0, -8), Draft: false, Prerelease: false},  // 8 days ago (very close!)
-				{PublishedAt: time.Now().AddDate(0, -4, 0), Draft: false, Prerelease: false},  // 4 months ago
-				{PublishedAt: time.Now().AddDate(0, -8, 0), Draft: false, Prerelease: false},  // 8 months ago
-				{PublishedAt: time.Now().AddDate(-1, -2, 0), Draft: false, Prerelease: false}, // 14 months ago
+				{CreatedAt: time.Now().AddDate(0, 0, -3), Draft: false, Prerelease: false},  // 3 days ago
+				{CreatedAt: time.Now().AddDate(0, 0, -8), Draft: false, Prerelease: false},  // 8 days ago (very close!)
+				{CreatedAt: time.Now().AddDate(0, -4, 0), Draft: false, Prerelease: false},  // 4 months ago
+				{CreatedAt: time.Now().AddDate(0, -8, 0), Draft: false, Prerelease: false},  // 8 months ago
+				{CreatedAt: time.Now().AddDate(-1, -2, 0), Draft: false, Prerelease: false}, // 14 months ago
 			},
 			expectedRisk: intPtr(2),
 			expectedDesc: "Unusual release pattern",
@@ -147,9 +147,9 @@ func TestDetectReleaseAnomaly(t *testing.T) {
 		{
 			name: "Drafts and prereleases are ignored",
 			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -1, 0), Draft: true, Prerelease: false},   // Draft
-				{PublishedAt: time.Now().AddDate(0, -2, 0), Draft: false, Prerelease: true},   // Prerelease
-				{PublishedAt: time.Now().AddDate(0, -3, 0), Draft: false, Prerelease: false}, // Valid
+				{CreatedAt: time.Now().AddDate(0, -1, 0), Draft: true, Prerelease: false},   // Draft
+				{CreatedAt: time.Now().AddDate(0, -2, 0), Draft: false, Prerelease: true},   // Prerelease
+				{CreatedAt: time.Now().AddDate(0, -3, 0), Draft: false, Prerelease: false}, // Valid
 			},
 			expectedRisk: nil, // Only 1 valid release after filtering
 		},
@@ -393,7 +393,9 @@ func makeCommits(count int, startDate time.Time) []fetcher.GitHubCommit {
 			SHA: "abc123",
 			Commit: fetcher.GitHubCommitDetails{
 				Author: fetcher.GitHubCommitAuthor{
-					Date: startDate.AddDate(0, 0, i*7), // Spread commits weekly
+					Name:  "Test Author",
+					Email: "test@example.com",
+					Date:  startDate.AddDate(0, 0, i*7), // Spread commits weekly
 				},
 			},
 		}
