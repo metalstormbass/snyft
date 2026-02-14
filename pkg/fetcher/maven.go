@@ -60,7 +60,7 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Maven Central returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("maven search returned status %d", resp.StatusCode)
 	}
 
 	var searchResp MavenSearchResponse
@@ -81,9 +81,8 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	}
 
 	// Try to fetch POM to get more metadata
-	if err := c.enrichFromPOM(pkg, groupID, artifactID, doc.LatestVersion); err != nil {
-		// POM fetch failed, continue with basic info
-	}
+	// Ignore error if POM fetch fails, continue with basic info
+	_ = c.enrichFromPOM(pkg, groupID, artifactID, doc.LatestVersion)
 
 	return pkg, nil
 }
