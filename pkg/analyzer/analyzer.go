@@ -533,7 +533,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Score:       2,
 			RiskPoints:  0,
 			Description: "No install-time scripts",
-			Evidence:    fmt.Sprintf("Package has scripts but no install hooks"),
+			Evidence:    "Package has scripts but no install hooks",
 			Verified:    true,
 		}
 	}
