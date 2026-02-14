@@ -144,6 +144,32 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 		avgTime := duration / time.Duration(r.stats.TotalPackages)
 		fmt.Fprintf(w, "  %sAverage per Package:%s %s\n", ColorBold, ColorReset, formatDuration(avgTime))
 	}
+
+	// Key Findings - Critical Issues
+	criticalIssues := r.extractCriticalIssues(5)
+	if len(criticalIssues) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "  %sKey Findings:%s\n", ColorBold, ColorReset)
+		fmt.Fprintln(w)
+
+		for i, issue := range criticalIssues {
+			issueColor := r.getRiskColor(issue.RiskLevel)
+			fmt.Fprintf(w, "    %s%d.%s %s%s@%s%s (%s)\n",
+				ColorBold, i+1, ColorReset,
+				issueColor+ColorBold, issue.PackageName, issue.PackageVersion, ColorReset,
+				issue.Ecosystem)
+			fmt.Fprintf(w, "       %s[%s]%s %s\n",
+				r.getSeverityColor(issue.Severity), issue.Severity, ColorReset,
+				issue.Description)
+			if issue.Evidence != "" {
+				fmt.Fprintf(w, "       %sEvidence:%s %s\n",
+					ColorDim, ColorReset, issue.Evidence)
+			}
+			if i < len(criticalIssues)-1 {
+				fmt.Fprintln(w)
+			}
+		}
+	}
 }
 
 // printSectionHeader prints a section header

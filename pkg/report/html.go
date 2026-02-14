@@ -328,6 +328,35 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) {
 	}
 
 	fmt.Fprintln(w, "      </div>")
+
+	// Key Findings - Critical Issues
+	criticalIssues := r.extractCriticalIssues(5)
+	if len(criticalIssues) > 0 {
+		fmt.Fprintln(w, "      <div style=\"margin-top: 30px;\">")
+		fmt.Fprintln(w, "        <h3>Key Findings</h3>")
+		fmt.Fprintln(w, "        <p style=\"color: #666; margin-bottom: 15px;\">Critical issues requiring immediate attention:</p>")
+
+		for i, issue := range criticalIssues {
+			issueClass := "medium"
+			if issue.RiskLevel == "HIGH" {
+				issueClass = "high"
+			}
+
+			fmt.Fprintf(w, "        <div class=\"finding %s\" style=\"margin: 10px 0;\">\n", issueClass)
+			fmt.Fprintf(w, "          <div style=\"font-weight: bold; margin-bottom: 5px;\">%d. %s@%s <span style=\"color: #666; font-weight: normal;\">(%s)</span></div>\n",
+				i+1, html.EscapeString(issue.PackageName), html.EscapeString(issue.PackageVersion), issue.Ecosystem)
+			fmt.Fprintf(w, "          <div><span class=\"finding-severity\">[%s]</span> %s</div>\n",
+				html.EscapeString(issue.Severity), html.EscapeString(issue.Description))
+			if issue.Evidence != "" {
+				fmt.Fprintf(w, "          <div style=\"margin-top: 5px; font-size: 12px; color: #666;\">Evidence: %s</div>\n",
+					html.EscapeString(issue.Evidence))
+			}
+			fmt.Fprintln(w, "        </div>")
+		}
+
+		fmt.Fprintln(w, "      </div>")
+	}
+
 	fmt.Fprintln(w, "    </section>")
 }
 

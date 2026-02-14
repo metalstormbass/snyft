@@ -45,6 +45,27 @@ func (r *Reporter) generateMarkdown() error {
 	fmt.Fprintf(w, "**Overall Risk Level:** %s\n", r.calculateOverallRisk())
 	fmt.Fprintf(w, "**Scan Duration:** %s\n", formatDuration(duration))
 	fmt.Fprintln(w)
+
+	// Key Findings - Critical Issues
+	criticalIssues := r.extractCriticalIssues(5)
+	if len(criticalIssues) > 0 {
+		fmt.Fprintln(w, "### Key Findings")
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Critical issues requiring immediate attention:")
+		fmt.Fprintln(w)
+
+		for i, issue := range criticalIssues {
+			riskIcon := r.getRiskIcon(issue.RiskLevel)
+			fmt.Fprintf(w, "%d. %s **%s@%s** (%s)\n",
+				i+1, riskIcon, issue.PackageName, issue.PackageVersion, issue.Ecosystem)
+			fmt.Fprintf(w, "   - **[%s]** %s\n", issue.Severity, issue.Description)
+			if issue.Evidence != "" {
+				fmt.Fprintf(w, "   - *Evidence:* %s\n", issue.Evidence)
+			}
+			fmt.Fprintln(w)
+		}
+	}
+
 	fmt.Fprintln(w, "---")
 	fmt.Fprintln(w)
 
