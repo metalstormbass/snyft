@@ -391,7 +391,7 @@ func makeCommits(count int, startDate time.Time) []fetcher.GitHubCommit {
 	for i := 0; i < count; i++ {
 		commits[i] = fetcher.GitHubCommit{
 			SHA: "abc123",
-			Commit: fetcher.GitHubCommitDetails{
+			Commit: fetcher.GitHubCommitInfo{
 				Author: fetcher.GitHubCommitAuthor{
 					Name:  "Test Author",
 					Email: "test@example.com",

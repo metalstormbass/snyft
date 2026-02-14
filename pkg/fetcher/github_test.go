@@ -117,7 +117,7 @@ func TestGetCommitAuthors(t *testing.T) {
 			// Create mock server
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(tt.commits)
+				_ = json.NewEncoder(w).Encode(tt.commits)
 			}))
 			defer server.Close()
 
@@ -150,7 +150,7 @@ func TestGetCommitAuthors(t *testing.T) {
 func TestGetCommitAuthors_EmptyCommits(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]GitHubCommit{})
+		_ = json.NewEncoder(w).Encode([]GitHubCommit{})
 	}))
 	defer server.Close()
 
@@ -177,7 +177,7 @@ func TestGetCommitAuthors_EmptyCommits(t *testing.T) {
 func TestGetCommitAuthors_APIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("Not Found"))
+		_, _ = w.Write([]byte("Not Found"))
 	}))
 	defer server.Close()
 
