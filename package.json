@@ -1,0 +1,33 @@
+{
+  "name": "snyft",
+  "version": "0.1.0",
+  "description": "Multi-agent code analysis tool for Java and JavaScript projects",
+  "main": "src/index.js",
+  "type": "module",
+  "bin": {
+    "snyft": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node --test",
+    "lint": "eslint src/**/*.js"
+  },
+  "keywords": [
+    "code-analysis",
+    "java",
+    "javascript",
+    "multiclaude",
+    "multi-agent"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "acorn": "^8.11.3",
+    "acorn-walk": "^8.3.2",
+    "fast-glob": "^3.3.2",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  }
+}
