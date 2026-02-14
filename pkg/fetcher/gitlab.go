@@ -746,3 +746,24 @@ func getLicenseNameFromGitLab(license *GitLabLicense) string {
 	}
 	return license.Name
 }
+
+// CheckIfOrganization checks if a GitLab user is an organization or personal account (stub)
+// GitLab uses "groups" instead of organizations
+func (c *GitLabClient) CheckIfOrganization(owner string) (bool, string) {
+	// Stub implementation - would require GitLab API call to /groups/{owner}
+	// For now, return false (conservative approach)
+	return false, ""
+}
+
+// CheckVerifiedOrganization checks if a GitLab group has verified status (stub)
+func (c *GitLabClient) CheckVerifiedOrganization(owner string) bool {
+	// GitLab doesn't have a "verified" badge like GitHub
+	return false
+}
+
+// GetUserAccountCreatedDate fetches account creation date for a GitLab user (stub)
+func (c *GitLabClient) GetUserAccountCreatedDate(username string) (time.Time, error) {
+	// Stub implementation - would require GitLab API call to /users
+	// Return zero time to indicate unavailable
+	return time.Time{}, fmt.Errorf("account age check not implemented for GitLab")
+}

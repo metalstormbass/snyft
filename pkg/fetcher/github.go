@@ -1403,3 +1403,141 @@ type GitHubComment struct {
 func (c *GitHubClient) GetPlatformName() string {
 	return "GitHub"
 }
+
+// CheckIfOrganization checks if a GitHub user is an organization or personal account
+// Returns (isOrg bool, orgName string)
+//
+// Methodology:
+// - Query GitHub API: GET /users/{username}
+// - Check "type" field: "Organization" or "User"
+//
+// API Response:
+// {
+//   "login": "microsoft",
+//   "type": "Organization",
+//   "name": "Microsoft",
+//   ...
+// }
+func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
+	url := fmt.Sprintf("%s/users/%s", c.baseURL, owner)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false, ""
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, ""
+	}
+
+	var user struct {
+		Login string `json:"login"`
+		Type  string `json:"type"` // "User" or "Organization"
+		Name  string `json:"name"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return false, ""
+	}
+
+	isOrg := user.Type == "Organization"
+	orgName := user.Name
+	if orgName == "" {
+		orgName = user.Login
+	}
+
+	return isOrg, orgName
+}
+
+// CheckVerifiedOrganization checks if a GitHub organization has verified status
+//
+// Methodology:
+// - Query GitHub API: GET /orgs/{org}
+// - Check for "is_verified" field (requires authentication)
+//
+// Note: GitHub's verified organization badge requires specific API permissions
+// If unavailable, this returns false (conservative approach)
+func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
+	url := fmt.Sprintf("%s/orgs/%s", c.baseURL, owner)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	var org struct {
+		IsVerified bool `json:"is_verified"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&org); err != nil {
+		return false
+	}
+
+	return org.IsVerified
+}
+
+// GetUserAccountCreatedDate fetches the account creation date for a GitHub user
+//
+// Methodology:
+// - Query GitHub API: GET /users/{username}
+// - Extract "created_at" field
+//
+// Returns account creation timestamp
+// Used to detect new accounts (< 6 months = suspicious, < 1 month = red flag)
+func (c *GitHubClient) GetUserAccountCreatedDate(username string) (time.Time, error) {
+	url := fmt.Sprintf("%s/users/%s", c.baseURL, username)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return time.Time{}, fmt.Errorf("GitHub API returned %d for user %s", resp.StatusCode, username)
+	}
+
+	var user struct {
+		Login     string    `json:"login"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return time.Time{}, err
+	}
+
+	return user.CreatedAt, nil
+}
