@@ -43,9 +43,9 @@ func (r *Reporter) generateText() error {
 	r.printExecutiveSummary(w)
 
 	// Detailed Findings
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	r.printSectionHeader(w, "DETAILED FINDINGS")
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 
 	for _, result := range r.results {
 		r.printPackageResult(w, result)
@@ -63,28 +63,28 @@ func (r *Reporter) printHeader(w io.Writer) {
 	title := " SNYFT SUPPLY CHAIN SECURITY REPORT "
 	timestamp := " Generated: " + time.Now().Format("2006-01-02 15:04:05") + " "
 
-	fmt.Fprintf(w, "%s%s%s%s%s\n",
+	_, _ = fmt.Fprintf(w, "%s%s%s%s%s\n",
 		ColorBold+ColorCyan,
 		BoxTopLeft,
 		strings.Repeat(BoxHorizontal, width-2),
 		BoxTopRight,
 		ColorReset)
 
-	fmt.Fprintf(w, "%s%s%s%s%s\n",
+	_, _ = fmt.Fprintf(w, "%s%s%s%s%s\n",
 		ColorBold+ColorCyan+BoxVertical,
 		centerText(title, width-2),
 		BoxVertical,
 		ColorReset,
 		"")
 
-	fmt.Fprintf(w, "%s%s%s%s%s\n",
+	_, _ = fmt.Fprintf(w, "%s%s%s%s%s\n",
 		ColorCyan+BoxVertical,
 		centerText(timestamp, width-2),
 		BoxVertical,
 		ColorReset,
 		"")
 
-	fmt.Fprintf(w, "%s%s%s%s%s\n",
+	_, _ = fmt.Fprintf(w, "%s%s%s%s%s\n",
 		ColorCyan,
 		BoxBottomLeft,
 		strings.Repeat(BoxHorizontal, width-2),
@@ -94,55 +94,56 @@ func (r *Reporter) printHeader(w io.Writer) {
 
 // printExecutiveSummary prints the executive summary section
 func (r *Reporter) printExecutiveSummary(w io.Writer) {
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	r.printSectionHeader(w, "EXECUTIVE SUMMARY")
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 
 	// Calculate overall risk level
 	overallRisk := r.calculateOverallRisk()
 
 	// Summary box
-	fmt.Fprintf(w, "%s  Total Packages Scanned:%s %d\n", ColorBold, ColorReset, r.stats.TotalPackages)
-	fmt.Fprintf(w, "%s  Manifest Files Found:%s   %d\n", ColorBold, ColorReset, r.stats.ManifestFiles)
-	fmt.Fprintf(w, "%s  Scan Path:%s             %s\n", ColorBold, ColorReset, r.stats.ScannedPath)
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "%s  Total Packages Scanned:%s %d\n", ColorBold, ColorReset, r.stats.TotalPackages)
+	_, _ = fmt.Fprintf(w, "%s  Manifest Files Found:%s   %d\n", ColorBold, ColorReset, r.stats.ManifestFiles)
+	_, _ = fmt.Fprintf(w, "%s  Scan Path:%s             %s\n", ColorBold, ColorReset, r.stats.ScannedPath)
+	_, _ = fmt.Fprintln(w)
 
 	// Risk distribution with colors
-	fmt.Fprintf(w, "  %sRisk Distribution:%s\n", ColorBold, ColorReset)
-	fmt.Fprintf(w, "    %s●%s HIGH Risk:   %s%3d packages%s ", ColorRed, ColorReset, ColorRed, r.stats.HighRisk, ColorReset)
+	_, _ = fmt.Fprintf(w, "  %sRisk Distribution:%s\n", ColorBold, ColorReset)
+	_, _ = fmt.Fprintf(w, "    %s●%s HIGH Risk:   %s%3d packages%s ", ColorRed, ColorReset, ColorRed, r.stats.HighRisk, ColorReset)
 	if r.stats.HighRisk > 0 {
-		fmt.Fprintf(w, "(%s%.1f%%%s)", ColorRed, float64(r.stats.HighRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
+		_, _ = fmt.Fprintf(w, "(%s%.1f%%%s)", ColorRed, float64(r.stats.HighRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 
-	fmt.Fprintf(w, "    %s●%s MEDIUM Risk: %s%3d packages%s ", ColorYellow, ColorReset, ColorYellow, r.stats.MediumRisk, ColorReset)
+	_, _ = fmt.Fprintf(w, "    %s●%s MEDIUM Risk: %s%3d packages%s ", ColorYellow, ColorReset, ColorYellow, r.stats.MediumRisk, ColorReset)
 	if r.stats.MediumRisk > 0 {
-		fmt.Fprintf(w, "(%s%.1f%%%s)", ColorYellow, float64(r.stats.MediumRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
+		_, _ = fmt.Fprintf(w, "(%s%.1f%%%s)", ColorYellow, float64(r.stats.MediumRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 
-	fmt.Fprintf(w, "    %s●%s LOW Risk:    %s%3d packages%s ", ColorGreen, ColorReset, ColorGreen, r.stats.LowRisk, ColorReset)
+	_, _ = fmt.Fprintf(w, "    %s●%s LOW Risk:    %s%3d packages%s ", ColorGreen, ColorReset, ColorGreen, r.stats.LowRisk, ColorReset)
 	if r.stats.LowRisk > 0 {
-		fmt.Fprintf(w, "(%s%.1f%%%s)", ColorGreen, float64(r.stats.LowRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
+		_, _ = fmt.Fprintf(w, "(%s%.1f%%%s)", ColorGreen, float64(r.stats.LowRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 
 	// Overall risk assessment
 	riskColor := ColorGreen
-	if overallRisk == "HIGH" {
+	switch overallRisk {
+	case "HIGH":
 		riskColor = ColorRed
-	} else if overallRisk == "MEDIUM" {
+	case "MEDIUM":
 		riskColor = ColorYellow
 	}
-	fmt.Fprintf(w, "  %sOverall Risk Level:%s %s%s%s\n", ColorBold, ColorReset, riskColor+ColorBold, overallRisk, ColorReset)
+	_, _ = fmt.Fprintf(w, "  %sOverall Risk Level:%s %s%s%s\n", ColorBold, ColorReset, riskColor+ColorBold, overallRisk, ColorReset)
 
 	// Performance stats
 	duration := r.stats.EndTime.Sub(r.stats.StartTime)
-	fmt.Fprintf(w, "  %sScan Duration:%s      %s\n", ColorBold, ColorReset, formatDuration(duration))
+	_, _ = fmt.Fprintf(w, "  %sScan Duration:%s      %s\n", ColorBold, ColorReset, formatDuration(duration))
 	if r.stats.TotalPackages > 0 {
 		avgTime := duration / time.Duration(r.stats.TotalPackages)
-		fmt.Fprintf(w, "  %sAverage per Package:%s %s\n", ColorBold, ColorReset, formatDuration(avgTime))
+		_, _ = fmt.Fprintf(w, "  %sAverage per Package:%s %s\n", ColorBold, ColorReset, formatDuration(avgTime))
 	}
 
 	// Key Findings - Critical Issues
@@ -175,7 +176,7 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 // printSectionHeader prints a section header
 func (r *Reporter) printSectionHeader(w io.Writer, title string) {
 	width := 80
-	fmt.Fprintf(w, "%s%s%s%s\n",
+	_, _ = fmt.Fprintf(w, "%s%s%s%s\n",
 		ColorBold+ColorCyan,
 		strings.Repeat("─", (width-len(title)-2)/2),
 		" "+title+" ",
@@ -188,7 +189,7 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 	riskColor := r.getRiskColor(result.RiskLevel)
 	riskIcon := r.getRiskIcon(result.RiskLevel)
 
-	fmt.Fprintf(w, "%s%s┌%s Package: %s%s@%s%s (%s)\n",
+	_, _ = fmt.Fprintf(w, "%s%s┌%s Package: %s%s@%s%s (%s)\n",
 		riskColor,
 		riskIcon,
 		strings.Repeat("─", 70),
@@ -198,17 +199,17 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		ColorReset,
 		result.Dependency.Ecosystem)
 
-	fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
+	_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
 
 	// Risk level badge
-	fmt.Fprintf(w, "%s│%s  %sRisk Level:%s %s%s%s\n",
+	_, _ = fmt.Fprintf(w, "%s│%s  %sRisk Level:%s %s%s%s\n",
 		riskColor, ColorReset,
 		ColorBold, ColorReset,
 		riskColor+ColorBold, result.RiskLevel, ColorReset)
 
 	// Supply chain score if available
 	if result.SupplyChainScore != nil {
-		fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %d/14 points (%s%s%s risk)\n",
+		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %d/14 points (%s%s%s risk)\n",
 			riskColor, ColorReset,
 			ColorBold, ColorReset,
 			result.SupplyChainScore.TotalScore,
@@ -219,19 +220,19 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 
 	// Repository and source info
 	if result.RepositoryURL != "" {
-		fmt.Fprintf(w, "%s│%s  %sRepository:%s %s\n",
+		_, _ = fmt.Fprintf(w, "%s│%s  %sRepository:%s %s\n",
 			riskColor, ColorReset,
 			ColorBold, ColorReset,
 			result.RepositoryURL)
 	}
 
-	fmt.Fprintf(w, "%s│%s  %sSource Available:%s %s\n",
+	_, _ = fmt.Fprintf(w, "%s│%s  %sSource Available:%s %s\n",
 		riskColor, ColorReset,
 		ColorBold, ColorReset,
 		formatBool(result.SourceCodeAvailable))
 
 	if result.BuildInfrastructure != "" {
-		fmt.Fprintf(w, "%s│%s  %sBuild Infrastructure:%s %s\n",
+		_, _ = fmt.Fprintf(w, "%s│%s  %sBuild Infrastructure:%s %s\n",
 			riskColor, ColorReset,
 			ColorBold, ColorReset,
 			result.BuildInfrastructure)
@@ -239,44 +240,44 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 
 	// Supply chain category scores (in verbose mode)
 	if r.config.Verbose && result.SupplyChainScore != nil {
-		fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
-		fmt.Fprintf(w, "%s│%s  %sSupply Chain Security Analysis:%s\n",
+		_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
+		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Security Analysis:%s\n",
 			riskColor, ColorReset,
 			ColorBold, ColorReset)
-		fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
+		_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
 
 		r.printCategoryScoreTable(w, result.SupplyChainScore.CategoryScores, riskColor)
 	}
 
 	// Findings
 	if len(result.Findings) > 0 {
-		fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
-		fmt.Fprintf(w, "%s│%s  %sRisk Findings:%s\n",
+		_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
+		_, _ = fmt.Fprintf(w, "%s│%s  %sRisk Findings:%s\n",
 			riskColor, ColorReset,
 			ColorBold, ColorReset)
 
 		for i, finding := range result.Findings {
 			sevColor := r.getSeverityColor(finding.Severity)
-			fmt.Fprintf(w, "%s│%s    %s[%s]%s %s\n",
+			_, _ = fmt.Fprintf(w, "%s│%s    %s[%s]%s %s\n",
 				riskColor, ColorReset,
 				sevColor, finding.Severity, ColorReset,
 				finding.Description)
 
 			if finding.Evidence != "" && r.config.Verbose {
-				fmt.Fprintf(w, "%s│%s       %sEvidence:%s %s\n",
+				_, _ = fmt.Fprintf(w, "%s│%s       %sEvidence:%s %s\n",
 					riskColor, ColorReset,
 					ColorDim, ColorReset,
 					finding.Evidence)
 			}
 
 			if i < len(result.Findings)-1 {
-				fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
+				_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
 			}
 		}
 	}
 
-	fmt.Fprintf(w, "%s└%s\n", riskColor, strings.Repeat("─", 76)+ColorReset)
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "%s└%s\n", riskColor, strings.Repeat("─", 76)+ColorReset)
+	_, _ = fmt.Fprintln(w)
 }
 
 // printCategoryScoreTable prints category scores in a table format
@@ -295,11 +296,11 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 	}
 
 	// Table header
-	fmt.Fprintf(w, "%s│%s    %-20s  %s  %s  %s\n",
+	_, _ = fmt.Fprintf(w, "%s│%s    %-20s  %s  %s  %s\n",
 		borderColor, ColorReset,
 		"Category", "Score", "Risk", "Status")
 
-	fmt.Fprintf(w, "%s│%s    %s\n",
+	_, _ = fmt.Fprintf(w, "%s│%s    %s\n",
 		borderColor, ColorReset,
 		strings.Repeat("─", 45))
 
@@ -311,7 +312,7 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 			verifiedIcon = "?"
 		}
 
-		fmt.Fprintf(w, "%s│%s    %-20s  %s  %s  %s\n",
+		_, _ = fmt.Fprintf(w, "%s│%s    %-20s  %s  %s  %s\n",
 			borderColor, ColorReset,
 			cat.name,
 			fmt.Sprintf("%d/2", cat.score.Score),
@@ -319,7 +320,7 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 			verifiedIcon)
 
 		if r.config.Verbose && cat.score.Description != "" {
-			fmt.Fprintf(w, "%s│%s      %s%s%s\n",
+			_, _ = fmt.Fprintf(w, "%s│%s      %s%s%s\n",
 				borderColor, ColorReset,
 				ColorDim, cat.score.Description, ColorReset)
 		}
@@ -328,21 +329,21 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 
 // printRecommendations prints recommendations based on findings
 func (r *Reporter) printRecommendations(w io.Writer) {
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	r.printSectionHeader(w, "RECOMMENDATIONS")
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 
 	recommendations := r.generateRecommendations()
 
 	if len(recommendations) == 0 {
-		fmt.Fprintf(w, "  %s✓%s No critical issues found. Continue monitoring dependencies for changes.\n",
+		_, _ = fmt.Fprintf(w, "  %s✓%s No critical issues found. Continue monitoring dependencies for changes.\n",
 			ColorGreen, ColorReset)
 		return
 	}
 
 	for i, rec := range recommendations {
-		fmt.Fprintf(w, "  %s%d.%s %s\n", ColorBold, i+1, ColorReset, rec)
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "  %s%d.%s %s\n", ColorBold, i+1, ColorReset, rec)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 

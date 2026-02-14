@@ -1,0 +1,106 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod verify
+
+builds:
+  - id: snyft
+    main: ./main.go
+    binary: snyft
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/metalstormbass/snyft/cmd.Version={{.Version}}
+      - -X github.com/metalstormbass/snyft/cmd.Commit={{.Commit}}
+      - -X github.com/metalstormbass/snyft/cmd.Date={{.Date}}
+    # Ignore darwin/arm64 on Go versions that don't support it well
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: snyft-archive
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+      - QUICKSTART.md
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+  groups:
+    - title: 'New Features'
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: 'Performance Improvements'
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: 'Documentation Updates'
+      regexp: '^.*?docs(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: 'Other Changes'
+      order: 999
+
+release:
+  github:
+    owner: metalstormbass
+    name: snyft
+  draft: false
+  prerelease: auto
+  mode: append
+  name_template: "Release {{.Version}}"
+  header: |
+    ## Installation
+
+    ### Using Go install
+    ```bash
+    go install github.com/metalstormbass/snyft@{{.Tag}}
+    ```
+
+    ### Download Binary
+    Download the appropriate binary for your platform below.
+
+  footer: |
+    ## Checksums
+    All binaries are checksummed for integrity verification.
+
+    **Full Changelog**: https://github.com/metalstormbass/snyft/compare/{{.PreviousTag}}...{{.Tag}}

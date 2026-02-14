@@ -15,67 +15,79 @@ func (r *Reporter) generateHTML() error {
 	w := r.config.Writer
 
 	// HTML header
-	fmt.Fprintln(w, "<!DOCTYPE html>")
-	fmt.Fprintln(w, "<html lang=\"en\">")
-	fmt.Fprintln(w, "<head>")
-	fmt.Fprintln(w, "  <meta charset=\"UTF-8\">")
-	fmt.Fprintln(w, "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">")
-	fmt.Fprintln(w, "  <title>SNYFT Supply Chain Security Report</title>")
-	fmt.Fprintln(w, "  <style>")
+	if _, err := fmt.Fprintln(w, "<!DOCTYPE html>"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "<html lang=\"en\">"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(w, "<head>"); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(w, "  <meta charset=\"UTF-8\">")
+	_, _ = fmt.Fprintln(w, "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">")
+	_, _ = fmt.Fprintln(w, "  <title>SNYFT Supply Chain Security Report</title>")
+	_, _ = fmt.Fprintln(w, "  <style>")
 	r.printHTMLStyles(w)
-	fmt.Fprintln(w, "  </style>")
-	fmt.Fprintln(w, "</head>")
-	fmt.Fprintln(w, "<body>")
+	_, _ = fmt.Fprintln(w, "  </style>")
+	_, _ = fmt.Fprintln(w, "</head>")
+	_, _ = fmt.Fprintln(w, "<body>")
 
 	// Header
-	fmt.Fprintln(w, "  <div class=\"container\">")
-	fmt.Fprintln(w, "    <header>")
-	fmt.Fprintln(w, "      <h1>SNYFT Supply Chain Security Report</h1>")
-	fmt.Fprintf(w, "      <p class=\"timestamp\">Generated: %s</p>\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintln(w, "    </header>")
+	_, _ = fmt.Fprintln(w, "  <div class=\"container\">")
+	_, _ = fmt.Fprintln(w, "    <header>")
+	_, _ = fmt.Fprintln(w, "      <h1>SNYFT Supply Chain Security Report</h1>")
+	if _, err := fmt.Fprintf(w, "      <p class=\"timestamp\">Generated: %s</p>\n", time.Now().Format("2006-01-02 15:04:05")); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(w, "    </header>")
 
 	// Executive Summary
-	r.printHTMLExecutiveSummary(w)
+	if err := r.printHTMLExecutiveSummary(w); err != nil {
+		return err
+	}
 
 	// Detailed Findings
-	fmt.Fprintln(w, "    <section>")
-	fmt.Fprintln(w, "      <h2>Detailed Findings</h2>")
+	_, _ = fmt.Fprintln(w, "    <section>")
+	_, _ = fmt.Fprintln(w, "      <h2>Detailed Findings</h2>")
 
 	for _, result := range r.results {
 		r.printHTMLPackage(w, result)
 	}
 
-	fmt.Fprintln(w, "    </section>")
+	_, _ = fmt.Fprintln(w, "    </section>")
 
 	// Recommendations
-	fmt.Fprintln(w, "    <section>")
-	fmt.Fprintln(w, "      <h2>Recommendations</h2>")
+	_, _ = fmt.Fprintln(w, "    <section>")
+	_, _ = fmt.Fprintln(w, "      <h2>Recommendations</h2>")
 
 	recommendations := r.generateRecommendations()
 	if len(recommendations) == 0 {
-		fmt.Fprintln(w, "      <p class=\"success\">✓ No critical issues found. Continue monitoring dependencies for changes.</p>")
+		_, _ = fmt.Fprintln(w, "      <p class=\"success\">✓ No critical issues found. Continue monitoring dependencies for changes.</p>")
 	} else {
-		fmt.Fprintln(w, "      <ol class=\"recommendations\">")
+		_, _ = fmt.Fprintln(w, "      <ol class=\"recommendations\">")
 		for _, rec := range recommendations {
 			cleanRec := stripANSI(rec)
-			fmt.Fprintf(w, "        <li>%s</li>\n", html.EscapeString(cleanRec))
+			if _, err := fmt.Fprintf(w, "        <li>%s</li>\n", html.EscapeString(cleanRec)); err != nil {
+				return err
+			}
 		}
-		fmt.Fprintln(w, "      </ol>")
+		_, _ = fmt.Fprintln(w, "      </ol>")
 	}
 
-	fmt.Fprintln(w, "    </section>")
+	_, _ = fmt.Fprintln(w, "    </section>")
 
 	// Footer
-	fmt.Fprintln(w, "  </div>")
-	fmt.Fprintln(w, "</body>")
-	fmt.Fprintln(w, "</html>")
+	_, _ = fmt.Fprintln(w, "  </div>")
+	_, _ = fmt.Fprintln(w, "</body>")
+	_, _ = fmt.Fprintln(w, "</html>")
 
 	return nil
 }
 
 // printHTMLStyles prints CSS styles
 func (r *Reporter) printHTMLStyles(w io.Writer) {
-	fmt.Fprintln(w, `
+	_, _ = fmt.Fprintln(w, `
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
       line-height: 1.6;
@@ -254,87 +266,90 @@ func (r *Reporter) printHTMLStyles(w io.Writer) {
 }
 
 // printHTMLExecutiveSummary prints the executive summary in HTML
-func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) {
-	fmt.Fprintln(w, "    <section>")
-	fmt.Fprintln(w, "      <h2>Executive Summary</h2>")
+func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
+	_, _ = fmt.Fprintln(w, "    <section>")
+	_, _ = fmt.Fprintln(w, "      <h2>Executive Summary</h2>")
 
 	duration := r.stats.EndTime.Sub(r.stats.StartTime)
 
-	fmt.Fprintln(w, "      <div class=\"summary\">")
-	fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
-	fmt.Fprintf(w, "          <h3>Total Packages</h3>\n")
-	fmt.Fprintf(w, "          <div class=\"value\">%d</div>\n", r.stats.TotalPackages)
-	fmt.Fprintf(w, "        </div>\n")
+	_, _ = fmt.Fprintln(w, "      <div class=\"summary\">")
+	if _, err := fmt.Fprintf(w, "        <div class=\"summary-card\">\n"); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(w, "          <h3>Total Packages</h3>\n")
+	_, _ = fmt.Fprintf(w, "          <div class=\"value\">%d</div>\n", r.stats.TotalPackages)
+	_, _ = fmt.Fprintf(w, "        </div>\n")
 
-	fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
-	fmt.Fprintf(w, "          <h3>High Risk</h3>\n")
-	fmt.Fprintf(w, "          <div class=\"value\" style=\"color: #dc3545;\">%d</div>\n", r.stats.HighRisk)
-	fmt.Fprintf(w, "        </div>\n")
+	_, _ = fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
+	_, _ = fmt.Fprintf(w, "          <h3>High Risk</h3>\n")
+	_, _ = fmt.Fprintf(w, "          <div class=\"value\" style=\"color: #dc3545;\">%d</div>\n", r.stats.HighRisk)
+	_, _ = fmt.Fprintf(w, "        </div>\n")
 
-	fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
-	fmt.Fprintf(w, "          <h3>Medium Risk</h3>\n")
-	fmt.Fprintf(w, "          <div class=\"value\" style=\"color: #ffc107;\">%d</div>\n", r.stats.MediumRisk)
-	fmt.Fprintf(w, "        </div>\n")
+	_, _ = fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
+	_, _ = fmt.Fprintf(w, "          <h3>Medium Risk</h3>\n")
+	_, _ = fmt.Fprintf(w, "          <div class=\"value\" style=\"color: #ffc107;\">%d</div>\n", r.stats.MediumRisk)
+	_, _ = fmt.Fprintf(w, "        </div>\n")
 
-	fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
-	fmt.Fprintf(w, "          <h3>Low Risk</h3>\n")
-	fmt.Fprintf(w, "          <div class=\"value\" style=\"color: #28a745;\">%d</div>\n", r.stats.LowRisk)
-	fmt.Fprintf(w, "        </div>\n")
+	_, _ = fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
+	_, _ = fmt.Fprintf(w, "          <h3>Low Risk</h3>\n")
+	_, _ = fmt.Fprintf(w, "          <div class=\"value\" style=\"color: #28a745;\">%d</div>\n", r.stats.LowRisk)
+	_, _ = fmt.Fprintf(w, "        </div>\n")
 
-	fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
-	fmt.Fprintf(w, "          <h3>Scan Duration</h3>\n")
-	fmt.Fprintf(w, "          <div class=\"value\" style=\"font-size: 20px;\">%s</div>\n", formatDuration(duration))
-	fmt.Fprintf(w, "        </div>\n")
+	_, _ = fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
+	_, _ = fmt.Fprintf(w, "          <h3>Scan Duration</h3>\n")
+	_, _ = fmt.Fprintf(w, "          <div class=\"value\" style=\"font-size: 20px;\">%s</div>\n", formatDuration(duration))
+	_, _ = fmt.Fprintf(w, "        </div>\n")
 
-	fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
-	fmt.Fprintf(w, "          <h3>Overall Risk</h3>\n")
+	_, _ = fmt.Fprintf(w, "        <div class=\"summary-card\">\n")
+	_, _ = fmt.Fprintf(w, "          <h3>Overall Risk</h3>\n")
 	overallRisk := r.calculateOverallRisk()
 	riskColor := "#28a745"
-	if overallRisk == "HIGH" {
+	switch overallRisk {
+	case "HIGH":
 		riskColor = "#dc3545"
-	} else if overallRisk == "MEDIUM" {
+	case "MEDIUM":
 		riskColor = "#ffc107"
 	}
-	fmt.Fprintf(w, "          <div class=\"value\" style=\"color: %s;\">%s</div>\n", riskColor, overallRisk)
-	fmt.Fprintf(w, "        </div>\n")
+	_, _ = fmt.Fprintf(w, "          <div class=\"value\" style=\"color: %s;\">%s</div>\n", riskColor, overallRisk)
+	_, _ = fmt.Fprintf(w, "        </div>\n")
 
-	fmt.Fprintln(w, "      </div>")
+	_, _ = fmt.Fprintln(w, "      </div>")
 
 	// Risk distribution
-	fmt.Fprintln(w, "      <div class=\"risk-distribution\">")
-	fmt.Fprintln(w, "        <h3>Risk Distribution</h3>")
+	_, _ = fmt.Fprintln(w, "      <div class=\"risk-distribution\">")
+	_, _ = fmt.Fprintln(w, "        <h3>Risk Distribution</h3>")
 
 	if r.stats.TotalPackages > 0 {
-		fmt.Fprintln(w, "        <div class=\"risk-bar\">")
-		fmt.Fprintln(w, "          <span class=\"risk-label high\">HIGH</span>")
-		fmt.Fprintf(w, "          <span class=\"risk-count\">%d</span>\n", r.stats.HighRisk)
-		fmt.Fprintf(w, "          <span class=\"risk-percentage\">(%.1f%%)</span>\n",
+		_, _ = fmt.Fprintln(w, "        <div class=\"risk-bar\">")
+		_, _ = fmt.Fprintln(w, "          <span class=\"risk-label high\">HIGH</span>")
+		_, _ = fmt.Fprintf(w, "          <span class=\"risk-count\">%d</span>\n", r.stats.HighRisk)
+		_, _ = fmt.Fprintf(w, "          <span class=\"risk-percentage\">(%.1f%%)</span>\n",
 			float64(r.stats.HighRisk)/float64(r.stats.TotalPackages)*100)
-		fmt.Fprintln(w, "        </div>")
+		_, _ = fmt.Fprintln(w, "        </div>")
 
-		fmt.Fprintln(w, "        <div class=\"risk-bar\">")
-		fmt.Fprintln(w, "          <span class=\"risk-label medium\">MEDIUM</span>")
-		fmt.Fprintf(w, "          <span class=\"risk-count\">%d</span>\n", r.stats.MediumRisk)
-		fmt.Fprintf(w, "          <span class=\"risk-percentage\">(%.1f%%)</span>\n",
+		_, _ = fmt.Fprintln(w, "        <div class=\"risk-bar\">")
+		_, _ = fmt.Fprintln(w, "          <span class=\"risk-label medium\">MEDIUM</span>")
+		_, _ = fmt.Fprintf(w, "          <span class=\"risk-count\">%d</span>\n", r.stats.MediumRisk)
+		_, _ = fmt.Fprintf(w, "          <span class=\"risk-percentage\">(%.1f%%)</span>\n",
 			float64(r.stats.MediumRisk)/float64(r.stats.TotalPackages)*100)
-		fmt.Fprintln(w, "        </div>")
+		_, _ = fmt.Fprintln(w, "        </div>")
 
-		fmt.Fprintln(w, "        <div class=\"risk-bar\">")
-		fmt.Fprintln(w, "          <span class=\"risk-label low\">LOW</span>")
-		fmt.Fprintf(w, "          <span class=\"risk-count\">%d</span>\n", r.stats.LowRisk)
-		fmt.Fprintf(w, "          <span class=\"risk-percentage\">(%.1f%%)</span>\n",
+		_, _ = fmt.Fprintln(w, "        <div class=\"risk-bar\">")
+		_, _ = fmt.Fprintln(w, "          <span class=\"risk-label low\">LOW</span>")
+		_, _ = fmt.Fprintf(w, "          <span class=\"risk-count\">%d</span>\n", r.stats.LowRisk)
+		_, _ = fmt.Fprintf(w, "          <span class=\"risk-percentage\">(%.1f%%)</span>\n",
 			float64(r.stats.LowRisk)/float64(r.stats.TotalPackages)*100)
-		fmt.Fprintln(w, "        </div>")
+		_, _ = fmt.Fprintln(w, "        </div>")
 	}
 
-	fmt.Fprintln(w, "      </div>")
+	_, _ = fmt.Fprintln(w, "      </div>")
 
 	// Key Findings - Critical Issues
 	criticalIssues := r.extractCriticalIssues(5)
 	if len(criticalIssues) > 0 {
-		fmt.Fprintln(w, "      <div style=\"margin-top: 30px;\">")
-		fmt.Fprintln(w, "        <h3>Key Findings</h3>")
-		fmt.Fprintln(w, "        <p style=\"color: #666; margin-bottom: 15px;\">Critical issues requiring immediate attention:</p>")
+		_, _ = fmt.Fprintln(w, "      <div style=\"margin-top: 30px;\">")
+		_, _ = fmt.Fprintln(w, "        <h3>Key Findings</h3>")
+		_, _ = fmt.Fprintln(w, "        <p style=\"color: #666; margin-bottom: 15px;\">Critical issues requiring immediate attention:</p>")
 
 		for i, issue := range criticalIssues {
 			issueClass := "medium"
@@ -342,52 +357,54 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) {
 				issueClass = "high"
 			}
 
-			fmt.Fprintf(w, "        <div class=\"finding %s\" style=\"margin: 10px 0;\">\n", issueClass)
-			fmt.Fprintf(w, "          <div style=\"font-weight: bold; margin-bottom: 5px;\">%d. %s@%s <span style=\"color: #666; font-weight: normal;\">(%s)</span></div>\n",
+			_, _ = fmt.Fprintf(w, "        <div class=\"finding %s\" style=\"margin: 10px 0;\">\n", issueClass)
+			_, _ = fmt.Fprintf(w, "          <div style=\"font-weight: bold; margin-bottom: 5px;\">%d. %s@%s <span style=\"color: #666; font-weight: normal;\">(%s)</span></div>\n",
 				i+1, html.EscapeString(issue.PackageName), html.EscapeString(issue.PackageVersion), issue.Ecosystem)
-			fmt.Fprintf(w, "          <div><span class=\"finding-severity\">[%s]</span> %s</div>\n",
+			_, _ = fmt.Fprintf(w, "          <div><span class=\"finding-severity\">[%s]</span> %s</div>\n",
 				html.EscapeString(issue.Severity), html.EscapeString(issue.Description))
 			if issue.Evidence != "" {
-				fmt.Fprintf(w, "          <div style=\"margin-top: 5px; font-size: 12px; color: #666;\">Evidence: %s</div>\n",
+				_, _ = fmt.Fprintf(w, "          <div style=\"margin-top: 5px; font-size: 12px; color: #666;\">Evidence: %s</div>\n",
 					html.EscapeString(issue.Evidence))
 			}
-			fmt.Fprintln(w, "        </div>")
+			_, _ = fmt.Fprintln(w, "        </div>")
 		}
 
-		fmt.Fprintln(w, "      </div>")
+		_, _ = fmt.Fprintln(w, "      </div>")
 	}
 
-	fmt.Fprintln(w, "    </section>")
+	_, _ = fmt.Fprintln(w, "    </section>")
+	return nil
 }
 
 // printHTMLPackage prints a package in HTML format
 func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 	riskClass := "low"
-	if result.RiskLevel == "HIGH" {
+	switch result.RiskLevel {
+	case "HIGH":
 		riskClass = "high"
-	} else if result.RiskLevel == "MEDIUM" {
+	case "MEDIUM":
 		riskClass = "medium"
 	}
 
-	fmt.Fprintf(w, "      <div class=\"package %s\">\n", riskClass)
-	fmt.Fprintln(w, "        <div class=\"package-header\">")
-	fmt.Fprintf(w, "          <div class=\"package-name\">%s@%s</div>\n",
+	_, _ = fmt.Fprintf(w, "      <div class=\"package %s\">\n", riskClass)
+	_, _ = fmt.Fprintln(w, "        <div class=\"package-header\">")
+	_, _ = fmt.Fprintf(w, "          <div class=\"package-name\">%s@%s</div>\n",
 		html.EscapeString(result.Dependency.Name),
 		html.EscapeString(result.Dependency.Version))
-	fmt.Fprintf(w, "          <span class=\"badge %s\">%s</span>\n", riskClass, result.RiskLevel)
-	fmt.Fprintln(w, "        </div>")
+	_, _ = fmt.Fprintf(w, "          <span class=\"badge %s\">%s</span>\n", riskClass, result.RiskLevel)
+	_, _ = fmt.Fprintln(w, "        </div>")
 
-	fmt.Fprintln(w, "        <div class=\"package-details\">")
-	fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Ecosystem:</span> %s</div>\n",
+	_, _ = fmt.Fprintln(w, "        <div class=\"package-details\">")
+	_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Ecosystem:</span> %s</div>\n",
 		result.Dependency.Ecosystem)
 
 	if result.SupplyChainScore != nil {
-		fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Supply Chain Score:</span> %d/14 points</div>\n",
+		_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Supply Chain Score:</span> %d/14 points</div>\n",
 			result.SupplyChainScore.TotalScore)
 	}
 
 	if result.RepositoryURL != "" {
-		fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Repository:</span> <a href=\"%s\" target=\"_blank\">%s</a></div>\n",
+		_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Repository:</span> <a href=\"%s\" target=\"_blank\">%s</a></div>\n",
 			html.EscapeString(result.RepositoryURL),
 			html.EscapeString(result.RepositoryURL))
 	}
@@ -396,17 +413,17 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 	if result.SourceCodeAvailable {
 		sourceAvailable = "Yes"
 	}
-	fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Source Available:</span> %s</div>\n",
+	_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Source Available:</span> %s</div>\n",
 		sourceAvailable)
 
-	fmt.Fprintln(w, "        </div>")
+	_, _ = fmt.Fprintln(w, "        </div>")
 
 	// Category scores
 	if r.config.Verbose && result.SupplyChainScore != nil {
-		fmt.Fprintln(w, "        <div class=\"category-scores\">")
-		fmt.Fprintln(w, "          <h4>Supply Chain Security Analysis</h4>")
-		fmt.Fprintln(w, "          <table>")
-		fmt.Fprintln(w, "            <tr><th>Category</th><th>Score</th><th>Risk</th><th>Status</th></tr>")
+		_, _ = fmt.Fprintln(w, "        <div class=\"category-scores\">")
+		_, _ = fmt.Fprintln(w, "          <h4>Supply Chain Security Analysis</h4>")
+		_, _ = fmt.Fprintln(w, "          <table>")
+		_, _ = fmt.Fprintln(w, "            <tr><th>Category</th><th>Score</th><th>Risk</th><th>Status</th></tr>")
 
 		categories := []struct {
 			name  string
@@ -423,9 +440,10 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 
 		for _, cat := range categories {
 			scoreIcon := "🟢"
-			if cat.score.RiskPoints == 2 {
+			switch cat.score.RiskPoints {
+			case 2:
 				scoreIcon = "🔴"
-			} else if cat.score.RiskPoints == 1 {
+			case 1:
 				scoreIcon = "🟡"
 			}
 
@@ -434,18 +452,18 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 				verifiedIcon = "?"
 			}
 
-			fmt.Fprintf(w, "            <tr><td>%s</td><td>%d/2</td><td>%s</td><td>%s</td></tr>\n",
+			_, _ = fmt.Fprintf(w, "            <tr><td>%s</td><td>%d/2</td><td>%s</td><td>%s</td></tr>\n",
 				html.EscapeString(cat.name), cat.score.Score, scoreIcon, verifiedIcon)
 		}
 
-		fmt.Fprintln(w, "          </table>")
-		fmt.Fprintln(w, "        </div>")
+		_, _ = fmt.Fprintln(w, "          </table>")
+		_, _ = fmt.Fprintln(w, "        </div>")
 	}
 
 	// Findings
 	if len(result.Findings) > 0 {
-		fmt.Fprintln(w, "        <div class=\"findings\">")
-		fmt.Fprintln(w, "          <h4>Risk Findings</h4>")
+		_, _ = fmt.Fprintln(w, "        <div class=\"findings\">")
+		_, _ = fmt.Fprintln(w, "          <h4>Risk Findings</h4>")
 
 		for _, finding := range result.Findings {
 			findingClass := "medium"
@@ -453,23 +471,23 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 				findingClass = "high"
 			}
 
-			fmt.Fprintf(w, "          <div class=\"finding %s\">\n", findingClass)
-			fmt.Fprintf(w, "            <span class=\"finding-severity\">[%s]</span> %s\n",
+			_, _ = fmt.Fprintf(w, "          <div class=\"finding %s\">\n", findingClass)
+			_, _ = fmt.Fprintf(w, "            <span class=\"finding-severity\">[%s]</span> %s\n",
 				html.EscapeString(finding.Severity),
 				html.EscapeString(finding.Description))
 
 			if finding.Evidence != "" && r.config.Verbose {
-				fmt.Fprintf(w, "            <div style=\"margin-top: 5px; font-size: 12px; color: #666;\">Evidence: %s</div>\n",
+				_, _ = fmt.Fprintf(w, "            <div style=\"margin-top: 5px; font-size: 12px; color: #666;\">Evidence: %s</div>\n",
 					html.EscapeString(finding.Evidence))
 			}
 
-			fmt.Fprintln(w, "          </div>")
+			_, _ = fmt.Fprintln(w, "          </div>")
 		}
 
-		fmt.Fprintln(w, "        </div>")
+		_, _ = fmt.Fprintln(w, "        </div>")
 	}
 
-	fmt.Fprintln(w, "      </div>")
+	_, _ = fmt.Fprintln(w, "      </div>")
 }
 
 // stripANSI removes ANSI color codes from a string

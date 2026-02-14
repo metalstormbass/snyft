@@ -67,7 +67,7 @@ func (c *BitbucketClient) GetRepositoryInfo(repoURL string) (*models.RepositoryI
 			return c.scrapeRepositoryInfo(owner, repo)
 		}
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Bitbucket API returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("bitbucket API returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var bbRepo BitbucketRepository
@@ -282,7 +282,7 @@ func (c *BitbucketClient) GetReleaseHistory(repoURL string, limit int) ([]GitHub
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Bitbucket API returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("bitbucket API returned %d", resp.StatusCode)
 	}
 
 	var tagsResp BitbucketTagsResponse
@@ -329,7 +329,7 @@ func (c *BitbucketClient) GetCommitActivity(repoURL string, since time.Time) ([]
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Bitbucket API returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("bitbucket API returned %d", resp.StatusCode)
 	}
 
 	var commitsResp BitbucketCommitsResponse
@@ -512,7 +512,7 @@ func (c *BitbucketClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Bitbucket API returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("bitbucket API returned %d", resp.StatusCode)
 	}
 
 	var commitsResp BitbucketCommitsResponse
