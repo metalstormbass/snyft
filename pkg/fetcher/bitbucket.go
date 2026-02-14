@@ -698,3 +698,19 @@ func parseBitbucketURL(repoURL string) (owner, repo string, err error) {
 
 	return "", "", fmt.Errorf("could not parse Bitbucket URL: %s", repoURL)
 }
+
+// CheckIfOrganization checks if a Bitbucket user is a team/organization (stub)
+func (c *BitbucketClient) CheckIfOrganization(owner string) (bool, string) {
+	// Stub implementation - would require Bitbucket API call
+	return false, ""
+}
+
+// CheckVerifiedOrganization checks if a Bitbucket team has verified status (stub)
+func (c *BitbucketClient) CheckVerifiedOrganization(owner string) bool {
+	return false
+}
+
+// GetUserAccountCreatedDate fetches account creation date for a Bitbucket user (stub)
+func (c *BitbucketClient) GetUserAccountCreatedDate(username string) (time.Time, error) {
+	return time.Time{}, fmt.Errorf("account age check not implemented for Bitbucket")
+}

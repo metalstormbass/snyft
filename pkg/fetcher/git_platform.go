@@ -54,6 +54,16 @@ type GitPlatformClient interface {
 
 	// GetPlatformName returns the name of the platform (e.g., "GitHub", "GitLab", "Bitbucket")
 	GetPlatformName() string
+
+	// CheckIfOrganization checks if a repository owner is an organization or personal account
+	// Returns (isOrg bool, orgName string)
+	CheckIfOrganization(owner string) (bool, string)
+
+	// CheckVerifiedOrganization checks if an organization has verified status
+	CheckVerifiedOrganization(owner string) bool
+
+	// GetUserAccountCreatedDate fetches the account creation date for a user
+	GetUserAccountCreatedDate(username string) (time.Time, error)
 }
 
 // PlatformType represents the type of git hosting platform

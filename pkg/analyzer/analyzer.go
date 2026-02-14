@@ -615,132 +615,39 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	result.SupplyChainScore = score
 }
 
-// scorePublisherControl: 2FA/signing/multi-maintainer (0-2 pts)
-// Score: 0=single maintainer no signing, 1=few maintainers OR signing, 2=multiple maintainers WITH signing
+// scorePublisherControl: Comprehensive publisher control risk assessment (0-2 pts)
+//
+// Core Question: "How easy is it to get publish rights?"
+//
+// This is the MOST CRITICAL risk factor - maintainer account compromise is the #1 attack vector
+// Single maintainers with personal accounts are a single point of failure
+//
+// Weighted factors (30% of total supply chain risk):
+// 1. Maintainer count (bus factor) - CRITICAL
+// 2. Organization vs personal account
+// 3. Account age (new accounts = red flag)
+// 4. Email domain stability
+// 5. Package concentration (many packages = high-value target)
+// 6. Signing/MFA practices
+//
+// Justification: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Finding: 90% of supply chain attacks target maintainer accounts, not code vulnerabilities
+//
+// Scoring:
+// - 0 risk points (best): Multiple maintainers, org account, established accounts, signing
+// - 1 risk point (moderate): Few maintainers OR personal account OR some concerns
+// - 2 risk points (worst): Single maintainer + personal account + red flags
 func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.CategoryScore {
-	maintainerCount := len(result.Metadata.Maintainers)
-	evidenceParts := []string{}
+	// Perform comprehensive publisher control analysis
+	analysis := a.AnalyzePublisherControl(result, result.RepositoryURL)
 
-	// Get git client once for reuse
-	var gitClient fetcher.GitPlatformClient
-	if result.RepositoryURL != "" {
-		gitClient = a.getGitClient(result.RepositoryURL)
-	}
-
-	// Check for signed commits
-	hasSignedCommits := false
-	if gitClient != nil {
-		hasSigning, count, err := gitClient.CheckSignedCommits(result.RepositoryURL)
-		if err == nil {
-			hasSignedCommits = hasSigning
-			if hasSigning {
-				evidenceParts = append(evidenceParts, fmt.Sprintf("%d/30 commits signed", count))
-			} else {
-				evidenceParts = append(evidenceParts, "no signed commits detected")
-			}
-		}
-	}
-
-	// Check for signed releases
-	hasSignedReleases := false
-	if gitClient != nil {
-		hasSigned, err := gitClient.CheckSignedReleases(result.RepositoryURL)
-		if err == nil && hasSigned {
-			hasSignedReleases = true
-			evidenceParts = append(evidenceParts, "releases have signatures")
-		}
-	}
-
-	// Combine signing indicators
-	hasSigning := hasSignedCommits || hasSignedReleases
-
-	// Add maintainer info to evidence
-	if maintainerCount > 0 {
-		evidenceParts = append(evidenceParts, fmt.Sprintf("%d maintainer(s)", maintainerCount))
-	} else {
-		evidenceParts = append(evidenceParts, "no maintainer data")
-	}
-
-	evidence := strings.Join(evidenceParts, "; ")
-
-	// Scoring logic:
-	// 0 points (2 risk): Single maintainer + no signing
-	// 1 point (1 risk): Few maintainers OR signing (but not both)
-	// 2 points (0 risk): Multiple maintainers + signing
-
-	if maintainerCount == 0 {
-		// Fallback: unable to verify maintainer count
-		return models.CategoryScore{
-			Score:       0,
-			RiskPoints:  1,
-			Description: "Unable to verify maintainer information",
-			Evidence:    evidence,
-			Verified:    false,
-		}
-	}
-
-	// Single maintainer with no signing = highest risk
-	if maintainerCount == 1 && !hasSigning {
-		return models.CategoryScore{
-			Score:       0,
-			RiskPoints:  2,
-			Description: "Single maintainer with no commit/release signing",
-			Evidence:    evidence,
-			Verified:    true,
-		}
-	}
-
-	// Single maintainer WITH signing = moderate risk
-	if maintainerCount == 1 && hasSigning {
-		return models.CategoryScore{
-			Score:       1,
-			RiskPoints:  1,
-			Description: "Single maintainer but has signing controls",
-			Evidence:    evidence,
-			Verified:    true,
-		}
-	}
-
-	// Few maintainers (2-3) with no signing = moderate risk
-	if maintainerCount <= 3 && !hasSigning {
-		return models.CategoryScore{
-			Score:       1,
-			RiskPoints:  1,
-			Description: "Few maintainers without signing controls",
-			Evidence:    evidence,
-			Verified:    true,
-		}
-	}
-
-	// Few maintainers WITH signing = low risk
-	if maintainerCount <= 3 && hasSigning {
-		return models.CategoryScore{
-			Score:       2,
-			RiskPoints:  0,
-			Description: "Few maintainers with signing controls",
-			Evidence:    evidence,
-			Verified:    true,
-		}
-	}
-
-	// Multiple maintainers (4+) without signing = moderate risk
-	if maintainerCount > 3 && !hasSigning {
-		return models.CategoryScore{
-			Score:       1,
-			RiskPoints:  1,
-			Description: "Multiple maintainers but no signing controls",
-			Evidence:    evidence,
-			Verified:    true,
-		}
-	}
-
-	// Multiple maintainers WITH signing = lowest risk
+	// Convert the detailed analysis to a CategoryScore
 	return models.CategoryScore{
-		Score:       2,
-		RiskPoints:  0,
-		Description: "Multiple maintainers with signing controls",
-		Evidence:    evidence,
-		Verified:    true,
+		Score:       2 - analysis.RiskPoints, // Convert risk points to score
+		RiskPoints:  analysis.RiskPoints,
+		Description: analysis.Evidence,
+		Evidence:    analysis.Evidence,
+		Verified:    analysis.Verified,
 	}
 }
 

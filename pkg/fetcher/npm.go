@@ -578,3 +578,106 @@ func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistor
 
 	return history, nil
 }
+
+// GetMaintainerPackageCount fetches the number of packages maintained by a specific user
+//
+// Methodology:
+// - Search npm registry for packages by maintainer
+// - npm API: GET https://registry.npmjs.org/-/v1/search?text=maintainer:{username}
+// - Count total packages returned
+//
+// Note: This requires authentication for accurate results. Without auth, npm limits results.
+//
+// Risk Assessment:
+// - 1-5 packages: LOW RISK (normal maintainer)
+// - 6-49 packages: MEDIUM RISK (active contributor)
+// - 50+ packages: HIGH RISK (high-value target, compromise = widespread impact)
+//
+// Justification:
+// Maintainers with many packages are high-value targets. Compromising one account
+// gives attackers control over entire package ecosystems.
+//
+// Real-world examples:
+// - event-stream attack (2018): Maintainer handed over popular package to attacker
+// - left-pad incident (2016): One maintainer controlled critical infrastructure packages
+//
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Finding: Top 500 npm maintainers collectively control 30% of the ecosystem
+func (c *NPMClient) GetMaintainerPackageCount(username string) (int, error) {
+	// Try to search for packages by this maintainer
+	// npm search API: https://registry.npmjs.org/-/v1/search
+	searchURL := fmt.Sprintf("https://registry.npmjs.org/-/v1/search?text=maintainer:%s&size=250", username)
+
+	resp, err := c.httpClient.Get(searchURL)
+	if err != nil {
+		// Fallback: try alternative approach - search by author
+		return c.searchByAuthor(username)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		// Fallback to author search
+		return c.searchByAuthor(username)
+	}
+
+	var searchResp struct {
+		Total   int `json:"total"`
+		Objects []struct {
+			Package struct {
+				Name        string   `json:"name"`
+				Maintainers []struct {
+					Username string `json:"username"`
+				} `json:"maintainers"`
+			} `json:"package"`
+		} `json:"objects"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return 0, err
+	}
+
+	// Filter to only count packages where this user is actually a maintainer
+	count := 0
+	for _, obj := range searchResp.Objects {
+		for _, maintainer := range obj.Package.Maintainers {
+			if maintainer.Username == username {
+				count++
+				break
+			}
+		}
+	}
+
+	// If we hit the size limit (250), the actual count might be higher
+	// Return the total from the API response if available
+	if searchResp.Total > count {
+		return searchResp.Total, nil
+	}
+
+	return count, nil
+}
+
+// searchByAuthor is a fallback method to search packages by author field
+func (c *NPMClient) searchByAuthor(username string) (int, error) {
+	searchURL := fmt.Sprintf("https://registry.npmjs.org/-/v1/search?text=author:%s&size=250", username)
+
+	resp, err := c.httpClient.Get(searchURL)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		// Unable to get count - return 0 as conservative estimate
+		return 0, fmt.Errorf("npm search returned %d", resp.StatusCode)
+	}
+
+	var searchResp struct {
+		Total int `json:"total"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return 0, err
+	}
+
+	return searchResp.Total, nil
+}
