@@ -256,25 +256,25 @@ func (sa *SemanticAnalyzer) extractFindingsFromText(text string, scriptType stri
 	// Check for explicit "benign" or "no risk" statements first
 	textLower := strings.ToLower(text)
 	if strings.Contains(textLower, "appears benign") ||
-	   strings.Contains(textLower, "no risky patterns") ||
-	   strings.Contains(textLower, "no risk") ||
-	   (strings.Contains(textLower, "no network") &&
-	    strings.Contains(textLower, "no file system") &&
-	    strings.Contains(textLower, "no privilege")) {
+		strings.Contains(textLower, "no risky patterns") ||
+		strings.Contains(textLower, "no risk") ||
+		(strings.Contains(textLower, "no network") &&
+			strings.Contains(textLower, "no file system") &&
+			strings.Contains(textLower, "no privilege")) {
 		// Script is benign, return empty findings
 		return findings
 	}
 
 	// Pattern 1: Network Access Patterns
 	if sa.containsPattern(text, []string{"network access", "network request", "network download", "downloads code", "http request", "fetch", "curl", "wget"}) &&
-	   !sa.containsPattern(text, []string{"no network"}) {
+		!sa.containsPattern(text, []string{"no network"}) {
 		finding := models.SemanticFinding{
-			Type:        "suspicious_network_call",
-			Description: "Install script makes network requests, potentially downloading code from external sources",
-			Confidence:  sa.calculateConfidence(text, "network"),
-			Severity:    sa.extractSeverity(text, "network", "HIGH"),
-			FilePath:    scriptType,
-			Evidence:    sa.extractEvidence(text, "network"),
+			Type:            "suspicious_network_call",
+			Description:     "Install script makes network requests, potentially downloading code from external sources",
+			Confidence:      sa.calculateConfidence(text, "network"),
+			Severity:        sa.extractSeverity(text, "network", "HIGH"),
+			FilePath:        scriptType,
+			Evidence:        sa.extractEvidence(text, "network"),
 			RiskExplanation: "Downloaded code bypasses package registry audits and can be modified by attackers (Backstabber's Knife Collection, Ohm et al. 2020)",
 		}
 		findings = append(findings, finding)
@@ -282,14 +282,14 @@ func (sa *SemanticAnalyzer) extractFindingsFromText(text string, scriptType stri
 
 	// Pattern 2: File System Operations
 	if sa.containsPattern(text, []string{"file system modification", "file system operation", "writes to", "chmod", "chown", "rm -rf"}) &&
-	   !sa.containsPattern(text, []string{"no file system"}) {
+		!sa.containsPattern(text, []string{"no file system"}) {
 		finding := models.SemanticFinding{
-			Type:        "dangerous_file_operation",
-			Description: "Install script performs file system operations outside package directory",
-			Confidence:  sa.calculateConfidence(text, "file"),
-			Severity:    sa.extractSeverity(text, "file", "MEDIUM"),
-			FilePath:    scriptType,
-			Evidence:    sa.extractEvidence(text, "file"),
+			Type:            "dangerous_file_operation",
+			Description:     "Install script performs file system operations outside package directory",
+			Confidence:      sa.calculateConfidence(text, "file"),
+			Severity:        sa.extractSeverity(text, "file", "MEDIUM"),
+			FilePath:        scriptType,
+			Evidence:        sa.extractEvidence(text, "file"),
 			RiskExplanation: "Global modifications can persist malicious code beyond package lifecycle (SLSA Build Level 1 - builds should be hermetic)",
 		}
 		findings = append(findings, finding)
@@ -297,14 +297,14 @@ func (sa *SemanticAnalyzer) extractFindingsFromText(text string, scriptType stri
 
 	// Pattern 3: Privilege Escalation
 	if sa.containsPattern(text, []string{"privilege escalation", "elevated privilege", "sudo", "su", "gain admin", "root access"}) &&
-	   !sa.containsPattern(text, []string{"no privilege"}) {
+		!sa.containsPattern(text, []string{"no privilege"}) {
 		finding := models.SemanticFinding{
-			Type:        "privilege_escalation",
-			Description: "Install script attempts to gain elevated privileges",
-			Confidence:  sa.calculateConfidence(text, "privilege"),
-			Severity:    "HIGH",
-			FilePath:    scriptType,
-			Evidence:    sa.extractEvidence(text, "privilege"),
+			Type:            "privilege_escalation",
+			Description:     "Install script attempts to gain elevated privileges",
+			Confidence:      sa.calculateConfidence(text, "privilege"),
+			Severity:        "HIGH",
+			FilePath:        scriptType,
+			Evidence:        sa.extractEvidence(text, "privilege"),
 			RiskExplanation: "Root access enables system-wide compromise (npm 'crossenv' attack, 2017)",
 		}
 		findings = append(findings, finding)
@@ -313,12 +313,12 @@ func (sa *SemanticAnalyzer) extractFindingsFromText(text string, scriptType stri
 	// Pattern 4: Obfuscation Techniques
 	if sa.containsPattern(text, []string{"obfuscation", "obfuscated", "base64", "eval", "exec", "encoded"}) {
 		finding := models.SemanticFinding{
-			Type:        "code_obfuscation",
-			Description: "Install script uses obfuscation techniques that hide intent",
-			Confidence:  sa.calculateConfidence(text, "obfuscation"),
-			Severity:    "HIGH",
-			FilePath:    scriptType,
-			Evidence:    sa.extractEvidence(text, "obfuscation"),
+			Type:            "code_obfuscation",
+			Description:     "Install script uses obfuscation techniques that hide intent",
+			Confidence:      sa.calculateConfidence(text, "obfuscation"),
+			Severity:        "HIGH",
+			FilePath:        scriptType,
+			Evidence:        sa.extractEvidence(text, "obfuscation"),
 			RiskExplanation: "Malicious actors hide intent through obfuscation (event-stream attack, 2018)",
 		}
 		findings = append(findings, finding)
@@ -327,12 +327,12 @@ func (sa *SemanticAnalyzer) extractFindingsFromText(text string, scriptType stri
 	// Pattern 5: Environment Variable Access (Credential Harvesting)
 	if sa.containsPattern(text, []string{"environment", "env", "credential", "password", "token", "secret", "api key"}) {
 		finding := models.SemanticFinding{
-			Type:        "credential_harvesting",
-			Description: "Install script accesses environment variables that may contain credentials",
-			Confidence:  sa.calculateConfidence(text, "environment"),
-			Severity:    "HIGH",
-			FilePath:    scriptType,
-			Evidence:    sa.extractEvidence(text, "environment"),
+			Type:            "credential_harvesting",
+			Description:     "Install script accesses environment variables that may contain credentials",
+			Confidence:      sa.calculateConfidence(text, "environment"),
+			Severity:        "HIGH",
+			FilePath:        scriptType,
+			Evidence:        sa.extractEvidence(text, "environment"),
 			RiskExplanation: "Credential theft during installation (multiple npm packages caught exfiltrating AWS credentials)",
 		}
 		findings = append(findings, finding)
@@ -341,12 +341,12 @@ func (sa *SemanticAnalyzer) extractFindingsFromText(text string, scriptType stri
 	// Pattern 6: Child Process Spawning
 	if sa.containsPattern(text, []string{"child process", "spawn", "fork", "exec", "subprocess"}) {
 		finding := models.SemanticFinding{
-			Type:        "suspicious_process_spawn",
-			Description: "Install script spawns child processes that could hide malicious behavior",
-			Confidence:  sa.calculateConfidence(text, "process"),
-			Severity:    sa.extractSeverity(text, "process", "MEDIUM"),
-			FilePath:    scriptType,
-			Evidence:    sa.extractEvidence(text, "process"),
+			Type:            "suspicious_process_spawn",
+			Description:     "Install script spawns child processes that could hide malicious behavior",
+			Confidence:      sa.calculateConfidence(text, "process"),
+			Severity:        sa.extractSeverity(text, "process", "MEDIUM"),
+			FilePath:        scriptType,
+			Evidence:        sa.extractEvidence(text, "process"),
 			RiskExplanation: "Process injection and sandbox escape (flatmap-stream attack)",
 		}
 		findings = append(findings, finding)
@@ -361,12 +361,12 @@ func (sa *SemanticAnalyzer) extractFindingsFromText(text string, scriptType stri
 	// If we got response but no structured patterns, add a generic finding
 	if len(findings) == 0 && len(text) > 100 {
 		finding := models.SemanticFinding{
-			Type:        "unknown_pattern",
-			Description: "Semantic analysis identified potential concerns but couldn't classify them",
-			Confidence:  0.5,
-			Severity:    "LOW",
-			FilePath:    scriptType,
-			Evidence:    text[:min(500, len(text))],
+			Type:            "unknown_pattern",
+			Description:     "Semantic analysis identified potential concerns but couldn't classify them",
+			Confidence:      0.5,
+			Severity:        "LOW",
+			FilePath:        scriptType,
+			Evidence:        text[:min(500, len(text))],
 			RiskExplanation: "Manual review recommended",
 		}
 		findings = append(findings, finding)
@@ -471,12 +471,12 @@ func (sa *SemanticAnalyzer) extractEvidence(text string, patternType string) str
 		sentenceLower := strings.ToLower(sentence)
 		// Look for the actual pattern keywords, not just the type
 		keywords := map[string][]string{
-			"network": {"network", "download", "http", "curl", "fetch"},
-			"file": {"file", "write", "chmod", "mkdir"},
-			"privilege": {"privilege", "sudo", "root"},
+			"network":     {"network", "download", "http", "curl", "fetch"},
+			"file":        {"file", "write", "chmod", "mkdir"},
+			"privilege":   {"privilege", "sudo", "root"},
 			"obfuscation": {"obfuscate", "base64", "eval", "encode"},
 			"environment": {"environment", "env", "credential", "secret"},
-			"process": {"process", "spawn", "exec", "fork"},
+			"process":     {"process", "spawn", "exec", "fork"},
 		}
 
 		if keywordList, ok := keywords[patternType]; ok {
@@ -632,8 +632,8 @@ func min(a, b int) int {
 // This is the main entry point for semantic analysis
 func (sa *SemanticAnalyzer) AnalyzePackage(ctx context.Context, pkg *models.AnalysisResult, opts AnalyzerOptions) (*models.AIAnalysisResult, error) {
 	result := &models.AIAnalysisResult{
-		Timestamp:    time.Now(),
-		ModelVersion: string(anthropic.ModelClaudeSonnet4_5_20250929),
+		Timestamp:        time.Now(),
+		ModelVersion:     string(anthropic.ModelClaudeSonnet4_5_20250929),
 		SemanticFindings: []models.SemanticFinding{},
 	}
 
@@ -971,4 +971,3 @@ func (sa *SemanticAnalyzer) FetchFileFromURL(ctx context.Context, url string) (s
 
 	return string(body), nil
 }
-
