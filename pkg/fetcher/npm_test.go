@@ -67,7 +67,7 @@ func TestGetOwnershipHistory_NPM(t *testing.T) {
 				},
 				Time: map[string]string{
 					"1.0.0": time.Now().AddDate(0, -12, 0).Format(time.RFC3339),
-					"2.0.0": time.Now().AddDate(0, -2, 0).Format(time.RFC3339),
+					"2.0.0": time.Now().AddDate(0, -1, 0).Format(time.RFC3339),
 				},
 			},
 			wantChanges:       1,
