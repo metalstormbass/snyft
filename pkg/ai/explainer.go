@@ -330,6 +330,18 @@ func (e *Explainer) parseExecutiveResponse(response string, result models.Analys
 			continue
 		} else if strings.Contains(lower, "recommend") {
 			currentSection = "recommendation"
+			// Check if there's content after the "Recommendation:" label on the same line
+			if idx := strings.Index(lower, "recommend"); idx >= 0 {
+				// Find the colon after "recommend"
+				colonIdx := strings.Index(line[idx:], ":")
+				if colonIdx >= 0 {
+					// Extract content after the colon
+					content := strings.TrimSpace(line[idx+colonIdx+1:])
+					if content != "" {
+						recommendationLines = append(recommendationLines, content)
+					}
+				}
+			}
 			continue
 		} else if strings.Contains(lower, "technical") {
 			currentSection = "technical"
