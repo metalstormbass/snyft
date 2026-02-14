@@ -77,7 +77,11 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 	// Get latest version info
 	if latest, ok := npmResp.Versions[npmResp.DistTags.Latest]; ok {
 		pkg.Version = latest.Version
-		if t, err := time.Parse(time.RFC3339, latest.Time); err == nil {
+	}
+
+	// Get published time for the latest version
+	if timeStr, ok := npmResp.Time[npmResp.DistTags.Latest]; ok {
+		if t, err := time.Parse(time.RFC3339, timeStr); err == nil {
 			pkg.PublishedAt = t
 		}
 	}
@@ -100,6 +104,7 @@ type NPMRegistryResponse struct {
 	Maintainers []NPMMaintainer              `json:"maintainers"`
 	DistTags    NPMDistTags                  `json:"dist-tags"`
 	Versions    map[string]NPMVersionDetails `json:"versions"`
+	Time        map[string]string            `json:"time"`
 }
 
 type NPMRepository struct {
@@ -119,7 +124,6 @@ type NPMDistTags struct {
 
 type NPMVersionDetails struct {
 	Version string `json:"version"`
-	Time    string `json:"_npmUser"`
 }
 
 func extractMaintainers(maintainers []NPMMaintainer) []string {

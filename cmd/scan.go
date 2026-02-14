@@ -230,6 +230,12 @@ func printResult(result models.AnalysisResult) {
 		fmt.Printf("   Source Available: %v\n", result.SourceCodeAvailable)
 		fmt.Printf("   Build Infrastructure: %s\n", result.BuildInfrastructure)
 		fmt.Printf("   Risk Factors: %v\n", result.RiskFactors)
+		if len(result.Findings) > 0 {
+			fmt.Printf("   Findings:\n")
+			for _, finding := range result.Findings {
+				fmt.Printf("      [%s] %s: %s\n", finding.Severity, finding.Category, finding.Description)
+			}
+		}
 		fmt.Println()
 	}
 }
