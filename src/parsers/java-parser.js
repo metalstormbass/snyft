@@ -98,7 +98,13 @@ export class JavaParser {
     });
 
     // Gradle
-    const gradleFiles = await fg(['**/build.gradle', '**/build.gradle.kts', '!**/node_modules/**'], {
+    const gradleFiles = await fg([
+      '**/build.gradle',
+      '**/build.gradle.kts',
+      '**/settings.gradle',
+      '**/settings.gradle.kts',
+      '!**/node_modules/**'
+    ], {
       cwd: this.projectRoot,
       absolute: false,
     });
@@ -108,6 +114,20 @@ export class JavaParser {
         type: 'gradle',
         file: file,
         tool: 'Gradle',
+      });
+    });
+
+    // Ant
+    const antFiles = await fg(['**/build.xml', '!**/node_modules/**'], {
+      cwd: this.projectRoot,
+      absolute: false,
+    });
+
+    antFiles.forEach(file => {
+      this.results.buildFiles.push({
+        type: 'ant',
+        file: file,
+        tool: 'Apache Ant',
       });
     });
 
@@ -146,10 +166,15 @@ export class JavaParser {
   determineBuildTool() {
     const maven = this.results.buildFiles.find(f => f.type === 'maven');
     const gradle = this.results.buildFiles.find(f => f.type === 'gradle');
+    const ant = this.results.buildFiles.find(f => f.type === 'ant');
 
-    if (maven && gradle) return 'mixed (Maven & Gradle)';
-    if (maven) return 'Maven';
-    if (gradle) return 'Gradle';
-    return 'none detected';
+    const tools = [];
+    if (maven) tools.push('Maven');
+    if (gradle) tools.push('Gradle');
+    if (ant) tools.push('Ant');
+
+    if (tools.length === 0) return 'none detected';
+    if (tools.length === 1) return tools[0];
+    return `mixed (${tools.join(' & ')})`;
   }
 }

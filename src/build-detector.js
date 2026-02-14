@@ -142,16 +142,24 @@ export class BuildInfrastructureDetector {
     });
 
     if (pomFiles.length > 0) {
+      const manifestData = await this.parseMavenManifests(pomFiles);
       this.results.packageManagers.push({
         type: 'maven',
         tool: 'Apache Maven',
         files: pomFiles,
         language: 'java',
+        manifests: manifestData,
       });
     }
 
     // Gradle
-    const gradleFiles = await fg(['**/build.gradle', '**/build.gradle.kts', '!**/node_modules/**'], {
+    const gradleFiles = await fg([
+      '**/build.gradle',
+      '**/build.gradle.kts',
+      '**/settings.gradle',
+      '**/settings.gradle.kts',
+      '!**/node_modules/**'
+    ], {
       cwd: this.projectRoot,
       absolute: false,
     });
@@ -165,6 +173,36 @@ export class BuildInfrastructureDetector {
       });
     }
 
+    // Ant
+    const antFiles = await fg(['**/build.xml', '!**/node_modules/**'], {
+      cwd: this.projectRoot,
+      absolute: false,
+    });
+
+    if (antFiles.length > 0) {
+      this.results.packageManagers.push({
+        type: 'ant',
+        tool: 'Apache Ant',
+        files: antFiles,
+        language: 'java',
+      });
+    }
+
+    // Ivy (often used with Ant)
+    const ivyFiles = await fg(['**/ivy.xml', '!**/node_modules/**'], {
+      cwd: this.projectRoot,
+      absolute: false,
+    });
+
+    if (ivyFiles.length > 0) {
+      this.results.packageManagers.push({
+        type: 'ivy',
+        tool: 'Apache Ivy',
+        files: ivyFiles,
+        language: 'java',
+      });
+    }
+
     // npm/yarn
     const packageJson = await fg(['**/package.json', '!**/node_modules/**'], {
       cwd: this.projectRoot,
@@ -172,11 +210,13 @@ export class BuildInfrastructureDetector {
     });
 
     if (packageJson.length > 0) {
+      const manifestData = await this.parseNpmManifests(packageJson);
       this.results.packageManagers.push({
         type: 'npm',
         tool: 'npm/yarn',
         files: packageJson,
         language: 'javascript',
+        manifests: manifestData,
       });
     }
 
@@ -207,6 +247,70 @@ export class BuildInfrastructureDetector {
     }
 
     console.log(`[Build Detector] Found ${this.results.packageManagers.length} package managers`);
+  }
+
+  async parseMavenManifests(pomFiles) {
+    const manifests = [];
+
+    for (const file of pomFiles) {
+      try {
+        const content = await readFile(`${this.projectRoot}/${file}`, 'utf-8');
+
+        // Extract basic info from pom.xml using regex (lightweight alternative to XML parser)
+        const groupId = content.match(/<groupId>(.*?)<\/groupId>/)?.[1];
+        const artifactId = content.match(/<artifactId>(.*?)<\/artifactId>/)?.[1];
+        const version = content.match(/<version>(.*?)<\/version>/)?.[1];
+        const packaging = content.match(/<packaging>(.*?)<\/packaging>/)?.[1] || 'jar';
+
+        // Extract dependencies
+        const dependenciesMatch = content.match(/<dependencies>([\s\S]*?)<\/dependencies>/);
+        const dependencyCount = dependenciesMatch
+          ? (dependenciesMatch[1].match(/<dependency>/g) || []).length
+          : 0;
+
+        manifests.push({
+          file,
+          groupId,
+          artifactId,
+          version,
+          packaging,
+          dependencyCount,
+        });
+
+        console.log(`[Build Detector] Parsed Maven manifest: ${file} (${artifactId})`);
+      } catch (error) {
+        console.warn(`[Build Detector] Failed to parse ${file}: ${error.message}`);
+      }
+    }
+
+    return manifests;
+  }
+
+  async parseNpmManifests(packageJsonFiles) {
+    const manifests = [];
+
+    for (const file of packageJsonFiles) {
+      try {
+        const content = await readFile(`${this.projectRoot}/${file}`, 'utf-8');
+        const pkg = JSON.parse(content);
+
+        manifests.push({
+          file,
+          name: pkg.name,
+          version: pkg.version,
+          description: pkg.description,
+          scripts: pkg.scripts ? Object.keys(pkg.scripts) : [],
+          dependencies: pkg.dependencies ? Object.keys(pkg.dependencies).length : 0,
+          devDependencies: pkg.devDependencies ? Object.keys(pkg.devDependencies).length : 0,
+        });
+
+        console.log(`[Build Detector] Parsed npm manifest: ${file} (${pkg.name})`);
+      } catch (error) {
+        console.warn(`[Build Detector] Failed to parse ${file}: ${error.message}`);
+      }
+    }
+
+    return manifests;
   }
 
   async detectConfigFiles() {
