@@ -20,6 +20,20 @@ const (
 	FormatHTML     Format = "html"
 )
 
+// ANSI color codes
+const (
+	colorReset   = "\033[0m"
+	colorGreen   = "\033[32m"
+	colorCyan    = "\033[36m"
+	colorYellow  = "\033[33m"
+	colorDim     = "\033[2m"
+	colorBold    = "\033[1m"
+	colorMagenta = "\033[35m"
+)
+
+// Spinner frames for animation
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 // Config holds configuration for report generation
 type Config struct {
 	Format      Format
@@ -30,9 +44,11 @@ type Config struct {
 
 // Reporter handles report generation
 type Reporter struct {
-	config  Config
-	results []models.AnalysisResult
-	stats   ScanStats
+	config     Config
+	results    []models.AnalysisResult
+	stats      ScanStats
+	startTime  time.Time
+	spinnerIdx int
 }
 
 // ScanStats contains scan statistics
@@ -53,8 +69,10 @@ func NewReporter(config Config) *Reporter {
 		config.Writer = os.Stdout
 	}
 	return &Reporter{
-		config: config,
-		stats:  ScanStats{StartTime: time.Now()},
+		config:     config,
+		stats:      ScanStats{StartTime: time.Now()},
+		startTime:  time.Now(),
+		spinnerIdx: 0,
 	}
 }
 
@@ -103,20 +121,63 @@ func (r *Reporter) Generate() error {
 	}
 }
 
-// ShowProgress displays a progress indicator
+// ShowProgress displays an enhanced progress indicator with time info and animations
 func (r *Reporter) ShowProgress(current, total int, packageName string) {
 	if !r.config.ShowProgress {
 		return
 	}
 
+	// Calculate progress metrics
 	percentage := int(float64(current) / float64(total) * 100)
-	barWidth := 40
+	barWidth := 35
 	filledWidth := int(float64(barWidth) * float64(current) / float64(total))
 
-	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+	// Create colored progress bar
+	filledBar := colorGreen + strings.Repeat("━", filledWidth) + colorReset
+	emptyBar := colorDim + strings.Repeat("━", barWidth-filledWidth) + colorReset
+	bar := filledBar + emptyBar
 
-	_, _ = fmt.Fprintf(r.config.Writer, "\r\033[K🔬 Analyzing [%s] %3d%% (%d/%d) %s",
-		bar, percentage, current, total, truncate(packageName, 40))
+	// Calculate time metrics
+	elapsed := time.Since(r.startTime)
+	rate := float64(current) / elapsed.Seconds()
+	var eta string
+	if current > 0 && rate > 0 {
+		remaining := float64(total-current) / rate
+		eta = formatProgressDuration(time.Duration(remaining * float64(time.Second)))
+	} else {
+		eta = "calculating..."
+	}
+
+	// Get spinner frame
+	spinner := colorCyan + spinnerFrames[r.spinnerIdx%len(spinnerFrames)] + colorReset
+	r.spinnerIdx++
+
+	// Format package name with color
+	pkgDisplay := colorYellow + truncate(packageName, 35) + colorReset
+
+	// Build progress line with enhanced styling
+	progressLine := fmt.Sprintf("\r\033[K%s %s[%s]%s %s%3d%%%s %s(%d/%d)%s │ %sElapsed:%s %s │ %sETA:%s %s │ %s%.1f pkg/s%s │ %s",
+		spinner,
+		colorDim, bar, colorReset,
+		colorBold, percentage, colorReset,
+		colorDim, current, total, colorReset,
+		colorMagenta, colorReset, formatProgressDuration(elapsed),
+		colorMagenta, colorReset, eta,
+		colorCyan, rate, colorReset,
+		pkgDisplay,
+	)
+
+	_, _ = fmt.Fprint(r.config.Writer, progressLine)
+}
+
+// formatProgressDuration formats a duration for display in progress bar
+func formatProgressDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	minutes := int(d.Minutes())
+	seconds := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dm%ds", minutes, seconds)
 }
 
 // ClearProgress clears the progress line
