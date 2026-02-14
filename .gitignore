@@ -1,0 +1,45 @@
+# Secrets and credentials
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*_rsa
+*_rsa.pub
+credentials.json
+secrets.yml
+secrets.yaml
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Dependencies
+node_modules/
+vendor/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+*.o
+*.exe
+*.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+.cache/
