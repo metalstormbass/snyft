@@ -2,15 +2,18 @@
 
 **S**ource code a**n**alyzer **y**ielding **f**ull **t**axonomy
 
-Multi-agent code analysis tool for Java and JavaScript projects.
+Dependency supply chain security analysis tool that parses manifest files across Java, JavaScript, and Python projects.
+
+**Note:** Snyft analyzes dependency manifests for supply chain security. It does NOT perform CVE (vulnerability) scanning.
 
 ## Features
 
-- Multi-language parsing (Java, JavaScript/TypeScript)
-- Build infrastructure detection (Maven, Gradle, npm, webpack)
+- Dependency manifest parsing (Java, JavaScript/TypeScript, Python)
+- Supply chain security analysis (no CVE scanning)
+- Build infrastructure detection (Maven, Gradle, npm, pip, Poetry, Pipenv, Conda)
 - Multi-agent architecture via multiclaude
 - Reports in JSON, Markdown, and console formats
-- CI/CD detection (GitHub Actions, GitLab CI, Jenkins)
+- CI/CD detection (GitHub Actions, GitLab CI, Jenkins, Travis, CircleCI)
 
 ## Installation
 
@@ -71,11 +74,13 @@ See [multiclaude-agents.md](./multiclaude-agents.md) for details.
 
 ## What It Detects
 
-**Java:** `.java` files, packages, classes, Maven/Gradle
+**Java:** `pom.xml`, `build.gradle`, `build.xml`, `ivy.xml` - Maven/Gradle/Ant/Ivy dependencies
 
-**JavaScript:** `.js/.ts` files, modules, React/Vue/Angular, npm/webpack
+**JavaScript:** `package.json`, `yarn.lock`, `pnpm-lock.yaml` - npm/yarn/pnpm dependencies
 
-**Build:** package managers, CI/CD configs, Docker, linters
+**Python:** `requirements.txt`, `setup.py`, `pyproject.toml`, `Pipfile`, `setup.cfg`, `tox.ini`, `environment.yml` - pip/Poetry/Pipenv/Conda dependencies
+
+**Build Infrastructure:** package managers, CI/CD configs, Docker, config files
 
 ## API
 
