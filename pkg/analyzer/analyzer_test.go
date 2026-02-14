@@ -788,6 +788,11 @@ func TestVerifySourceCode(t *testing.T) {
 					t.Errorf("Expected finding with severity=%s and category=%s, but not found in: %v",
 						tt.expectFindingSeverity, tt.expectFindingCategory, result.Findings)
 				}
+			}
+		})
+	}
+}
+
 func TestScoreHealth_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -859,6 +864,8 @@ func TestSourceVerificationIntegrationInAnalyzer(t *testing.T) {
 			t.Error("Expected SourceVerification to be populated")
 		}
 	})
+}
+
 func TestScoreHealth_BusFactorCalculation(t *testing.T) {
 	tests := []struct {
 		name              string
