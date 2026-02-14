@@ -455,8 +455,10 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 }
 
 // scoreReleaseAnomalies: dormant→sudden activity (0-2 pts)
+// Detects dormant packages that suddenly reactivate, checks for unusual release patterns,
+// and analyzes commit frequency changes
 func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.CategoryScore {
-	if result.Metadata.RepoLastCommit.IsZero() {
+	if result.Metadata.RepoLastCommit.IsZero() || result.RepositoryURL == "" {
 		return models.CategoryScore{
 			Score:       0,
 			RiskPoints:  1,
@@ -469,39 +471,173 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 	daysSinceLastCommit := time.Since(result.Metadata.RepoLastCommit).Hours() / 24
 	daysSinceCreated := time.Since(result.Metadata.RepoCreatedAt).Hours() / 24
 
-	// Check for dormancy followed by sudden activity
-	if daysSinceCreated > 365 && daysSinceLastCommit < 30 {
-		// Old package with very recent activity - need to check if it was dormant
-		daysSinceUpdate := time.Since(result.Metadata.RepoUpdatedAt).Hours() / 24
-		if daysSinceUpdate < 60 && result.Metadata.RepoLastCommit.After(result.Metadata.RepoCreatedAt.AddDate(1, 0, 0)) {
-			return models.CategoryScore{
-				Score:       0,
-				RiskPoints:  2,
-				Description: "Potential dormant package reactivation",
-				Evidence:    fmt.Sprintf("Package created %.0f days ago, recent activity in last %.0f days", daysSinceCreated, daysSinceLastCommit),
-				Verified:    true,
-			}
-		}
-	}
-
-	// Very inactive (dormant)
+	// Very inactive (dormant for over a year)
 	if daysSinceLastCommit > 365 {
 		return models.CategoryScore{
 			Score:       0,
 			RiskPoints:  1,
 			Description: "Package appears dormant",
-			Evidence:    fmt.Sprintf("No commits in %.0f days", daysSinceLastCommit),
+			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year)", daysSinceLastCommit),
 			Verified:    true,
 		}
 	}
 
+	// For packages with recent activity, fetch detailed release and commit history
+	// to detect suspicious reactivation patterns
+	if daysSinceCreated > 365 {
+		// Fetch release history
+		releases, err := a.githubClient.GetReleaseHistory(result.RepositoryURL, 20)
+		if err == nil && len(releases) > 0 {
+			// Analyze release pattern
+			anomaly := a.detectReleaseAnomaly(releases, result.Metadata.RepoCreatedAt)
+			if anomaly != nil {
+				return *anomaly
+			}
+		}
+
+		// Fetch commit activity to analyze frequency changes
+		oneYearAgo := time.Now().AddDate(-1, 0, 0)
+		twoYearsAgo := time.Now().AddDate(-2, 0, 0)
+
+		recentCommits, err1 := a.githubClient.GetCommitActivity(result.RepositoryURL, oneYearAgo)
+		olderCommits, err2 := a.githubClient.GetCommitActivity(result.RepositoryURL, twoYearsAgo)
+
+		if err1 == nil && err2 == nil {
+			anomaly := a.detectCommitFrequencyAnomaly(recentCommits, olderCommits, result.Metadata.RepoCreatedAt)
+			if anomaly != nil {
+				return *anomaly
+			}
+		}
+	}
+
+	// Regular, consistent activity (active within the year, no anomalies detected)
 	return models.CategoryScore{
 		Score:       2,
 		RiskPoints:  0,
-		Description: "Regular, consistent activity",
-		Evidence:    fmt.Sprintf("Last commit %.0f days ago", daysSinceLastCommit),
+		Description: "Regular, consistent releases",
+		Evidence:    fmt.Sprintf("Last commit %.0f days ago, no anomalies detected", daysSinceLastCommit),
 		Verified:    true,
 	}
+}
+
+// detectReleaseAnomaly analyzes release history to detect dormant packages that suddenly reactivate
+func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.GitHubRelease, repoCreatedAt time.Time) *models.CategoryScore {
+	if len(releases) < 2 {
+		return nil
+	}
+
+	// Filter out draft and prerelease versions
+	validReleases := []fetcher.GitHubRelease{}
+	for _, r := range releases {
+		if !r.Draft && !r.Prerelease && !r.PublishedAt.IsZero() {
+			validReleases = append(validReleases, r)
+		}
+	}
+
+	if len(validReleases) < 2 {
+		return nil
+	}
+
+	// Sort by published date (most recent first)
+	// Already sorted by GitHub API, but let's ensure it
+	mostRecent := validReleases[0].PublishedAt
+	daysSinceRecentRelease := time.Since(mostRecent).Hours() / 24
+
+	// Look for a long gap in release history
+	var maxGapDays float64
+	var gapStartDate time.Time
+	var gapEndDate time.Time
+
+	for i := 0; i < len(validReleases)-1; i++ {
+		gapDays := validReleases[i].PublishedAt.Sub(validReleases[i+1].PublishedAt).Hours() / 24
+		if gapDays > maxGapDays {
+			maxGapDays = gapDays
+			gapStartDate = validReleases[i+1].PublishedAt
+			gapEndDate = validReleases[i].PublishedAt
+		}
+	}
+
+	// Suspicious reactivation: long dormancy (>365 days) followed by recent release (<90 days)
+	if maxGapDays > 365 && daysSinceRecentRelease < 90 {
+		return &models.CategoryScore{
+			Score:       0,
+			RiskPoints:  2,
+			Description: "Suspicious reactivation after dormancy",
+			Evidence:    fmt.Sprintf("Dormant for %.0f days (%s to %s), recent release %.0f days ago",
+				maxGapDays, gapStartDate.Format("2006-01"), gapEndDate.Format("2006-01"), daysSinceRecentRelease),
+			Verified:    true,
+		}
+	}
+
+	// Calculate average release frequency
+	if len(validReleases) > 2 {
+		totalDays := validReleases[0].PublishedAt.Sub(validReleases[len(validReleases)-1].PublishedAt).Hours() / 24
+		avgDaysBetweenReleases := totalDays / float64(len(validReleases)-1)
+
+		// Unusual pattern: recent release much faster than average (possible supply chain attack)
+		if len(validReleases) >= 3 {
+			recentGap := validReleases[0].PublishedAt.Sub(validReleases[1].PublishedAt).Hours() / 24
+			if avgDaysBetweenReleases > 90 && recentGap < 7 && daysSinceRecentRelease < 30 {
+				return &models.CategoryScore{
+					Score:       0,
+					RiskPoints:  2,
+					Description: "Unusual release pattern detected",
+					Evidence:    fmt.Sprintf("Avg release every %.0f days, but recent release only %.0f days ago (unusual spike)",
+						avgDaysBetweenReleases, recentGap),
+					Verified:    true,
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// detectCommitFrequencyAnomaly analyzes commit frequency changes to detect suspicious activity
+func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fetcher.GitHubCommit, repoCreatedAt time.Time) *models.CategoryScore {
+	oneYearAgo := time.Now().AddDate(-1, 0, 0)
+
+	// Count commits in last year vs previous year
+	recentCount := len(recentCommits)
+
+	// Filter older commits to only count those from year 1-2 ago
+	previousYearCount := 0
+	for _, commit := range olderCommits {
+		if commit.Commit.Author.Date.Before(oneYearAgo) {
+			previousYearCount++
+		}
+	}
+
+	// Repo must be at least 2 years old for this check
+	repoAgeYears := time.Since(repoCreatedAt).Hours() / 24 / 365
+	if repoAgeYears < 2 {
+		return nil
+	}
+
+	// Suspicious reactivation: little to no commits in previous year, but many recent commits
+	if previousYearCount < 5 && recentCount > 20 {
+		return &models.CategoryScore{
+			Score:       0,
+			RiskPoints:  2,
+			Description: "Suspicious commit frequency spike",
+			Evidence:    fmt.Sprintf("%d commits in last year vs %d in previous year (sudden spike)",
+				recentCount, previousYearCount),
+			Verified:    true,
+		}
+	}
+
+	// Package was dormant, now has some activity (moderate concern)
+	if previousYearCount == 0 && recentCount > 0 && recentCount < 20 {
+		return &models.CategoryScore{
+			Score:       0,
+			RiskPoints:  1,
+			Description: "Package reactivated after dormancy",
+			Evidence:    fmt.Sprintf("0 commits in previous year, %d commits in last year", recentCount),
+			Verified:    true,
+		}
+	}
+
+	return nil
 }
 
 // scoreInstallExecution: postinstall scripts (0-2 pts)
