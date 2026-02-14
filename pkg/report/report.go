@@ -134,3 +134,97 @@ func truncate(s string, maxLen int) string {
 	}
 	return s[:maxLen-3] + "..."
 }
+
+// CriticalIssue represents a critical finding with package details
+type CriticalIssue struct {
+	PackageName    string
+	PackageVersion string
+	Ecosystem      string
+	RiskLevel      string
+	Description    string
+	Evidence       string
+	Severity       string
+}
+
+// extractCriticalIssues extracts top critical issues from analysis results
+// Returns up to maxIssues most important findings with package context
+func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
+	var issues []CriticalIssue
+
+	// Prioritize HIGH risk packages first, then MEDIUM
+	sortedResults := make([]models.AnalysisResult, len(r.results))
+	copy(sortedResults, r.results)
+
+	// Sort by risk level (HIGH > MEDIUM > LOW)
+	// Then by number of HIGH/CRITICAL severity findings
+	for i := 0; i < len(sortedResults); i++ {
+		for j := i + 1; j < len(sortedResults); j++ {
+			swapNeeded := false
+
+			// Compare risk levels
+			if sortedResults[j].RiskLevel == "HIGH" && sortedResults[i].RiskLevel != "HIGH" {
+				swapNeeded = true
+			} else if sortedResults[j].RiskLevel == "MEDIUM" && sortedResults[i].RiskLevel == "LOW" {
+				swapNeeded = true
+			} else if sortedResults[i].RiskLevel == sortedResults[j].RiskLevel {
+				// Same risk level - compare by number of critical findings
+				iCritical := countCriticalFindings(sortedResults[i])
+				jCritical := countCriticalFindings(sortedResults[j])
+				if jCritical > iCritical {
+					swapNeeded = true
+				}
+			}
+
+			if swapNeeded {
+				sortedResults[i], sortedResults[j] = sortedResults[j], sortedResults[i]
+			}
+		}
+	}
+
+	// Extract issues from top packages
+	for _, result := range sortedResults {
+		// Only include HIGH and MEDIUM risk packages
+		if result.RiskLevel != "HIGH" && result.RiskLevel != "MEDIUM" {
+			continue
+		}
+
+		// Get most critical finding for this package
+		for _, finding := range result.Findings {
+			// Skip LOW severity findings in executive summary
+			if finding.Severity == "LOW" {
+				continue
+			}
+
+			issue := CriticalIssue{
+				PackageName:    result.Dependency.Name,
+				PackageVersion: result.Dependency.Version,
+				Ecosystem:      string(result.Dependency.Ecosystem),
+				RiskLevel:      result.RiskLevel,
+				Description:    finding.Description,
+				Evidence:       finding.Evidence,
+				Severity:       finding.Severity,
+			}
+			issues = append(issues, issue)
+
+			// Only take one finding per package for executive summary
+			break
+		}
+
+		if len(issues) >= maxIssues {
+			break
+		}
+	}
+
+	return issues
+}
+
+// countCriticalFindings counts HIGH and CRITICAL severity findings in a result
+func countCriticalFindings(result models.AnalysisResult) int {
+	count := 0
+	for _, finding := range result.Findings {
+		if finding.Severity == "HIGH" || finding.Severity == "CRITICAL" {
+			count++
+		}
+	}
+	return count
+}
