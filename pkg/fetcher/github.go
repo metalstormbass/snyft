@@ -369,7 +369,7 @@ type CommitAuthorStats struct {
 	HistoricalAuthors  []string // Authors with no recent commits
 }
 
-type GitHubCommitVerification struct {
+type GitHubCommitVerification struct{
 	Verified  bool   `json:"verified"`
 	Reason    string `json:"reason"`
 	Signature string `json:"signature"`
@@ -616,7 +616,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 	return string(body), nil
 }
 
-// GetCommitAuthors analyzes commit history to detect maintainer changes
+// GetCommitAuthors analyzes commit authorship patterns for ownership change detection
 func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -822,4 +822,410 @@ func (c *GitHubClient) CheckSignedReleases(repoURL string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// CommitStats contains commit distribution statistics for bus factor calculation
+type CommitStats struct{
+	TotalCommits       int
+	AuthorCommits      map[string]int // author -> commit count
+	BusFactor          int            // Number of authors responsible for 50% of commits
+	TopContributorPct  float64        // Percentage of commits by top contributor
+}
+
+// PRStats contains pull request statistics for code review verification
+type PRStats struct {
+	TotalPRs           int
+	MergedPRs          int
+	PRsWithReviews     int
+	CodeReviewRate     float64 // Percentage of PRs with reviews
+	RequiredReviewers  int     // Number of required reviewers (from branch protection)
+	HasBranchProtection bool
+}
+
+// CIQuality contains CI/CD quality metrics
+type CIQuality struct {
+	HasCI              bool
+	CISystems          []string
+	HasTests           bool     // Workflows contain test steps
+	WorkflowCount      int
+	QualityScore       int      // 0-10 score based on CI setup
+}
+
+// calculateBusFactor determines how many contributors are needed to account for 50% of commits
+func calculateBusFactor(authorCommits map[string]int, totalCommits int) int {
+	if totalCommits == 0 {
+		return 0
+	}
+
+	// Sort authors by commit count (descending)
+	type authorCount struct {
+		author string
+		count  int
+	}
+	var authors []authorCount
+	for author, count := range authorCommits {
+		authors = append(authors, authorCount{author, count})
+	}
+
+	// Simple bubble sort (fine for small datasets)
+	for i := 0; i < len(authors); i++ {
+		for j := i + 1; j < len(authors); j++ {
+			if authors[j].count > authors[i].count {
+				authors[i], authors[j] = authors[j], authors[i]
+			}
+		}
+	}
+
+
+	// Count how many authors needed to reach >50%
+	threshold := float64(totalCommits) * 0.5
+	cumulative := 0
+	busFactor := 0
+	for _, ac := range authors {
+		cumulative += ac.count
+		busFactor++
+		if float64(cumulative) > threshold {
+			break
+		}
+	}
+
+	return busFactor
+}
+
+// GetCommitStats fetches commit distribution to calculate bus factor
+// Analyzes the last 100 commits to determine contributor concentration
+func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch recent commits (last 100)
+	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=100", c.baseURL, owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var commits []GitHubCommit
+	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+		return nil, err
+	}
+
+	// Calculate commit distribution
+	authorCommits := make(map[string]int)
+	for _, commit := range commits {
+		if commit.Author != nil && commit.Author.Login != "" {
+			authorCommits[commit.Author.Login]++
+		} else if commit.Commit.Author.Name != "" {
+			// Fallback to commit author name if GitHub user not available
+			authorCommits[commit.Commit.Author.Name]++
+		}
+	}
+
+	// Calculate bus factor (number of people needed to reach 50% of commits)
+	totalCommits := len(commits)
+	busFactor := calculateBusFactor(authorCommits, totalCommits)
+
+	// Calculate top contributor percentage
+	topContributorPct := 0.0
+	if totalCommits > 0 {
+		maxCommits := 0
+		for _, count := range authorCommits {
+			if count > maxCommits {
+				maxCommits = count
+			}
+		}
+		topContributorPct = float64(maxCommits) / float64(totalCommits) * 100
+	}
+
+	return &CommitStats{
+		TotalCommits:      totalCommits,
+		AuthorCommits:     authorCommits,
+		BusFactor:         busFactor,
+		TopContributorPct: topContributorPct,
+	}, nil
+}
+
+// GetPullRequestStats analyzes PR statistics for code review verification
+func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	stats := &PRStats{}
+
+	// Fetch recent merged PRs
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=closed&per_page=100", c.baseURL, owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return stats, nil // Return empty stats if we can't fetch PRs
+	}
+
+	var prs []GitHubPullRequest
+	if err := json.NewDecoder(resp.Body).Decode(&prs); err != nil {
+		return stats, nil
+	}
+
+	// Analyze PRs
+	for _, pr := range prs {
+		if pr.MergedAt != nil {
+			stats.TotalPRs++
+			stats.MergedPRs++
+
+			// Check if PR has reviews
+			if c.prHasReviews(owner, repo, pr.Number) {
+				stats.PRsWithReviews++
+			}
+		}
+	}
+
+	// Calculate code review rate
+	if stats.MergedPRs > 0 {
+		stats.CodeReviewRate = float64(stats.PRsWithReviews) / float64(stats.MergedPRs) * 100
+	}
+
+	// Check branch protection rules
+	branchProtection := c.getBranchProtection(owner, repo)
+	stats.HasBranchProtection = branchProtection != nil
+	if branchProtection != nil && branchProtection.RequiredReviews != nil {
+		stats.RequiredReviewers = branchProtection.RequiredReviews.RequiredApprovingReviewCount
+	}
+
+	return stats, nil
+}
+// prHasReviews checks if a PR has any reviews
+func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/reviews", c.baseURL, owner, repo, prNumber)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	var reviews []GitHubReview
+	if err := json.NewDecoder(resp.Body).Decode(&reviews); err != nil {
+		return false
+	}
+
+	return len(reviews) > 0
+}
+
+// getBranchProtection fetches branch protection rules for the default branch
+func (c *GitHubClient) getBranchProtection(owner, repo string) *GitHubBranchProtection {
+	// First get the default branch
+	repoInfo, err := c.GetRepositoryInfo(fmt.Sprintf("https://github.com/%s/%s", owner, repo))
+	if err != nil {
+		return nil
+	}
+
+	url := fmt.Sprintf("%s/repos/%s/%s/branches/%s/protection", c.baseURL, owner, repo, repoInfo.DefaultBranch)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var protection GitHubBranchProtection
+	if err := json.NewDecoder(resp.Body).Decode(&protection); err != nil {
+		return nil
+	}
+
+	return &protection
+}
+
+// AnalyzeCIQuality evaluates CI/CD quality beyond just presence
+func (c *GitHubClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CIQuality, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, err
+	}
+
+	quality := &CIQuality{
+		HasCI:     len(ciSystems) > 0,
+		CISystems: ciSystems,
+	}
+
+	if !quality.HasCI {
+		return quality, nil
+	}
+
+	// Analyze GitHub Actions workflows if present
+	if c.containsString(ciSystems, "GitHub Actions") {
+		workflows, err := c.getWorkflowFiles(owner, repo)
+		if err == nil {
+			quality.WorkflowCount = len(workflows)
+			quality.HasTests = c.workflowsContainTests(workflows)
+		}
+	}
+
+	// Calculate quality score (0-10)
+	qualityScore := 0
+
+	// Base points for having CI
+	if quality.HasCI {
+		qualityScore += 3
+	}
+
+	// Points for having tests in CI
+	if quality.HasTests {
+		qualityScore += 4
+	}
+
+	// Points for multiple workflows (suggests comprehensive CI)
+	if quality.WorkflowCount >= 2 {
+		qualityScore += 2
+	} else if quality.WorkflowCount >= 1 {
+		qualityScore += 1
+	}
+
+	quality.QualityScore = qualityScore
+	return quality, nil
+}
+
+// getWorkflowFiles fetches GitHub Actions workflow files
+func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/contents/.github/workflows", c.baseURL, owner, repo)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch workflows")
+	}
+
+	var files []GitHubContent
+	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+		return nil, err
+	}
+
+	var workflows []string
+	for _, file := range files {
+		if strings.HasSuffix(file.Name, ".yml") || strings.HasSuffix(file.Name, ".yaml") {
+			workflows = append(workflows, file.Name)
+		}
+	}
+
+	return workflows, nil
+}
+
+// workflowsContainTests checks if any workflow appears to run tests
+func (c *GitHubClient) workflowsContainTests(workflows []string) bool {
+	// Simple heuristic: check workflow names for test-related keywords
+	testKeywords := []string{"test", "ci", "check", "lint"}
+	for _, workflow := range workflows {
+		lower := strings.ToLower(workflow)
+		for _, keyword := range testKeywords {
+			if strings.Contains(lower, keyword) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (c *GitHubClient) containsString(slice []string, str string) bool {
+	for _, s := range slice {
+		if s == str {
+			return true
+		}
+	}
+	return false
+}
+
+// Additional GitHub API structures
+type GitHubPullRequest struct {
+	Number   int        `json:"number"`
+	State    string     `json:"state"`
+	MergedAt *time.Time `json:"merged_at"`
+}
+
+type GitHubReview struct {
+	ID    int    `json:"id"`
+	State string `json:"state"`
+}
+
+type GitHubBranchProtection struct {
+	RequiredReviews *GitHubRequiredReviews `json:"required_pull_request_reviews"`
+}
+
+type GitHubRequiredReviews struct {
+	RequiredApprovingReviewCount int `json:"required_approving_review_count"`
+}
+
+type GitHubContent struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Type string `json:"type"`
 }

