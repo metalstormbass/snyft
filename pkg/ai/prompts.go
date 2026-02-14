@@ -651,7 +651,7 @@ Create a comprehensive yet accessible explanation following the format:
    - Links to further reading
 
 **Important**:
-- Tailor language to the {{targetAudience}}
+- Tailor language to the {{targetAudience}} (executive, technical, compliance, or general audience)
 - Be factual, not alarmist
 - Focus on likelihood and business impact, not just technical details
 - Make recommendations concrete and actionable
