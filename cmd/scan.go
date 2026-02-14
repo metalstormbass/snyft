@@ -229,13 +229,121 @@ func printResult(result models.AnalysisResult) {
 		fmt.Printf("   Repository: %s\n", result.RepositoryURL)
 		fmt.Printf("   Source Available: %v\n", result.SourceCodeAvailable)
 		fmt.Printf("   Build Infrastructure: %s\n", result.BuildInfrastructure)
-		fmt.Printf("   Risk Factors: %v\n", result.RiskFactors)
+		fmt.Printf("   Risk Score: %d/100\n", result.RiskScore)
+
+		// Show all security checks performed
+		fmt.Printf("   Security Checks Performed:\n")
+		checks := getSecurityChecks(result)
+		for _, check := range checks {
+			fmt.Printf("      %s %s\n", check.Icon, check.Description)
+		}
+
 		if len(result.Findings) > 0 {
-			fmt.Printf("   Findings:\n")
+			fmt.Printf("   Risk Findings:\n")
 			for _, finding := range result.Findings {
-				fmt.Printf("      [%s] %s: %s\n", finding.Severity, finding.Category, finding.Description)
+				fmt.Printf("      [%s] %s\n", finding.Severity, finding.Category)
+				fmt.Printf("          Description: %s\n", finding.Description)
+				fmt.Printf("          Detected By: %s\n", finding.Check)
+				if finding.Evidence != "" {
+					fmt.Printf("          Evidence: %s\n", finding.Evidence)
+				}
 			}
 		}
 		fmt.Println()
 	}
+}
+
+// SecurityCheck represents a security check and its result
+type SecurityCheck struct {
+	Name        string
+	Icon        string
+	Description string
+}
+
+// getSecurityChecks returns all security checks performed on the dependency
+func getSecurityChecks(result models.AnalysisResult) []SecurityCheck {
+	checks := []SecurityCheck{}
+
+	// Track which checks found issues
+	failedChecks := make(map[string]bool)
+	for _, finding := range result.Findings {
+		failedChecks[finding.Check] = true
+	}
+
+	// Package Registry Validation
+	checks = append(checks, SecurityCheck{
+		Name:        "Package Registry Validation",
+		Icon:        getCheckIcon("Package Registry Validation", failedChecks),
+		Description: "Package Registry Validation - verifies package exists in registry",
+	})
+
+	// Repository Availability Check
+	if result.RepositoryURL != "" {
+		checks = append(checks, SecurityCheck{
+			Name:        "Repository Availability Check",
+			Icon:        getCheckIcon("Repository Availability Check", failedChecks),
+			Description: "Repository Availability Check - verifies public source code exists",
+		})
+
+		// Repository Metadata Check (only if we have a repo)
+		checks = append(checks, SecurityCheck{
+			Name:        "Repository Metadata Check",
+			Icon:        getCheckIcon("Repository Metadata Check", failedChecks),
+			Description: "Repository Metadata Check - analyzes repository statistics",
+		})
+
+		// Repository Status Check
+		checks = append(checks, SecurityCheck{
+			Name:        "Repository Status Check",
+			Icon:        getCheckIcon("Repository Status Check", failedChecks),
+			Description: "Repository Status Check - checks if repository is archived",
+		})
+
+		// Repository Activity Check
+		checks = append(checks, SecurityCheck{
+			Name:        "Repository Activity Check",
+			Icon:        getCheckIcon("Repository Activity Check", failedChecks),
+			Description: "Repository Activity Check - verifies recent development activity",
+		})
+
+		// Community Engagement Check
+		checks = append(checks, SecurityCheck{
+			Name:        "Community Engagement Check",
+			Icon:        getCheckIcon("Community Engagement Check", failedChecks),
+			Description: "Community Engagement Check - evaluates stars, forks, and community adoption",
+		})
+
+		// CI/CD Detection Check
+		checks = append(checks, SecurityCheck{
+			Name:        "CI/CD Detection Check",
+			Icon:        getCheckIcon("CI/CD Detection Check", failedChecks),
+			Description: "CI/CD Detection Check - detects automated build systems",
+		})
+
+		// Release Automation Check
+		checks = append(checks, SecurityCheck{
+			Name:        "Release Automation Check",
+			Icon:        getCheckIcon("Release Automation Check", failedChecks),
+			Description: "Release Automation Check - identifies automated release processes",
+		})
+
+		// OSSF Scorecard Check
+		if result.Metadata.OSSFScore > 0 {
+			checks = append(checks, SecurityCheck{
+				Name:        "OSSF Scorecard Check",
+				Icon:        getCheckIcon("OSSF Scorecard Check", failedChecks),
+				Description: fmt.Sprintf("OSSF Scorecard Check - OpenSSF security score: %.1f/10", result.Metadata.OSSFScore),
+			})
+		}
+	}
+
+	return checks
+}
+
+// getCheckIcon returns the appropriate icon for a security check
+func getCheckIcon(checkName string, failedChecks map[string]bool) string {
+	if failedChecks[checkName] {
+		return "❌"
+	}
+	return "✅"
 }
