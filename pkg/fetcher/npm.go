@@ -216,7 +216,7 @@ func (c *NPMClient) VerifySourceAvailability(packageName, version string, repoUR
 		result.Details = "Failed to fetch package metadata from npm registry"
 		return result
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		result.VerificationErrors = append(result.VerificationErrors, "Package version not found in npm registry")
@@ -297,7 +297,7 @@ func (c *NPMClient) checkTarballHasSource(tarballURL string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to download tarball: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("tarball download returned status %d", resp.StatusCode)
@@ -308,7 +308,7 @@ func (c *NPMClient) checkTarballHasSource(tarballURL string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("failed to decompress gzip: %w", err)
 	}
-	defer gzr.Close()
+	defer func() { _ = gzr.Close() }()
 
 	// Read tar archive
 	tr := tar.NewReader(gzr)
@@ -318,11 +318,7 @@ func (c *NPMClient) checkTarballHasSource(tarballURL string) (bool, error) {
 	fileCount := 0
 	maxFilesToCheck := 100 // Limit to avoid processing huge packages
 
-	for {
-		if fileCount >= maxFilesToCheck {
-			break
-		}
-
+	for fileCount < maxFilesToCheck {
 		header, err := tr.Next()
 		if err == io.EOF {
 			break

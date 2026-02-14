@@ -201,13 +201,14 @@ func (c *MavenClient) VerifySourceAvailability(packageName, version string, repo
 		result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to check sources.jar: %v", err))
 		result.Details = "Could not verify sources.jar availability"
 	} else {
-		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		switch resp.StatusCode {
+		case http.StatusOK:
 			result.HasSourcePackage = true
-		} else if resp.StatusCode == http.StatusNotFound {
+		case http.StatusNotFound:
 			result.VerificationErrors = append(result.VerificationErrors, "sources.jar not found in Maven Central")
 			result.Details = "Package does not publish sources.jar"
-		} else {
+		default:
 			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Maven Central returned status %d for sources.jar", resp.StatusCode))
 			result.Details = "Could not verify sources.jar"
 		}

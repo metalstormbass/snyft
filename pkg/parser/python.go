@@ -256,7 +256,7 @@ func countRequirementsTxtDependencies(requirementsPath string) (*models.Dependen
 	if err != nil {
 		return nil, fmt.Errorf("failed to open requirements.txt: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	count := 0
 	scanner := bufio.NewScanner(file)

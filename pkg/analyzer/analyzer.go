@@ -786,9 +786,10 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 
 	// Determine description based on risk points
 	description := "Stable long-term ownership"
-	if riskPoints == 2 {
+	switch riskPoints {
+	case 2:
 		description = "Recent suspicious ownership changes detected"
-	} else if riskPoints == 1 {
+	case 1:
 		description = "Some ownership changes detected"
 	}
 
