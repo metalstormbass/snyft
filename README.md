@@ -24,10 +24,39 @@ npm link  # optional for global use
 ## Usage
 
 ```bash
-snyft analyze [path]              # analyze directory
+# Analyze current directory
+snyft analyze
+
+# Analyze specific directory
+snyft analyze /path/to/project
+
+# Analyze specific manifest files
+snyft analyze pom.xml
+snyft analyze package.json
+snyft analyze pom.xml package.json build.gradle
+
+# Analyze multiple manifests with glob pattern (shell expansion)
+snyft analyze **/pom.xml **/package.json
+
+# Output formats
 snyft analyze --format json       # JSON output
+snyft analyze --format markdown   # Markdown output
 snyft analyze --output ./reports  # save to file
 ```
+
+### Supported Manifest Files
+
+Snyft can analyze the following manifest types:
+
+**Java/JVM:**
+- `pom.xml` - Maven
+- `build.gradle` / `build.gradle.kts` - Gradle
+- `settings.gradle` / `settings.gradle.kts` - Gradle settings
+- `build.xml` - Apache Ant
+- `ivy.xml` - Apache Ivy
+
+**JavaScript/TypeScript:**
+- `package.json` - npm/yarn/pnpm
 
 ### Multi-Agent Mode
 
