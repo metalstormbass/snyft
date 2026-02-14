@@ -256,8 +256,6 @@ func (c *PyPIClient) VerifySourceAvailability(packageName, version string, repoU
 	return result
 }
 
-// CheckPyPISignatures checks if a package has cryptographic signatures
-
 // PyPIOwnershipHistory represents ownership/maintainer changes over time
 type PyPIOwnershipHistory struct {
 	CurrentAuthor     string
