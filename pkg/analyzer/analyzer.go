@@ -29,25 +29,46 @@ type Analyzer struct {
 
 	// AI analysis client (optional)
 	claudeClient *ai.Client
+	aiEnabled    bool
 }
 
-// NewAnalyzer creates a new Analyzer instance
-func NewAnalyzer() *Analyzer {
-	// Initialize AI client if API key is available
-	var claudeClient *ai.Client
-	config, err := ai.LoadFromEnv()
-	if err == nil && config.APIKey != "" {
-		// Only initialize if API key is present
-		claudeClient, err = ai.NewClient(config)
+// AnalyzerOption is a functional option for configuring an Analyzer
+type AnalyzerOption func(*Analyzer)
+
+// WithAIConfig configures the analyzer with a custom AI configuration
+func WithAIConfig(config *ai.Config) AnalyzerOption {
+	return func(a *Analyzer) {
+		if config == nil || config.APIKey == "" {
+			a.claudeClient = nil
+			a.aiEnabled = false
+			return
+		}
+
+		claudeClient, err := ai.NewClient(config)
 		if err != nil {
 			// Log error but continue - AI analysis is optional
-			// In a production environment, you might want to use a proper logger here
 			fmt.Printf("Warning: Failed to initialize AI client: %v\n", err)
-			claudeClient = nil
+			a.claudeClient = nil
+			a.aiEnabled = false
+			return
 		}
-	}
 
-	return &Analyzer{
+		a.claudeClient = claudeClient
+		a.aiEnabled = true
+	}
+}
+
+// WithAIDisabled explicitly disables AI analysis
+func WithAIDisabled() AnalyzerOption {
+	return func(a *Analyzer) {
+		a.claudeClient = nil
+		a.aiEnabled = false
+	}
+}
+
+// NewAnalyzer creates a new Analyzer instance with optional configuration
+func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
+	a := &Analyzer{
 		githubClient:    fetcher.NewGitHubClient(),
 		gitlabClient:    fetcher.NewGitLabClient(),
 		bitbucketClient: fetcher.NewBitbucketClient(),
@@ -55,8 +76,30 @@ func NewAnalyzer() *Analyzer {
 		pypiClient:      fetcher.NewPyPIClient(),
 		mavenClient:     fetcher.NewMavenClient(),
 		ossfClient:      fetcher.NewOSSFClient(),
-		claudeClient:    claudeClient,
 	}
+
+	// Apply options
+	for _, opt := range opts {
+		opt(a)
+	}
+
+	// If no AI config was provided via options, try to load from environment
+	if a.claudeClient == nil && a.aiEnabled == false {
+		config, err := ai.LoadFromEnv()
+		if err == nil && config.APIKey != "" {
+			// Only initialize if API key is present
+			claudeClient, err := ai.NewClient(config)
+			if err != nil {
+				// Log error but continue - AI analysis is optional
+				fmt.Printf("Warning: Failed to initialize AI client: %v\n", err)
+			} else {
+				a.claudeClient = claudeClient
+				a.aiEnabled = true
+			}
+		}
+	}
+
+	return a
 }
 
 // getGitClient returns the appropriate git platform client for a given repository URL
@@ -1417,8 +1460,8 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 //
 // The analysis is performed asynchronously with graceful degradation - failures do not block the scan
 func (a *Analyzer) enrichWithAIAnalysis(result *models.AnalysisResult) {
-	// Check if AI analysis is enabled (client initialized)
-	if a.claudeClient == nil {
+	// Check if AI analysis is enabled (client initialized and not explicitly disabled)
+	if a.claudeClient == nil || !a.aiEnabled {
 		return
 	}
 

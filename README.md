@@ -113,16 +113,32 @@ CGO_ENABLED=0 go build -o snyft
 # Increase concurrency for faster scans
 ./snyft scan --workers 20
 
-# Combined example
-./snyft scan --format json --workers 15 --output scan-results.json ./my-project
+# Enable AI-powered analysis (requires CLAUDE_API_KEY)
+./snyft scan --ai
+
+# AI analysis with custom API key
+./snyft scan --ai --ai-api-key="sk-ant-..." --ai-timeout=90
+
+# Combined example with AI
+./snyft scan --format json --workers 15 --ai --output scan-results.json ./my-project
 ```
 
 ### Command Options
 
+**Basic Options:**
 - `-f, --format <type>`: Output format: `text` (default), `markdown`, `json`, `html`
 - `-w, --workers <N>`: Number of concurrent workers (default: 10)
 - `-v, --verbose`: Verbose output with detailed findings (default: `true`)
 - `-o, --output <file>`: Write results to file instead of stdout
+
+**AI Analysis Options:**
+- `--ai`: Enable AI-powered analysis (requires API key)
+- `--ai-api-key <key>`: Claude API key (alternative to `CLAUDE_API_KEY` env var)
+- `--ai-timeout <seconds>`: Timeout for AI operations (default: 60)
+- `--ai-disable-cache`: Disable AI response caching
+- `--ai-disable-retry`: Disable retry on AI API failures
+
+See [docs/AI_FEATURES.md](docs/AI_FEATURES.md) for detailed AI configuration.
 
 ## Supply Chain Scoring System
 
