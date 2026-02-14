@@ -1,9 +1,15 @@
 # Binaries
 snyft
+snyft-*
 *.exe
 *.dll
 *.so
 *.dylib
+
+# Build directories
+build/
+dist/
+bin/
 
 # Test binary
 *.test
@@ -28,3 +34,7 @@ Thumbs.db
 # Output files
 results.txt
 results.json
+result.txt
+*-results.txt
+*-results.json
+*.log
