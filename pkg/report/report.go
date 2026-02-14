@@ -115,7 +115,7 @@ func (r *Reporter) ShowProgress(current, total int, packageName string) {
 
 	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
 
-	fmt.Fprintf(r.config.Writer, "\r\033[K🔬 Analyzing [%s] %3d%% (%d/%d) %s",
+	_, _ = fmt.Fprintf(r.config.Writer, "\r\033[K🔬 Analyzing [%s] %3d%% (%d/%d) %s",
 		bar, percentage, current, total, truncate(packageName, 40))
 }
 
@@ -124,7 +124,7 @@ func (r *Reporter) ClearProgress() {
 	if !r.config.ShowProgress {
 		return
 	}
-	fmt.Fprintf(r.config.Writer, "\r\033[K")
+	_, _ = fmt.Fprintf(r.config.Writer, "\r\033[K")
 }
 
 // truncate truncates a string to the specified length
