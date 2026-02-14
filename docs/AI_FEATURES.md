@@ -8,7 +8,14 @@ When enabled, AI analysis provides:
 
 1. **Attack Pattern Matching** - Compares package behavior against documented supply chain attack patterns
 2. **Executive Explanations** - Generates stakeholder-friendly summaries of risk assessments
-3. **Semantic Code Analysis** - Contextual understanding of risk patterns that static rules may miss
+
+### Phase 1 Implementation Status
+
+The current Phase 1 release includes:
+- ✅ **Attack Pattern Matching**: Detects 8 documented supply chain attack patterns
+- ✅ **Executive Explanations**: Business-friendly risk summaries with recommendations
+
+**Note**: While semantic analysis prompt templates exist in the codebase (`pkg/ai/prompts.go`), they are not actively used in Phase 1. These were built as infrastructure but removed from the analysis flow as they require additional validation and academic grounding (see PR #59).
 
 ## Configuration
 

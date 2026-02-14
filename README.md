@@ -163,7 +163,7 @@ Snyft uses a **9-category rubric** where each category is scored 0-2 risk points
 
 ## AI-Enhanced Analysis (Optional)
 
-Snyft can optionally use Claude AI to enhance supply chain security analysis with semantic understanding and attack pattern detection.
+Snyft can optionally use Claude AI to enhance supply chain security analysis with attack pattern detection and executive-friendly risk explanations.
 
 ### Enabling AI Analysis
 

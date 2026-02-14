@@ -8,58 +8,11 @@ The AI prompts system supports Snyft's core mission: **predicting package compro
 
 ## Prompt Types
 
-### 1. Semantic Analysis (`PromptTypeSemanticAnalysis`)
+### Phase 1: Active Features
 
-Analyzes package metadata and behavior to identify supply chain risk patterns.
+These prompt types are actively used in the current Snyft implementation:
 
-**Use Cases:**
-- Analyzing package metadata for risk indicators
-- Identifying maintainer control weaknesses
-- Detecting suspicious behavioral patterns
-- Assessing release integrity
-
-**Example:**
-```go
-prompt := ai.NewSemanticAnalysisPrompt(
-    packageName,
-    ecosystem,
-    metadata,
-    findings,
-)
-
-systemPrompt, userPrompt := prompt.Render()
-// Send to Claude API
-```
-
-**Temperature:** 0.3 (analytical)
-**Max Tokens:** 2000
-
-### 2. Code Pattern Analysis (`PromptTypeCodePatternAnalysis`)
-
-Examines install-time scripts (npm postinstall, Python setup.py, Java pom.xml) for dangerous patterns.
-
-**Detected Patterns:**
-- Network access during installation (download-and-execute)
-- File system operations outside package directory
-- Privilege escalation attempts
-- Obfuscation techniques
-- Environment variable access (credential theft)
-- Child process spawning
-
-**Example:**
-```go
-prompt := ai.NewCodePatternAnalysisPrompt(
-    "postinstall",  // script type
-    scriptContent,   // actual script code
-)
-
-systemPrompt, userPrompt := prompt.Render()
-```
-
-**Temperature:** 0.2 (very analytical)
-**Max Tokens:** 1500
-
-### 3. Attack Pattern Matching (`PromptTypeAttackPatternMatch`)
+#### 1. Attack Pattern Matching (`PromptTypeAttackPatternMatch`)
 
 Compares observed package behaviors to 8 documented supply chain attack patterns:
 
@@ -86,7 +39,7 @@ systemPrompt, userPrompt := prompt.Render()
 **Temperature:** 0.4 (moderate for pattern matching)
 **Max Tokens:** 2500
 
-### 4. Executive Explanation (`PromptTypeExecutiveExplanation`)
+#### 2. Executive Explanation (`PromptTypeExecutiveExplanation`)
 
 Generates stakeholder-friendly explanations for non-technical audiences.
 
@@ -119,7 +72,7 @@ systemPrompt, userPrompt := prompt.Render()
 **Temperature:** 0.7 (creative for accessibility)
 **Max Tokens:** 3000
 
-### 5. Package Comparison (`PromptTypePackageComparison`)
+#### 3. Package Comparison (`PromptTypePackageComparison`)
 
 Compares multiple packages' supply chain security postures.
 
@@ -143,7 +96,7 @@ systemPrompt, userPrompt := prompt.Render()
 **Temperature:** 0.4
 **Max Tokens:** 2500
 
-### 6. Custom Prompts (`PromptTypeCustom`)
+#### 4. Custom Prompts (`PromptTypeCustom`)
 
 Create specialized prompts for future use cases.
 
@@ -157,6 +110,70 @@ prompt := ai.NewCustomPrompt(
     2000,  // max tokens
 )
 ```
+
+### Phase 1: Infrastructure (Not Actively Used)
+
+These prompt types exist in the codebase as infrastructure but are **not actively used** in the current Phase 1 implementation. They were removed from the analysis flow (see PR #59) as they require additional validation and academic grounding before deployment.
+
+#### Semantic Analysis (`PromptTypeSemanticAnalysis`)
+
+**Status**: ❌ Not actively used in Phase 1
+
+Analyzes package metadata and behavior to identify supply chain risk patterns.
+
+**Potential Use Cases** (future):
+- Analyzing package metadata for risk indicators
+- Identifying maintainer control weaknesses
+- Detecting suspicious behavioral patterns
+- Assessing release integrity
+
+**Example:**
+```go
+prompt := ai.NewSemanticAnalysisPrompt(
+    packageName,
+    ecosystem,
+    metadata,
+    findings,
+)
+
+systemPrompt, userPrompt := prompt.Render()
+// Send to Claude API (not currently called in analysis flow)
+```
+
+**Temperature:** 0.3 (analytical)
+**Max Tokens:** 2000
+
+**Why Not Active**: Removed in PR #59 as "out of scope for supply chain risk assessment" - requires more academic justification and validation before use.
+
+#### Code Pattern Analysis (`PromptTypeCodePatternAnalysis`)
+
+**Status**: ❌ Not actively used in Phase 1
+
+Examines install-time scripts (npm postinstall, Python setup.py, Java pom.xml) for dangerous patterns.
+
+**Detected Patterns** (potential):
+- Network access during installation (download-and-execute)
+- File system operations outside package directory
+- Privilege escalation attempts
+- Obfuscation techniques
+- Environment variable access (credential theft)
+- Child process spawning
+
+**Example:**
+```go
+prompt := ai.NewCodePatternAnalysisPrompt(
+    "postinstall",  // script type
+    scriptContent,   // actual script code
+)
+
+systemPrompt, userPrompt := prompt.Render()
+// Send to Claude API (not currently called in analysis flow)
+```
+
+**Temperature:** 0.2 (very analytical)
+**Max Tokens:** 1500
+
+**Why Not Active**: Part of semantic analysis feature set, removed with PR #59. Static analysis of install scripts is handled by the core analyzer without AI.
 
 ## Academic Foundation
 
@@ -210,13 +227,18 @@ All prompts reference these sources:
 ❌ Look up existing vulnerability feeds
 ❌ Analyze code for bugs or logic errors
 
-## Usage in Future AI Features
+## Phase 1 Implementation Status
 
-This package is foundational for:
+**Active Features:**
+- ✅ **Attack Pattern Matcher** - Compares package behavior to 8 documented attack patterns
+- ✅ **Executive Explainer** - Generates stakeholder-friendly risk summaries
+- ✅ **Package Comparison** - Comparative supply chain security analysis
 
-1. **Task #3: Semantic Analyzer** - AI-powered behavioral analysis
-2. **Task #4: Attack Pattern Matcher** - Pattern recognition and comparison
-3. **Task #5: Executive Explainer** - Stakeholder report generation
+**Infrastructure (Not Active):**
+- ❌ **Semantic Analyzer** - Prompt templates exist but not used (removed in PR #59)
+- ❌ **Code Pattern Analysis** - Prompt templates exist but not used (removed in PR #59)
+
+**Usage**: Only attack pattern matching and executive explanation features are invoked during `snyft scan --ai`.
 
 ## Testing
 
@@ -233,44 +255,54 @@ Comprehensive test suite covers:
 go test ./pkg/ai/... -v
 ```
 
-## Example Integration
+## Example Integration (Phase 1)
+
+This example shows how the active AI features are used in the current implementation:
 
 ```go
 package main
 
 import (
+    "context"
     "github.com/metalstormbass/snyft/pkg/ai"
     "github.com/metalstormbass/snyft/pkg/models"
 )
 
-func analyzePackage(result models.AnalysisResult) {
-    // 1. Generate semantic analysis prompt
-    semanticPrompt := ai.NewSemanticAnalysisPrompt(
-        result.Dependency.Name,
-        result.Dependency.Ecosystem,
-        result.Metadata,
-        result.Findings,
-    )
+func analyzePackage(ctx context.Context, result models.AnalysisResult, aiClient *ai.Client) {
+    // 1. Initialize attack pattern matcher
+    matcher := ai.NewAttackMatcher(&ai.AttackMatcherConfig{
+        Client: aiClient,
+    })
 
-    systemPrompt, userPrompt := semanticPrompt.Render()
-
-    // 2. Send to Claude API (not implemented yet)
-    // response := claudeAPI.Complete(systemPrompt, userPrompt, semanticPrompt.Temperature)
-
-    // 3. Generate attack pattern matching prompt
-    attackPrompt := ai.NewAttackPatternMatchingPrompt(
+    // 2. Detect attack patterns (Phase 1 - Active)
+    attackResult, err := matcher.AnalyzePackage(ctx,
         result.Dependency.Name,
         result.Dependency.Ecosystem,
         result,
     )
+    if err != nil {
+        // Handle error gracefully - AI failures don't block scans
+        log.Printf("Attack pattern analysis failed: %v", err)
+    }
 
-    // 4. Generate executive explanation
-    execPrompt := ai.NewExecutiveExplanationPrompt(
+    // 3. Generate executive explanation (Phase 1 - Active)
+    explainer := ai.NewExplainer(&ai.ExplainerConfig{
+        Client:         aiClient,
+        TargetAudience: "Engineering Manager",
+        IncludeAttacks: true,
+    })
+
+    execResult, err := explainer.ExplainRisk(ctx,
         result.Dependency.Name,
         result.Dependency.Ecosystem,
         result,
-        "Engineering Manager",
     )
+    if err != nil {
+        log.Printf("Executive explanation failed: %v", err)
+    }
+
+    // Note: Semantic analysis prompts exist but are NOT called in Phase 1
+    // semanticPrompt := ai.NewSemanticAnalysisPrompt(...) // Infrastructure only
 }
 ```
 
