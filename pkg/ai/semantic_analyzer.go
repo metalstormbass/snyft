@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -639,7 +638,7 @@ func (sa *SemanticAnalyzer) AnalyzePackage(ctx context.Context, pkg *models.Anal
 	}
 
 	// Phase 1: Analyze install scripts (always, this is cost-optimized)
-	if pkg.Metadata.InstallScripts != nil && len(pkg.Metadata.InstallScripts) > 0 {
+	if len(pkg.Metadata.InstallScripts) > 0 {
 		findings, err := sa.AnalyzeInstallScripts(ctx, pkg.Metadata.InstallScripts, opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to analyze install scripts: %w", err)
@@ -973,11 +972,3 @@ func (sa *SemanticAnalyzer) FetchFileFromURL(ctx context.Context, url string) (s
 	return string(body), nil
 }
 
-// Helper function to convert map to JSON for debugging
-func toJSON(v interface{}) string {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("error: %v", err)
-	}
-	return string(data)
-}
