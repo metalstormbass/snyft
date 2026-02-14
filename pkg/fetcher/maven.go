@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
@@ -62,6 +64,10 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Try scraping fallback on rate limit or auth errors
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapeMavenPackageInfo(packageName)
+		}
 		return nil, fmt.Errorf("maven Central returned status %d", resp.StatusCode)
 	}
 
@@ -242,3 +248,60 @@ func (c *MavenClient) VerifySourceAvailability(packageName, version string, repo
 
 	return result
 }
+
+// scrapeMavenPackageInfo scrapes package information from mvnrepository.com
+// Used as a fallback when Maven Central search API fails
+func (c *MavenClient) scrapeMavenPackageInfo(packageName string) (*MavenPackage, error) {
+	// Parse package name (format: groupId:artifactId)
+	parts := strings.Split(packageName, ":")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid Maven package name format: %s (expected groupId:artifactId)", packageName)
+	}
+
+	groupID := parts[0]
+	artifactID := parts[1]
+
+	// Build mvnrepository.com URL
+	pageURL := fmt.Sprintf("https://mvnrepository.com/artifact/%s/%s", groupID, artifactID)
+
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return nil, fmt.Errorf("scraping fallback failed: %w", err)
+	}
+
+	pkg := &MavenPackage{
+		GroupID:    groupID,
+		ArtifactID: artifactID,
+	}
+
+	// Extract latest version
+	doc.Find("a.vbtn.release").First().Each(func(i int, s *goquery.Selection) {
+		pkg.LatestVersion = strings.TrimSpace(s.Text())
+	})
+
+	// Extract license from the page
+	doc.Find("span.b.lic").Each(func(i int, s *goquery.Selection) {
+		if i == 0 {
+			pkg.License = strings.TrimSpace(s.Text())
+		}
+	})
+
+	// Extract repository URL (often shows GitHub link)
+	doc.Find("a[href*='github.com']").Each(func(i int, s *goquery.Selection) {
+		if href, exists := s.Attr("href"); exists && pkg.RepositoryURL == "" {
+			pkg.RepositoryURL = href
+		}
+	})
+
+	// Extract usage stats if available (number of usages shown on mvnrepository)
+	doc.Find("td:contains('Usages')").Next().Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		// Extract number from text
+		numStr := strings.ReplaceAll(text, ",", "")
+		// Parse usage count (not currently stored in MavenPackage struct)
+		_, _ = strconv.Atoi(numStr)
+	})
+
+	return pkg, nil
+}
+

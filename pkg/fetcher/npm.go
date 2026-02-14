@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
@@ -59,6 +62,10 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// Try scraping fallback on rate limit or auth errors
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapeNPMPackageInfo(packageName)
+		}
 		return nil, fmt.Errorf("npm registry returned status %d", resp.StatusCode)
 	}
 
@@ -377,6 +384,78 @@ func (c *NPMClient) checkTarballHasSource(tarballURL string) (bool, error) {
 	// If we found non-minified JS files (even not in src/), give benefit of doubt
 	return !hasOnlyMinified, nil
 }
+
+// scrapeNPMPackageInfo scrapes package information from npmjs.com web page
+// Used as a fallback when the npm registry API fails
+func (c *NPMClient) scrapeNPMPackageInfo(packageName string) (*NPMPackage, error) {
+	pageURL := fmt.Sprintf("https://www.npmjs.com/package/%s", packageName)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return nil, fmt.Errorf("scraping fallback failed: %w", err)
+	}
+
+	pkg := &NPMPackage{
+		Name:        packageName,
+		Maintainers: []string{},
+		Scripts:     make(map[string]string),
+	}
+
+	// Extract version
+	doc.Find("h3:contains('Version')").Parent().Find("p").Each(func(i int, s *goquery.Selection) {
+		if i == 0 {
+			pkg.LatestVersion = strings.TrimSpace(s.Text())
+		}
+	})
+
+	// Extract download count from stats
+	doc.Find("div._9ba9a726").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		if strings.Contains(strings.ToLower(text), "weekly downloads") {
+			// Extract number from text
+			re := regexp.MustCompile(`[\d,]+`)
+			match := re.FindString(text)
+			if match != "" {
+				downloads, _ := strconv.ParseInt(strings.ReplaceAll(match, ",", ""), 10, 64)
+				pkg.Downloads = downloads
+			}
+		}
+	})
+
+	// Extract maintainers
+	doc.Find("a[href^='/~']").Each(func(i int, s *goquery.Selection) {
+		maintainer := strings.TrimPrefix(s.Text(), "~")
+		if maintainer != "" && !contains(pkg.Maintainers, maintainer) {
+			pkg.Maintainers = append(pkg.Maintainers, maintainer)
+		}
+	})
+
+	// Extract repository URL
+	doc.Find("a[href*='github.com']").Each(func(i int, s *goquery.Selection) {
+		if href, exists := s.Attr("href"); exists && strings.Contains(href, "github.com") {
+			pkg.RepositoryURL = href
+		}
+	})
+
+	// Extract license
+	doc.Find("h3:contains('License')").Parent().Find("p a").Each(func(i int, s *goquery.Selection) {
+		if i == 0 {
+			pkg.License = strings.TrimSpace(s.Text())
+		}
+	})
+
+	return pkg, nil
+}
+
+// contains checks if a string slice contains a string
+func contains(slice []string, str string) bool {
+	for _, s := range slice {
+		if s == str {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistory, error) {
 	url := fmt.Sprintf("%s/%s", c.baseURL, packageName)
 

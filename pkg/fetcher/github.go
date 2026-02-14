@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
@@ -56,6 +57,10 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		// Try scraping fallback on rate limit or auth errors
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapeRepositoryInfo(repoURL, owner, repo)
+		}
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -82,6 +87,58 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		Topics:        ghRepo.Topics,
 	}, nil
 }
+
+// scrapeRepositoryInfo scrapes repository information from the GitHub web page
+// Used as a fallback when the API is rate-limited or returns auth errors
+func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*models.RepositoryInfo, error) {
+	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return nil, fmt.Errorf("scraping fallback failed: %w", err)
+	}
+
+	info := &models.RepositoryInfo{
+		URL:   pageURL,
+		Owner: owner,
+		Name:  repo,
+	}
+
+	// Extract description
+	doc.Find("p.f4.my-3").Each(func(i int, s *goquery.Selection) {
+		info.Description = strings.TrimSpace(s.Text())
+	})
+
+	// Extract stars, forks, watchers from the sidebar
+	doc.Find("a[href$='/stargazers']").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		info.Stars = extractNumber(text)
+	})
+
+	doc.Find("a[href$='/forks']").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		info.Forks = extractNumber(text)
+	})
+
+	doc.Find("a[href$='/watchers']").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		info.Watchers = extractNumber(text)
+	})
+
+	// Extract last commit date from the commit bar
+	doc.Find("relative-time").Each(func(i int, s *goquery.Selection) {
+		if datetime, exists := s.Attr("datetime"); exists && i == 0 {
+			if t, err := time.Parse(time.RFC3339, datetime); err == nil {
+				info.PushedAt = t
+			}
+		}
+	})
+
+	// Set current time for updated_at as approximation
+	info.UpdatedAt = time.Now()
+
+	return info, nil
+}
+
 
 // DetectCISystems checks for common CI/CD systems in the repository
 func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
@@ -916,7 +973,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -988,7 +1045,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return stats, nil // Return empty stats if we can't fetch PRs
@@ -1042,7 +1099,7 @@ func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false
@@ -1079,7 +1136,7 @@ func (c *GitHubClient) getBranchProtection(owner, repo string) *GitHubBranchProt
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil
@@ -1159,7 +1216,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to fetch workflows")
