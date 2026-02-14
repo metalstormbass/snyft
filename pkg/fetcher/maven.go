@@ -80,10 +80,8 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 		LatestVersion: doc.LatestVersion,
 	}
 
-	// Try to fetch POM to get more metadata
-	if err := c.enrichFromPOM(pkg, groupID, artifactID, doc.LatestVersion); err != nil {
-		// POM fetch failed, continue with basic info
-	}
+	// Try to fetch POM to get more metadata (ignore errors and continue with basic info)
+	_ = c.enrichFromPOM(pkg, groupID, artifactID, doc.LatestVersion)
 
 	return pkg, nil
 }
