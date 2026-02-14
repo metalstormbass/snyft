@@ -1,0 +1,4 @@
+# Small requirements file
+requests==2.28.0
+Flask==2.3.0
+numpy==1.24.0

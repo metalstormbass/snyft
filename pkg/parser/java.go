@@ -101,3 +101,35 @@ func parseBuildGradle(path string) ([]models.Dependency, error) {
 
 	return deps, nil
 }
+
+// CountMavenDependencies analyzes pom.xml and counts dependencies
+// Note: This only counts direct dependencies from pom.xml
+// For accurate transitive counts, Maven dependency:tree output would be needed
+func CountMavenDependencies(pomPath string) (*models.DependencyMetrics, error) {
+	data, err := os.ReadFile(pomPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read pom.xml: %w", err)
+	}
+
+	var pom PomXML
+	if err := xml.Unmarshal(data, &pom); err != nil {
+		return nil, fmt.Errorf("failed to parse pom.xml: %w", err)
+	}
+
+	// Count non-test dependencies
+	directCount := 0
+	for _, dep := range pom.Dependencies {
+		if dep.Scope != "test" {
+			directCount++
+		}
+	}
+
+	metrics := &models.DependencyMetrics{
+		TransitiveCount: directCount, // We only see direct deps in pom.xml
+		DirectCount:     directCount,
+		MaxDepth:        1,
+		Verified:        false, // pom.xml only shows direct deps, not transitives
+	}
+
+	return metrics, nil
+}
