@@ -513,3 +513,39 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 
 	return releases, nil
 }
+
+// GetFileContent fetches the content of a file from a GitHub repository
+func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return "", err
+	}
+
+	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, filePath)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3.raw")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}

