@@ -185,10 +185,10 @@ type ProvenanceInfo struct {
 	BuildSystem          string   `json:"build_system,omitempty"`
 }
 
-// SupplyChainScore represents a 0-16 point supply chain security scoring rubric
+// SupplyChainScore represents a 0-18 point supply chain security scoring rubric
 type SupplyChainScore struct {
-	TotalScore    int                   `json:"total_score"`    // 0-16 points
-	RiskLevel     string                `json:"risk_level"`     // LOW (0-3), MEDIUM (4-7), HIGH (8+)
+	TotalScore    int                   `json:"total_score"`    // 0-18 points
+	RiskLevel     string                `json:"risk_level"`     // LOW (0-5), MEDIUM (6-12), HIGH (13+)
 	CategoryScores CategoryScores       `json:"category_scores"`
 }
 
@@ -201,6 +201,7 @@ type CategoryScores struct {
 	DependencySprawl   CategoryScore `json:"dependency_sprawl"`    // 0-2 pts: transitive dependencies
 	Provenance         CategoryScore `json:"provenance"`           // 0-2 pts: reproducible/signed builds
 	Health             CategoryScore `json:"health"`               // 0-2 pts: bus factor/review/CI
+	Governance         CategoryScore `json:"governance"`           // 0-2 pts: governance docs/responsiveness
 	ReleaseSecurity    CategoryScore `json:"release_security"`     // 0-2 pts: CI publishing/branch protection/signed tags
 }
 
