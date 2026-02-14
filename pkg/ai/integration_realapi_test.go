@@ -1,3 +1,15 @@
+// +build integration
+
+// This file contains integration tests that make REAL API calls to Claude.
+// These tests are disabled by default and only run when the "integration" build tag is set.
+//
+// To run these tests:
+//   export CLAUDE_API_KEY=your-api-key
+//   go test ./pkg/ai/... -tags=integration -v
+//
+// NOTE: These tests make real API calls and will incur costs.
+// For CI/CD and regular testing, use the mocked integration tests in integration_mocked_test.go
+
 package ai
 
 import (
@@ -160,102 +172,3 @@ func TestExplainer_Integration_RealAPI(t *testing.T) {
 	t.Logf("Recommendation: %s", explainerResult.Explanation.RecommendedAction)
 	t.Logf("Confidence: %.2f", explainerResult.Explanation.Confidence)
 }
-
-// Test: Quick summary generation
-// Justification: Quick summaries should be concise (2-3 sentences)
-// Source: Executive briefing best practices
-// Methodology: Generate quick summary with real API
-// Result: Should return brief summary with clear recommendation
-func TestExplainer_QuickSummary_Integration(t *testing.T) {
-	apiKey := os.Getenv("CLAUDE_API_KEY")
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if apiKey == "" {
-		t.Skip("Skipping integration test: CLAUDE_API_KEY not set")
-	}
-
-	cfg := DefaultConfig()
-	cfg.APIKey = apiKey
-	client, err := NewClient(cfg)
-	require.NoError(t, err)
-	defer client.Close()
-
-	config := &ExplainerConfig{
-		Client: client,
-	}
-	explainer := NewExplainer(config)
-
-	result := models.AnalysisResult{
-		RiskLevel: "MEDIUM",
-		RiskScore: 55,
-		Findings: []models.Finding{
-			{Severity: "MEDIUM", Description: "No branch protection"},
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	summary, err := explainer.GenerateQuickSummary(ctx, "test-package", result)
-	require.NoError(t, err, "Should generate quick summary")
-
-	assert.NotEmpty(t, summary, "Summary should not be empty")
-
-	// Quick summary should be concise
-	sentences := countSentences(summary)
-	if sentences > 5 {
-		t.Logf("Warning: Quick summary has %d sentences (expected 2-4)", sentences)
-	}
-
-	t.Logf("Quick summary: %s", summary)
-}
-
-// Test: Batch explanation processing
-// Justification: Efficient processing of multiple packages
-// Source: Bulk processing requirements
-// Methodology: Process multiple packages in batch
-// Result: Should return results for all packages
-func TestExplainer_BatchExplain_Integration(t *testing.T) {
-	apiKey := os.Getenv("CLAUDE_API_KEY")
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if apiKey == "" {
-		t.Skip("Skipping integration test: CLAUDE_API_KEY not set")
-	}
-
-	cfg := DefaultConfig()
-	cfg.APIKey = apiKey
-	client, err := NewClient(cfg)
-	require.NoError(t, err)
-	defer client.Close()
-
-	config := &ExplainerConfig{
-		Client: client,
-	}
-	explainer := NewExplainer(config)
-
-	packages := []string{"pkg-a", "pkg-b"}
-	ecosystems := []models.Ecosystem{models.EcosystemNPM, models.EcosystemPyPI}
-	results := []models.AnalysisResult{
-		{RiskLevel: "LOW", RiskScore: 20},
-		{RiskLevel: "HIGH", RiskScore: 85},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	batchResults, err := explainer.BatchExplain(ctx, packages, ecosystems, results)
-	require.NoError(t, err, "Should successfully batch explain")
-
-	assert.Equal(t, len(packages), len(batchResults), "Should return result for each package")
-
-	for i, result := range batchResults {
-		assert.NotNil(t, result.Explanation, "Package %d should have explanation", i)
-		t.Logf("Package %s: %s", packages[i], result.Explanation.Summary)
-	}
-}
-
-// Note: Full package analysis with attack patterns test removed after PR #59
-
