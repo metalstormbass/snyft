@@ -37,6 +37,7 @@ type JSONCriticalIssue struct {
 	Severity       string `json:"severity"`
 	Description    string `json:"description"`
 	Evidence       string `json:"evidence,omitempty"`
+	Impact         string `json:"impact,omitempty"`
 }
 
 // generateJSON generates a JSON report
@@ -70,17 +71,21 @@ func (r *Reporter) generateJSON() error {
 			Severity:       issue.Severity,
 			Description:    issue.Description,
 			Evidence:       issue.Evidence,
+			Impact:         r.getRiskImpactDescription(issue.Severity),
 		}
 	}
 
-	// Generate summary text
+	// Generate professional summary text
 	if len(criticalIssues) > 0 {
 		report.ExecutiveSummary.Summary = fmt.Sprintf(
-			"Found %d critical issues across %d packages. %d packages are HIGH risk, %d are MEDIUM risk.",
-			len(criticalIssues), r.stats.TotalPackages, r.stats.HighRisk, r.stats.MediumRisk)
+			"Supply Chain Risk Assessment: Scanned %d packages and identified %d with elevated supply chain compromise risk. "+
+				"%d packages are HIGH risk (immediate attention required), %d are MEDIUM risk (monitoring recommended). "+
+				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
+			r.stats.TotalPackages, r.stats.HighRisk+r.stats.MediumRisk, r.stats.HighRisk, r.stats.MediumRisk)
 	} else {
 		report.ExecutiveSummary.Summary = fmt.Sprintf(
-			"Scanned %d packages. Overall risk level is %s.",
+			"Supply Chain Risk Assessment: Scanned %d packages with overall risk level: %s. "+
+				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
 			r.stats.TotalPackages, r.calculateOverallRisk())
 	}
 

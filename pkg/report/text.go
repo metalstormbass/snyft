@@ -98,6 +98,14 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 	r.printSectionHeader(w, "EXECUTIVE SUMMARY")
 	_, _ = fmt.Fprintln(w)
 
+	// Risk Assessment Overview
+	_, _ = fmt.Fprintf(w, "  %sSupply Chain Risk Assessment%s\n", ColorBold, ColorReset)
+	_, _ = fmt.Fprintln(w, "  This report evaluates the likelihood that software packages could be")
+	_, _ = fmt.Fprintln(w, "  compromised through supply chain attacks. It assesses risk factors such")
+	_, _ = fmt.Fprintln(w, "  as maintainer practices, ownership changes, and build integrity—NOT known")
+	_, _ = fmt.Fprintln(w, "  CVEs or code vulnerabilities.")
+	_, _ = fmt.Fprintln(w)
+
 	// Calculate overall risk level
 	overallRisk := r.calculateOverallRisk()
 
@@ -146,11 +154,29 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 		_, _ = fmt.Fprintf(w, "  %sAverage per Package:%s %s\n", ColorBold, ColorReset, formatDuration(avgTime))
 	}
 
+	// Risk Impact Summary
+	if r.stats.HighRisk > 0 || r.stats.MediumRisk > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "  %sRisk Impact Summary:%s\n", ColorBold, ColorReset)
+		if r.stats.HighRisk > 0 {
+			fmt.Fprintf(w, "  %s⚠  ATTENTION REQUIRED:%s %d package%s identified with HIGH supply chain risk.\n",
+				ColorRed+ColorBold, ColorReset, r.stats.HighRisk, pluralize(r.stats.HighRisk))
+			fmt.Fprintln(w, "     These packages exhibit patterns commonly associated with compromised")
+			fmt.Fprintln(w, "     dependencies and require immediate review.")
+		}
+		if r.stats.MediumRisk > 0 {
+			fmt.Fprintf(w, "  %s⚠  MONITORING RECOMMENDED:%s %d package%s with MEDIUM risk factors.\n",
+				ColorYellow+ColorBold, ColorReset, r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
+			fmt.Fprintln(w, "     These packages show some concerning patterns that warrant closer monitoring.")
+		}
+	}
+
 	// Key Findings - Critical Issues
 	criticalIssues := r.extractCriticalIssues(5)
 	if len(criticalIssues) > 0 {
 		fmt.Fprintln(w)
-		fmt.Fprintf(w, "  %sKey Findings:%s\n", ColorBold, ColorReset)
+		fmt.Fprintf(w, "  %sTop Priority Findings:%s\n", ColorBold, ColorReset)
+		fmt.Fprintln(w, "  The following issues represent the highest supply chain compromise risks:")
 		fmt.Fprintln(w)
 
 		for i, issue := range criticalIssues {
@@ -159,12 +185,18 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 				ColorBold, i+1, ColorReset,
 				issueColor+ColorBold, issue.PackageName, issue.PackageVersion, ColorReset,
 				issue.Ecosystem)
-			fmt.Fprintf(w, "       %s[%s]%s %s\n",
+			fmt.Fprintf(w, "       %s[%s SEVERITY]%s %s\n",
 				r.getSeverityColor(issue.Severity), issue.Severity, ColorReset,
 				issue.Description)
 			if issue.Evidence != "" {
 				fmt.Fprintf(w, "       %sEvidence:%s %s\n",
 					ColorDim, ColorReset, issue.Evidence)
+			}
+			// Add impact context
+			impact := r.getRiskImpactDescription(issue.Severity)
+			if impact != "" {
+				fmt.Fprintf(w, "       %sImpact:%s %s\n",
+					ColorDim, ColorReset, impact)
 			}
 			if i < len(criticalIssues)-1 {
 				fmt.Fprintln(w)
@@ -420,42 +452,75 @@ func (r *Reporter) calculateOverallRisk() string {
 func (r *Reporter) generateRecommendations() []string {
 	var recs []string
 
+	// Priority 1: HIGH risk packages (immediate action)
 	if r.stats.HighRisk > 0 {
 		recs = append(recs, fmt.Sprintf(
-			"%sImmediate Action Required:%s Review and address %d HIGH risk packages. "+
-				"Consider finding alternative packages or implementing additional security controls.",
-			ColorRed+ColorBold, ColorReset, r.stats.HighRisk))
+			"%s[PRIORITY 1 - IMMEDIATE]%s Review %d HIGH risk package%s identified in this scan.\n"+
+				"   %sAction:%s Evaluate each package for:\n"+
+				"   • Alternative packages with better supply chain security\n"+
+				"   • Additional security controls (code review, sandboxing)\n"+
+				"   • Version pinning to prevent automatic updates\n"+
+				"   %sTimeline:%s Within 24-48 hours",
+			ColorRed+ColorBold, ColorReset, r.stats.HighRisk, pluralize(r.stats.HighRisk),
+			ColorBold, ColorReset,
+			ColorBold, ColorReset))
 	}
 
-	// Count packages with missing source code
+	// Priority 2: Missing source code
 	missingSource := 0
+	var missingSourcePkgs []string
 	for _, result := range r.results {
-		if !result.SourceCodeAvailable {
+		if !result.SourceCodeAvailable && result.RiskLevel != "LOW" {
 			missingSource++
+			if len(missingSourcePkgs) < 3 {
+				missingSourcePkgs = append(missingSourcePkgs, result.Dependency.Name)
+			}
 		}
 	}
 	if missingSource > 0 {
+		examplePkgs := ""
+		if len(missingSourcePkgs) > 0 {
+			examplePkgs = fmt.Sprintf(" (e.g., %s)", strings.Join(missingSourcePkgs, ", "))
+		}
 		recs = append(recs, fmt.Sprintf(
-			"%d packages lack publicly available source code. "+
-				"Verify these packages are from trusted publishers.",
-			missingSource))
+			"%s[PRIORITY 2 - SHORT TERM]%s Verify %d package%s lacking public source code%s.\n"+
+				"   %sAction:%s Confirm these are from trusted publishers with established reputations.\n"+
+				"   Cannot audit code that isn't publicly available.\n"+
+				"   %sTimeline:%s Within 1 week",
+			ColorYellow+ColorBold, ColorReset, missingSource, pluralize(missingSource), examplePkgs,
+			ColorBold, ColorReset,
+			ColorBold, ColorReset))
 	}
 
-	// Count packages with install scripts
+	// Priority 3: Install-time execution
 	installScripts := 0
+	var installScriptPkgs []string
 	for _, result := range r.results {
 		if result.Metadata.HasInstallScripts {
 			installScripts++
+			if len(installScriptPkgs) < 3 {
+				installScriptPkgs = append(installScriptPkgs, result.Dependency.Name)
+			}
 		}
 	}
 	if installScripts > 0 {
+		examplePkgs := ""
+		if len(installScriptPkgs) > 0 {
+			examplePkgs = fmt.Sprintf(" (e.g., %s)", strings.Join(installScriptPkgs, ", "))
+		}
 		recs = append(recs, fmt.Sprintf(
-			"%d packages execute install-time scripts. "+
-				"Review these scripts for potentially dangerous operations.",
-			installScripts))
+			"%s[PRIORITY 3 - ONGOING]%s Monitor %d package%s with install-time scripts%s.\n"+
+				"   %sAction:%s Review scripts before updates for potentially dangerous operations:\n"+
+				"   • Network requests to unknown domains\n"+
+				"   • File system modifications outside package directories\n"+
+				"   • Execution of downloaded binaries\n"+
+				"   %sTimeline:%s Review before each dependency update",
+			ColorYellow+ColorBold, ColorReset, installScripts, pluralize(installScripts), examplePkgs,
+			ColorBold, ColorReset,
+			ColorBold, ColorReset))
 	}
 
-	// Check for missing provenance
+	// Priority 4: Missing provenance
 	missingProvenance := 0
 	for _, result := range r.results {
 		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.Provenance.RiskPoints > 1 {
@@ -464,9 +529,26 @@ func (r *Reporter) generateRecommendations() []string {
 	}
 	if missingProvenance > 0 {
 		recs = append(recs, fmt.Sprintf(
-			"%d packages lack build provenance attestations. "+
-				"Consider using packages with SLSA attestations or Sigstore signatures.",
-			missingProvenance))
+			"%s[PRIORITY 4 - STRATEGIC]%s Improve provenance for %d package%s.\n"+
+				"   %sAction:%s Prefer packages with:\n"+
+				"   • SLSA Level 2+ attestations (verifiable build process)\n"+
+				"   • Sigstore signatures (cryptographic verification)\n"+
+				"   • Reproducible builds (bit-for-bit verification)\n"+
+				"   %sTimeline:%s Consider during next major dependency review cycle",
+			ColorGreen+ColorBold, ColorReset, missingProvenance, pluralize(missingProvenance),
+			ColorBold, ColorReset,
+			ColorBold, ColorReset))
+	}
+
+	// General best practice
+	if len(recs) > 0 {
+		recs = append(recs, fmt.Sprintf(
+			"%s[BEST PRACTICE]%s Establish continuous monitoring:\n"+
+				"   • Run Snyft scans on every dependency update\n"+
+				"   • Integrate into CI/CD pipeline\n"+
+				"   • Set up alerts for new HIGH risk packages\n"+
+				"   • Review supply chain security quarterly",
+			ColorCyan+ColorBold, ColorReset))
 	}
 
 	return recs
@@ -493,4 +575,24 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
 	return fmt.Sprintf("%.2fs", d.Seconds())
+}
+
+func pluralize(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func (r *Reporter) getRiskImpactDescription(severity string) string {
+	switch severity {
+	case "CRITICAL", "HIGH":
+		return "If compromised, could lead to full system compromise, data exfiltration, or supply chain contamination"
+	case "MEDIUM":
+		return "If compromised, could enable lateral movement or unauthorized access to sensitive resources"
+	case "LOW":
+		return "Limited impact if compromised, but contributes to overall attack surface"
+	default:
+		return ""
+	}
 }
