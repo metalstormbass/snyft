@@ -61,6 +61,13 @@ jobs:
       with:
         go-version: '1.26'
 
+    - name: Debug - Show git info
+      run: |
+        echo "Current branch: $(git branch --show-current)"
+        echo "Current commit: $(git rev-parse HEAD)"
+        echo "Files changed:"
+        git diff --name-only HEAD~1 || echo "No previous commit to compare"
+
     - name: Install golangci-lint
       run: brew install golangci-lint
 
