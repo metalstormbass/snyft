@@ -102,9 +102,20 @@ type PackageMetadata struct {
 	HasInstallScripts   bool              `json:"has_install_scripts"`             // Whether package has install scripts
 	InstallScriptAnalysis *InstallScriptAnalysis `json:"install_script_analysis,omitempty"` // Analysis of install scripts
 
+	// Dependency metrics
+	DependencyMetrics *DependencyMetrics `json:"dependency_metrics,omitempty"`
+
 	// OpenSSF Scorecard
 	OSSFScore        float64  `json:"ossf_score"`
 	OSSFChecks       map[string]int `json:"ossf_checks"`
+}
+
+// DependencyMetrics contains information about dependency sprawl
+type DependencyMetrics struct {
+	TransitiveCount int `json:"transitive_count"` // Total number of transitive dependencies
+	DirectCount     int `json:"direct_count"`     // Number of direct dependencies
+	MaxDepth        int `json:"max_depth"`        // Maximum depth of dependency tree
+	Verified        bool `json:"verified"`        // Whether metrics were computed from lock file
 }
 
 // RepositoryInfo contains information about a Git repository

@@ -19,13 +19,22 @@ type PackageJSON struct {
 
 // PackageLockJSON represents the structure of package-lock.json
 type PackageLockJSON struct {
-	Name     string                        `json:"name"`
-	Version  string                        `json:"version"`
-	Packages map[string]PackageLockPackage `json:"packages"`
+	Name         string                               `json:"name"`
+	Version      string                               `json:"version"`
+	Packages     map[string]PackageLockPackage        `json:"packages"`
+	Dependencies map[string]PackageLockDependencyV1   `json:"dependencies"` // For older lockfile versions
 }
 
 type PackageLockPackage struct {
-	Version string `json:"version"`
+	Version      string            `json:"version"`
+	Dev          bool              `json:"dev"`
+	Dependencies map[string]string `json:"dependencies"`
+}
+
+// PackageLockDependencyV1 represents dependencies in older lockfile formats (v1-v6)
+type PackageLockDependencyV1 struct {
+	Version      string                             `json:"version"`
+	Dependencies map[string]PackageLockDependencyV1 `json:"dependencies"`
 }
 
 func parsePackageJSON(path string) ([]models.Dependency, error) {
@@ -101,6 +110,86 @@ func parseYarnLock(path string) ([]models.Dependency, error) {
 	// Yarn lock files are complex and would require a dedicated parser
 	// For now, return empty slice - this can be enhanced later
 	return []models.Dependency{}, nil
+}
+
+// CountTransitiveDependencies analyzes package-lock.json and counts transitive dependencies
+func CountTransitiveDependencies(lockfilePath string) (*models.DependencyMetrics, error) {
+	data, err := os.ReadFile(lockfilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read package-lock.json: %w", err)
+	}
+
+	var lockfile PackageLockJSON
+	if err := json.Unmarshal(data, &lockfile); err != nil {
+		return nil, fmt.Errorf("failed to parse package-lock.json: %w", err)
+	}
+
+	metrics := &models.DependencyMetrics{
+		TransitiveCount: 0,
+		DirectCount:     0,
+		MaxDepth:        0,
+		Verified:        true,
+	}
+
+	// Count packages (npm v7+ format with "packages" field)
+	if len(lockfile.Packages) > 0 {
+		directDeps := make(map[string]bool)
+
+		// Get direct dependencies from root package
+		if rootPkg, hasRoot := lockfile.Packages[""]; hasRoot {
+			for depName := range rootPkg.Dependencies {
+				directDeps[depName] = true
+			}
+		}
+
+		// Count all packages excluding root
+		for pkgPath := range lockfile.Packages {
+			if pkgPath == "" {
+				continue
+			}
+
+			metrics.TransitiveCount++
+
+			// Extract package name from path
+			name := strings.TrimPrefix(pkgPath, "node_modules/")
+			// Handle nested node_modules (e.g., "node_modules/foo/node_modules/bar")
+			parts := strings.Split(name, "/node_modules/")
+			actualName := parts[len(parts)-1]
+
+			if directDeps[actualName] {
+				metrics.DirectCount++
+			}
+		}
+	} else if len(lockfile.Dependencies) > 0 {
+		// Handle older npm lockfile format (v1-v6) with nested dependencies
+		metrics.DirectCount = len(lockfile.Dependencies)
+		visited := make(map[string]bool)
+
+		// Recursively count all dependencies
+		var countDeps func(deps map[string]PackageLockDependencyV1, depth int)
+		countDeps = func(deps map[string]PackageLockDependencyV1, depth int) {
+			if depth > metrics.MaxDepth {
+				metrics.MaxDepth = depth
+			}
+
+			for name, pkg := range deps {
+				key := name + "@" + pkg.Version
+				if visited[key] {
+					continue
+				}
+				visited[key] = true
+
+				if len(pkg.Dependencies) > 0 {
+					countDeps(pkg.Dependencies, depth+1)
+				}
+			}
+		}
+
+		countDeps(lockfile.Dependencies, 1)
+		metrics.TransitiveCount = len(visited)
+	}
+
+	return metrics, nil
 }
 
 // cleanVersion removes common version prefixes like ^, ~, >=, etc.

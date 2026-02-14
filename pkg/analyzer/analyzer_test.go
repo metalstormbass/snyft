@@ -237,6 +237,149 @@ func TestDetectCommitFrequencyAnomaly(t *testing.T) {
 	}
 }
 
+func TestScoreDependencySprawl_Few(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				TransitiveCount: 5,
+				DirectCount:     2,
+				Verified:        true,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for few dependencies, got %d", score.RiskPoints)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+
+	if score.Description != "Few transitive dependencies" {
+		t.Errorf("Unexpected description: %s", score.Description)
+	}
+}
+
+func TestScoreDependencySprawl_Moderate(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				TransitiveCount: 25,
+				DirectCount:     5,
+				Verified:        true,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for moderate dependencies, got %d", score.RiskPoints)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+
+	if score.Description != "Moderate transitive dependencies" {
+		t.Errorf("Unexpected description: %s", score.Description)
+	}
+}
+
+func TestScoreDependencySprawl_Many(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				TransitiveCount: 75,
+				DirectCount:     10,
+				Verified:        true,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for many dependencies, got %d", score.RiskPoints)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+
+	if score.Description != "Many transitive dependencies" {
+		t.Errorf("Unexpected description: %s", score.Description)
+	}
+}
+
+func TestScoreDependencySprawl_EdgeCase_Exactly10(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				TransitiveCount: 10,
+				DirectCount:     3,
+				Verified:        true,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	// 10 deps should be "moderate" (1 point)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for exactly 10 dependencies, got %d", score.RiskPoints)
+	}
+}
+
+func TestScoreDependencySprawl_EdgeCase_Exactly50(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				TransitiveCount: 50,
+				DirectCount:     5,
+				Verified:        true,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	// 50 deps should still be "moderate" (1 point)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for exactly 50 dependencies, got %d", score.RiskPoints)
+	}
+}
+
+func TestScoreDependencySprawl_Fallback_NoMetrics(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			RepoStars:     5,
+			DownloadCount: 100,
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	// Should fall back to heuristics
+	if score.Verified {
+		t.Error("Expected unverified score when using heuristics")
+	}
+
+	// Low stars = high risk (2 points)
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for low popularity, got %d", score.RiskPoints)
+	}
+}
+
 // Helper function to create a pointer to an int
 func intPtr(i int) *int {
 	return &i

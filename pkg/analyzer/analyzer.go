@@ -2,11 +2,13 @@ package analyzer
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/fetcher"
 	"github.com/metalstormbass/snyft/pkg/models"
+	"github.com/metalstormbass/snyft/pkg/parser"
 )
 
 // Analyzer performs supply chain security analysis on dependencies
@@ -129,6 +131,9 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	result.RepositoryURL = repoURL
 	result.Metadata = metadata
 
+	// Analyze dependency sprawl from lock files
+	a.analyzeDependencySprawl(&result, dep)
+
 	// Analyze repository if URL is available
 	if repoURL != "" {
 		a.analyzeRepository(&result, repoURL)
@@ -224,6 +229,44 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 			Check:       "Community Engagement Check",
 		})
 		result.RiskFactors = append(result.RiskFactors, "Limited community adoption")
+	}
+}
+
+func (a *Analyzer) analyzeDependencySprawl(result *models.AnalysisResult, dep models.Dependency) {
+	// Try to find and analyze lock file based on the source manifest
+	if dep.Source == "" {
+		return
+	}
+
+	dir := filepath.Dir(dep.Source)
+	var metrics *models.DependencyMetrics
+	var err error
+
+	switch dep.Ecosystem {
+	case models.EcosystemNPM:
+		// Look for package-lock.json
+		lockfilePath := filepath.Join(dir, "package-lock.json")
+		metrics, err = parser.CountTransitiveDependencies(lockfilePath)
+
+	case models.EcosystemPyPI:
+		// Look for Pipfile.lock first, then fall back to requirements.txt
+		lockfilePath := filepath.Join(dir, "Pipfile.lock")
+		metrics, err = parser.CountPythonDependencies(lockfilePath)
+		if err != nil {
+			// Try requirements.txt
+			lockfilePath = filepath.Join(dir, "requirements.txt")
+			metrics, err = parser.CountPythonDependencies(lockfilePath)
+		}
+
+	case models.EcosystemMaven:
+		// For Maven, analyze pom.xml
+		pomPath := filepath.Join(dir, "pom.xml")
+		metrics, err = parser.CountMavenDependencies(pomPath)
+	}
+
+	// If we successfully got metrics, add them to metadata
+	if err == nil && metrics != nil {
+		result.Metadata.DependencyMetrics = metrics
 	}
 }
 
@@ -824,10 +867,45 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 }
 
 // scoreDependencySprawl: transitive dependencies (0-2 pts)
+// Scoring: 0 points (few: <10), 1 point (moderate: 10-50), 2 points (many: 50+)
 func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.CategoryScore {
-	// For now, use heuristics based on ecosystem and package popularity
-	// Future enhancement: actually count transitive dependencies
+	// If we have dependency metrics from lock file analysis, use them
+	if result.Metadata.DependencyMetrics != nil && result.Metadata.DependencyMetrics.Verified {
+		metrics := result.Metadata.DependencyMetrics
+		transitiveCount := metrics.TransitiveCount
 
+		// Score based on transitive dependency count
+		// 0 points = few dependencies (< 10) = low risk
+		// 1 point = moderate dependencies (10-50) = medium risk
+		// 2 points = many dependencies (50+) = high risk
+		if transitiveCount < 10 {
+			return models.CategoryScore{
+				Score:       2,
+				RiskPoints:  0,
+				Description: "Few transitive dependencies",
+				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
+				Verified:    true,
+			}
+		} else if transitiveCount <= 50 {
+			return models.CategoryScore{
+				Score:       1,
+				RiskPoints:  1,
+				Description: "Moderate transitive dependencies",
+				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
+				Verified:    true,
+			}
+		} else {
+			return models.CategoryScore{
+				Score:       0,
+				RiskPoints:  2,
+				Description: "Many transitive dependencies",
+				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
+				Verified:    true,
+			}
+		}
+	}
+
+	// Fallback: use heuristics based on ecosystem and package popularity
 	// Popular packages tend to have more dependencies
 	if result.Metadata.RepoStars > 1000 || result.Metadata.DownloadCount > 1000000 {
 		return models.CategoryScore{
@@ -835,7 +913,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 			RiskPoints:  0,
 			Description: "Popular package (likely audited dependencies)",
 			Evidence:    fmt.Sprintf("%d stars, %d downloads", result.Metadata.RepoStars, result.Metadata.DownloadCount),
-			Verified:    true,
+			Verified:    false,
 		}
 	}
 

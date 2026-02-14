@@ -2,8 +2,10 @@ package parser
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -179,10 +181,119 @@ func parsePythonRequirement(req string) (string, string) {
 
 // Pipfile lock structure (simplified)
 type PipfileLock struct {
-	Default map[string]PipfileLockPackage `yaml:"default"`
-	Develop map[string]PipfileLockPackage `yaml:"develop"`
+	Default map[string]PipfileLockPackage `json:"default"`
+	Develop map[string]PipfileLockPackage `json:"develop"`
 }
 
 type PipfileLockPackage struct {
-	Version string `yaml:"version"`
+	Version string `json:"version"`
+}
+
+// CountPythonDependencies analyzes Python dependency files and counts dependencies
+func CountPythonDependencies(manifestPath string) (*models.DependencyMetrics, error) {
+	filename := filepath.Base(strings.ToLower(manifestPath))
+
+	// For Pipfile.lock (most accurate)
+	if filename == "pipfile.lock" {
+		return countPipfileLockDependencies(manifestPath)
+	}
+
+	// For requirements.txt (less accurate - may be all transitives from pip freeze)
+	// Match both "requirements.txt" and patterns like "requirements-small.txt"
+	if strings.HasPrefix(filename, "requirements") && strings.HasSuffix(filename, ".txt") {
+		return countRequirementsTxtDependencies(manifestPath)
+	}
+
+	return nil, fmt.Errorf("unsupported Python manifest for dependency counting: %s", manifestPath)
+}
+
+func countPipfileLockDependencies(lockfilePath string) (*models.DependencyMetrics, error) {
+	data, err := os.ReadFile(lockfilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Pipfile.lock: %w", err)
+	}
+
+	var lockfile PipfileLock
+	if err := json.Unmarshal(data, &lockfile); err != nil {
+		return nil, fmt.Errorf("failed to parse Pipfile.lock: %w", err)
+	}
+
+	metrics := &models.DependencyMetrics{
+		TransitiveCount: len(lockfile.Default) + len(lockfile.Develop),
+		DirectCount:     0, // Need to check Pipfile to know direct deps
+		MaxDepth:        0,
+		Verified:        true,
+	}
+
+	// Try to read Pipfile to get direct dependency count
+	pipfilePath := strings.Replace(lockfilePath, "Pipfile.lock", "Pipfile", 1)
+	if pipfileData, err := os.ReadFile(pipfilePath); err == nil {
+		directCount := 0
+		lines := strings.Split(string(pipfileData), "\n")
+		inPackages := false
+
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "[packages]" {
+				inPackages = true
+				continue
+			}
+			if strings.HasPrefix(line, "[") {
+				inPackages = false
+			}
+			if inPackages && strings.Contains(line, "=") {
+				directCount++
+			}
+		}
+		metrics.DirectCount = directCount
+	}
+
+	return metrics, nil
+}
+
+func countRequirementsTxtDependencies(requirementsPath string) (*models.DependencyMetrics, error) {
+	file, err := os.Open(requirementsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open requirements.txt: %w", err)
+	}
+	defer file.Close()
+
+	count := 0
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Skip -e and --editable installs
+		if strings.HasPrefix(line, "-e") || strings.HasPrefix(line, "--editable") {
+			continue
+		}
+
+		// Skip -r and --requirement includes
+		if strings.HasPrefix(line, "-r") || strings.HasPrefix(line, "--requirement") {
+			continue
+		}
+
+		count++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading requirements.txt: %w", err)
+	}
+
+	// Note: requirements.txt often contains pip freeze output with all transitives
+	// We mark as unverified since we can't distinguish direct from transitive
+	metrics := &models.DependencyMetrics{
+		TransitiveCount: count,
+		DirectCount:     0, // Unknown without separate requirements file
+		MaxDepth:        0,
+		Verified:        false, // Can't reliably distinguish direct vs transitive
+	}
+
+	return metrics, nil
 }
