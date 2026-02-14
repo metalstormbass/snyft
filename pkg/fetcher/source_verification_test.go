@@ -25,7 +25,7 @@ func TestGitHubCheckGitTag(t *testing.T) {
 			serverResp: func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/git/ref/tags/v1.2.3") {
 					w.WriteHeader(http.StatusOK)
-					w.Write([]byte(`{"ref":"refs/tags/v1.2.3","object":{"sha":"abc123"}}`))
+					_, _ = w.Write([]byte(`{"ref":"refs/tags/v1.2.3","object":{"sha":"abc123"}}`))
 				} else {
 					w.WriteHeader(http.StatusNotFound)
 				}
@@ -39,7 +39,7 @@ func TestGitHubCheckGitTag(t *testing.T) {
 			serverResp: func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/git/ref/tags/2.0.0") {
 					w.WriteHeader(http.StatusOK)
-					w.Write([]byte(`{"ref":"refs/tags/2.0.0","object":{"sha":"def456"}}`))
+					_, _ = w.Write([]byte(`{"ref":"refs/tags/2.0.0","object":{"sha":"def456"}}`))
 				} else {
 					w.WriteHeader(http.StatusNotFound)
 				}
@@ -104,7 +104,7 @@ func TestNPMVerifySourceAvailability(t *testing.T) {
 			version:     "4.18.0",
 			npmServerResp: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"dist":{"tarball":"http://localhost/tarball.tgz"}}`))
+				_, _ = w.Write([]byte(`{"dist":{"tarball":"http://localhost/tarball.tgz"}}`))
 			},
 			tarballServerResp: func(w http.ResponseWriter, r *http.Request) {
 				// Simulate a valid tarball with source files
@@ -135,7 +135,7 @@ func TestNPMVerifySourceAvailability(t *testing.T) {
 			version:     "1.0.0",
 			npmServerResp: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"dist":{}}`))
+				_, _ = w.Write([]byte(`{"dist":{}}`))
 			},
 			gitTagExists:        false,
 			expectHasSource:     false,
@@ -167,7 +167,7 @@ func TestNPMVerifySourceAvailability(t *testing.T) {
 				githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.Contains(r.URL.Path, "/git/ref/tags/") {
 						w.WriteHeader(http.StatusOK)
-						w.Write([]byte(`{"ref":"refs/tags/v4.18.0"}`))
+						_, _ = w.Write([]byte(`{"ref":"refs/tags/v4.18.0"}`))
 					} else {
 						w.WriteHeader(http.StatusNotFound)
 					}
@@ -229,7 +229,7 @@ func TestPyPIVerifySourceAvailability(t *testing.T) {
 			version:     "2.28.0",
 			pypiServerResp: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{
+				_, _ = w.Write([]byte(`{
 					"urls": [
 						{"packagetype": "sdist", "url": "https://files.pythonhosted.org/requests-2.28.0.tar.gz"},
 						{"packagetype": "bdist_wheel", "url": "https://files.pythonhosted.org/requests-2.28.0-py3-none-any.whl"}
@@ -247,7 +247,7 @@ func TestPyPIVerifySourceAvailability(t *testing.T) {
 			version:     "1.0.0",
 			pypiServerResp: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{
+				_, _ = w.Write([]byte(`{
 					"urls": [
 						{"packagetype": "bdist_wheel", "url": "https://files.pythonhosted.org/wheel-only-1.0.0-py3-none-any.whl"}
 					]
@@ -290,7 +290,7 @@ func TestPyPIVerifySourceAvailability(t *testing.T) {
 				githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.Contains(r.URL.Path, "/git/ref/tags/") {
 						w.WriteHeader(http.StatusOK)
-						w.Write([]byte(`{"ref":"refs/tags/v2.28.0"}`))
+						_, _ = w.Write([]byte(`{"ref":"refs/tags/v2.28.0"}`))
 					} else {
 						w.WriteHeader(http.StatusNotFound)
 					}
@@ -406,7 +406,7 @@ func TestMavenVerifySourceAvailability(t *testing.T) {
 				githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.Contains(r.URL.Path, "/git/ref/tags/") {
 						w.WriteHeader(http.StatusOK)
-						w.Write([]byte(`{"ref":"refs/tags/v5.3.20"}`))
+						_, _ = w.Write([]byte(`{"ref":"refs/tags/v5.3.20"}`))
 					} else {
 						w.WriteHeader(http.StatusNotFound)
 					}
