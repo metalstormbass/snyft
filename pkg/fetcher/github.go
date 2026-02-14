@@ -1286,3 +1286,8 @@ type GitHubContent struct {
 	Path string `json:"path"`
 	Type string `json:"type"`
 }
+
+// GetPlatformName returns "GitHub" to identify this platform
+func (c *GitHubClient) GetPlatformName() string {
+	return "GitHub"
+}

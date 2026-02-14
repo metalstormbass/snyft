@@ -13,7 +13,12 @@ import (
 
 // Analyzer performs supply chain security analysis on dependencies
 type Analyzer struct {
-	githubClient   *fetcher.GitHubClient
+	// Platform clients (cached for reuse)
+	githubClient    *fetcher.GitHubClient
+	gitlabClient    *fetcher.GitLabClient
+	bitbucketClient *fetcher.BitbucketClient
+
+	// Package registry clients
 	npmClient      *fetcher.NPMClient
 	pypiClient     *fetcher.PyPIClient
 	mavenClient    *fetcher.MavenClient
@@ -23,11 +28,30 @@ type Analyzer struct {
 // NewAnalyzer creates a new Analyzer instance
 func NewAnalyzer() *Analyzer {
 	return &Analyzer{
-		githubClient:  fetcher.NewGitHubClient(),
-		npmClient:     fetcher.NewNPMClient(),
-		pypiClient:    fetcher.NewPyPIClient(),
-		mavenClient:   fetcher.NewMavenClient(),
-		ossfClient:    fetcher.NewOSSFClient(),
+		githubClient:    fetcher.NewGitHubClient(),
+		gitlabClient:    fetcher.NewGitLabClient(),
+		bitbucketClient: fetcher.NewBitbucketClient(),
+		npmClient:       fetcher.NewNPMClient(),
+		pypiClient:      fetcher.NewPyPIClient(),
+		mavenClient:     fetcher.NewMavenClient(),
+		ossfClient:      fetcher.NewOSSFClient(),
+	}
+}
+
+// getGitClient returns the appropriate git platform client for a given repository URL
+func (a *Analyzer) getGitClient(repoURL string) fetcher.GitPlatformClient {
+	platform := fetcher.DetectPlatform(repoURL)
+
+	switch platform {
+	case fetcher.PlatformGitHub:
+		return a.githubClient
+	case fetcher.PlatformGitLab:
+		return a.gitlabClient
+	case fetcher.PlatformBitbucket:
+		return a.bitbucketClient
+	default:
+		// Fall back to GitHub client for unknown platforms
+		return a.githubClient
 	}
 }
 
@@ -91,7 +115,8 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 
 		// Try to fetch and analyze setup.py if repository is available
 		if repoURL != "" {
-			if setupContent, err := a.githubClient.GetFileContent(repoURL, "setup.py"); err == nil {
+			gitClient := a.getGitClient(repoURL)
+			if setupContent, err := gitClient.GetFileContent(repoURL, "setup.py"); err == nil {
 				scriptAnalysis := AnalyzePythonSetup(setupContent)
 				metadata.InstallScripts = map[string]string{"setup.py": setupContent}
 				metadata.HasInstallScripts = true
@@ -117,7 +142,8 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 
 		// Try to fetch and analyze pom.xml if repository is available
 		if repoURL != "" {
-			if pomContent, err := a.githubClient.GetFileContent(repoURL, "pom.xml"); err == nil {
+			gitClient := a.getGitClient(repoURL)
+			if pomContent, err := gitClient.GetFileContent(repoURL, "pom.xml"); err == nil {
 				scriptAnalysis := AnalyzeJavaPOM(pomContent)
 				if scriptAnalysis.HasDangerousPatterns {
 					metadata.InstallScripts = map[string]string{"pom.xml": pomContent}
@@ -184,15 +210,23 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.Dependency, repoURL string) {
 	var sourceVerification *models.SourceVerification
 
+	// Get the appropriate git platform client for this repository
+	var gitClient fetcher.GitPlatformClient
+	if repoURL != "" {
+		gitClient = a.getGitClient(repoURL)
+	} else {
+		gitClient = a.githubClient // fallback
+	}
+
 	switch dep.Ecosystem {
 	case models.EcosystemNPM:
-		sourceVerification = a.npmClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, a.githubClient)
+		sourceVerification = a.npmClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, gitClient)
 
 	case models.EcosystemPyPI:
-		sourceVerification = a.pypiClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, a.githubClient)
+		sourceVerification = a.pypiClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, gitClient)
 
 	case models.EcosystemMaven:
-		sourceVerification = a.mavenClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, a.githubClient)
+		sourceVerification = a.mavenClient.VerifySourceAvailability(dep.Name, dep.Version, repoURL, gitClient)
 	}
 
 	if sourceVerification != nil {
@@ -233,7 +267,8 @@ func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.De
 }
 
 func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL string) {
-	repoInfo, err := a.githubClient.GetRepositoryInfo(repoURL)
+	gitClient := a.getGitClient(repoURL)
+	repoInfo, err := gitClient.GetRepositoryInfo(repoURL)
 	if err != nil {
 		result.Findings = append(result.Findings, models.Finding{
 			Severity:    "MEDIUM",
@@ -337,7 +372,8 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 		return
 	}
 
-	ciSystems, err := a.githubClient.DetectCISystems(repoURL)
+	gitClient := a.getGitClient(repoURL)
+	ciSystems, err := gitClient.DetectCISystems(repoURL)
 	if err != nil {
 		return
 	}
@@ -359,7 +395,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 	}
 
 	// Check for automated release process
-	hasReleases, err := a.githubClient.HasAutomatedReleases(repoURL)
+	hasReleases, err := gitClient.HasAutomatedReleases(repoURL)
 	if err == nil && hasReleases {
 		result.Metadata.HasReleaseProcess = true
 	} else {
@@ -373,8 +409,10 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 }
 
 func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL string) {
+	gitClient := a.getGitClient(repoURL)
+
 	// Get commit statistics for bus factor calculation
-	commitStats, err := a.githubClient.GetCommitStats(repoURL)
+	commitStats, err := gitClient.GetCommitStats(repoURL)
 	if err == nil && commitStats != nil {
 		result.Metadata.BusFactor = commitStats.BusFactor
 		result.Metadata.CommitDistribution = commitStats.AuthorCommits
@@ -382,7 +420,7 @@ func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL s
 	}
 
 	// Get pull request statistics for code review verification
-	prStats, err := a.githubClient.GetPullRequestStats(repoURL)
+	prStats, err := gitClient.GetPullRequestStats(repoURL)
 	if err == nil && prStats != nil {
 		result.Metadata.CodeReviewRate = prStats.CodeReviewRate
 		result.Metadata.RequiredReviewers = prStats.RequiredReviewers
@@ -390,7 +428,7 @@ func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL s
 	}
 
 	// Analyze CI quality
-	ciQuality, err := a.githubClient.AnalyzeCIQuality(repoURL, result.Metadata.CISystems)
+	ciQuality, err := gitClient.AnalyzeCIQuality(repoURL, result.Metadata.CISystems)
 	if err == nil && ciQuality != nil {
 		result.Metadata.CIQualityScore = ciQuality.QualityScore
 		result.Metadata.CIHasTests = ciQuality.HasTests
@@ -419,9 +457,10 @@ func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL s
 }
 
 func (a *Analyzer) analyzeProvenance(result *models.AnalysisResult, repoURL string, ecosystem models.Ecosystem) {
-	// Get GitHub provenance information
+	// Get Git platform provenance information
 	if repoURL != "" {
-		provInfo, err := a.githubClient.GetProvenanceInfo(repoURL)
+		gitClient := a.getGitClient(repoURL)
+		provInfo, err := gitClient.GetProvenanceInfo(repoURL)
 		if err == nil {
 			result.Metadata.HasSLSAAttestation = provInfo.HasSLSAAttestation
 			result.Metadata.SLSALevel = provInfo.SLSALevel
@@ -578,10 +617,16 @@ func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.C
 	maintainerCount := len(result.Metadata.Maintainers)
 	evidenceParts := []string{}
 
+	// Get git client once for reuse
+	var gitClient fetcher.GitPlatformClient
+	if result.RepositoryURL != "" {
+		gitClient = a.getGitClient(result.RepositoryURL)
+	}
+
 	// Check for signed commits
 	hasSignedCommits := false
-	if result.RepositoryURL != "" {
-		hasSigning, count, err := a.githubClient.CheckSignedCommits(result.RepositoryURL)
+	if gitClient != nil {
+		hasSigning, count, err := gitClient.CheckSignedCommits(result.RepositoryURL)
 		if err == nil {
 			hasSignedCommits = hasSigning
 			if hasSigning {
@@ -594,8 +639,8 @@ func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.C
 
 	// Check for signed releases
 	hasSignedReleases := false
-	if result.RepositoryURL != "" {
-		hasSigned, err := a.githubClient.CheckSignedReleases(result.RepositoryURL)
+	if gitClient != nil {
+		hasSigned, err := gitClient.CheckSignedReleases(result.RepositoryURL)
 		if err == nil && hasSigned {
 			hasSignedReleases = true
 			evidenceParts = append(evidenceParts, "releases have signatures")
@@ -703,9 +748,10 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 	verified := false
 	riskPoints := 1 // Default to medium risk if unable to verify
 
-	// 1. Check GitHub commit author changes (if repository available)
+	// 1. Check Git platform commit author changes (if repository available)
 	if result.RepositoryURL != "" {
-		commitStats, err := a.githubClient.GetCommitAuthors(result.RepositoryURL)
+		gitClient := a.getGitClient(result.RepositoryURL)
+		commitStats, err := gitClient.GetCommitAuthors(result.RepositoryURL)
 		if err == nil && commitStats != nil {
 			verified = true
 
@@ -863,8 +909,9 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 	// For packages with recent activity, fetch detailed release and commit history
 	// to detect suspicious reactivation patterns
 	if daysSinceCreated > 365 {
+		gitClient := a.getGitClient(result.RepositoryURL)
 		// Fetch release history
-		releases, err := a.githubClient.GetReleaseHistory(result.RepositoryURL, 20)
+		releases, err := gitClient.GetReleaseHistory(result.RepositoryURL, 20)
 		if err == nil && len(releases) > 0 {
 			// Analyze release pattern
 			anomaly := a.detectReleaseAnomaly(releases, result.Metadata.RepoCreatedAt)
@@ -877,8 +924,8 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 		oneYearAgo := time.Now().AddDate(-1, 0, 0)
 		twoYearsAgo := time.Now().AddDate(-2, 0, 0)
 
-		recentCommits, err1 := a.githubClient.GetCommitActivity(result.RepositoryURL, oneYearAgo)
-		olderCommits, err2 := a.githubClient.GetCommitActivity(result.RepositoryURL, twoYearsAgo)
+		recentCommits, err1 := gitClient.GetCommitActivity(result.RepositoryURL, oneYearAgo)
+		olderCommits, err2 := gitClient.GetCommitActivity(result.RepositoryURL, twoYearsAgo)
 
 		if err1 == nil && err2 == nil {
 			anomaly := a.detectCommitFrequencyAnomaly(recentCommits, olderCommits, result.Metadata.RepoCreatedAt)

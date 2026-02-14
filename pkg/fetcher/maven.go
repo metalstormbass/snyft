@@ -175,7 +175,7 @@ type MavenLicense struct {
 
 // VerifySourceAvailability verifies that source code exists for the exact version
 // Checks: 1) sources.jar exists in Maven Central, 2) matching git tag exists
-func (c *MavenClient) VerifySourceAvailability(packageName, version string, repoURL string, githubClient *GitHubClient) *models.SourceVerification {
+func (c *MavenClient) VerifySourceAvailability(packageName, version string, repoURL string, gitClient GitPlatformClient) *models.SourceVerification {
 	result := &models.SourceVerification{
 		Verified:           false,
 		HasSourcePackage:   false,
@@ -221,8 +221,8 @@ func (c *MavenClient) VerifySourceAvailability(packageName, version string, repo
 	}
 
 	// Check for matching git tag in repository
-	if repoURL != "" && githubClient != nil {
-		tagExists, tagURL, err := githubClient.CheckGitTag(repoURL, version)
+	if repoURL != "" && gitClient != nil {
+		tagExists, tagURL, err := gitClient.CheckGitTag(repoURL, version)
 		if err != nil {
 			result.VerificationErrors = append(result.VerificationErrors, fmt.Sprintf("Failed to check git tag: %v", err))
 		} else if tagExists {
