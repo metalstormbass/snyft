@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/fetcher"
@@ -505,7 +506,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 
 // scoreInstallExecution: postinstall scripts (0-2 pts)
 func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.CategoryScore {
-	if result.Metadata.InstallScripts == nil || len(result.Metadata.InstallScripts) == 0 {
+	if len(result.Metadata.InstallScripts) == 0 {
 		// No install scripts - lowest risk
 		return models.CategoryScore{
 			Score:       2,
@@ -681,7 +682,7 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 		Score:       healthScore,
 		RiskPoints:  riskPoints,
 		Description: description,
-		Evidence:    fmt.Sprintf("%s", evidence),
+		Evidence:    strings.Join(evidence, ", "),
 		Verified:    verified,
 	}
 }
