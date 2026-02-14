@@ -156,16 +156,16 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 
 	// Risk Impact Summary
 	if r.stats.HighRisk > 0 || r.stats.MediumRisk > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "  %sRisk Impact Summary:%s\n", ColorBold, ColorReset)
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "  %sRisk Impact Summary:%s\n", ColorBold, ColorReset)
 		if r.stats.HighRisk > 0 {
-			fmt.Fprintf(w, "  %s⚠  ATTENTION REQUIRED:%s %d package%s identified with HIGH supply chain risk.\n",
+			_, _ = fmt.Fprintf(w, "  %s⚠  ATTENTION REQUIRED:%s %d package%s identified with HIGH supply chain risk.\n",
 				ColorRed+ColorBold, ColorReset, r.stats.HighRisk, pluralize(r.stats.HighRisk))
-			fmt.Fprintln(w, "     These packages exhibit patterns commonly associated with compromised")
-			fmt.Fprintln(w, "     dependencies and require immediate review.")
+			_, _ = fmt.Fprintln(w, "     These packages exhibit patterns commonly associated with compromised")
+			_, _ = fmt.Fprintln(w, "     dependencies and require immediate review.")
 		}
 		if r.stats.MediumRisk > 0 {
-			fmt.Fprintf(w, "  %s⚠  MONITORING RECOMMENDED:%s %d package%s with MEDIUM risk factors.\n",
+			_, _ = fmt.Fprintf(w, "  %s⚠  MONITORING RECOMMENDED:%s %d package%s with MEDIUM risk factors.\n",
 				ColorYellow+ColorBold, ColorReset, r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
 			fmt.Fprintln(w, "     These packages show some concerning patterns that warrant closer monitoring.")
 		}

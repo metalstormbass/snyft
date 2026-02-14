@@ -119,7 +119,7 @@ func TestClientGetStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	stats := client.GetStats()
 
@@ -252,7 +252,7 @@ func TestCalculateBackoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Test exponential backoff
 	backoff1 := client.calculateBackoff(1)
@@ -282,7 +282,7 @@ func TestCacheKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Mock params (using a simple struct for testing)
 	params1 := anthropic.MessageNewParams{}

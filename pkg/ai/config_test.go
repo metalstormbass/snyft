@@ -60,16 +60,16 @@ func TestLoadFromEnv(t *testing.T) {
 	defer func() {
 		for key, val := range originalEnv {
 			if val == "" {
-				os.Unsetenv(key)
+				_ = os.Unsetenv(key)
 			} else {
-				os.Setenv(key, val)
+				_ = os.Setenv(key, val)
 			}
 		}
 	}()
 
 	t.Run("API key from CLAUDE_API_KEY", func(t *testing.T) {
-		os.Setenv("CLAUDE_API_KEY", "test-key-123")
-		defer os.Unsetenv("CLAUDE_API_KEY")
+		_ = os.Setenv("CLAUDE_API_KEY", "test-key-123")
+		defer func() { _ = os.Unsetenv("CLAUDE_API_KEY") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -82,9 +82,9 @@ func TestLoadFromEnv(t *testing.T) {
 	})
 
 	t.Run("API key fallback to ANTHROPIC_API_KEY", func(t *testing.T) {
-		os.Unsetenv("CLAUDE_API_KEY")
-		os.Setenv("ANTHROPIC_API_KEY", "anthropic-key-456")
-		defer os.Unsetenv("ANTHROPIC_API_KEY")
+		_ = os.Unsetenv("CLAUDE_API_KEY")
+		_ = os.Setenv("ANTHROPIC_API_KEY", "anthropic-key-456")
+		defer func() { _ = os.Unsetenv("ANTHROPIC_API_KEY") }()
 
 		cfg, err := LoadFromEnv()
 		if err != nil {

@@ -101,7 +101,7 @@ func (c *MavenClient) getPackageInfoDirect(groupID, artifactID string) (*MavenPa
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Maven Central returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("maven Central returned status %d", resp.StatusCode)
 	}
 
 	// Parse maven-metadata.xml
@@ -153,7 +153,7 @@ func (c *MavenClient) getPackageInfoViaSearch(groupID, artifactID string) (*Mave
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Maven Central search returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("maven Central search returned status %d", resp.StatusCode)
 	}
 
 	var searchResp MavenSearchResponse

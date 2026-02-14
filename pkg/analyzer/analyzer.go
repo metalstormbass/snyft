@@ -84,7 +84,7 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 	}
 
 	// If no AI config was provided via options, try to load from environment
-	if a.claudeClient == nil && a.aiEnabled == false {
+	if a.claudeClient == nil && !a.aiEnabled {
 		config, err := ai.LoadFromEnv()
 		if err == nil && config.APIKey != "" {
 			// Only initialize if API key is present
