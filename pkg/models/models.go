@@ -267,9 +267,21 @@ type CategoryScores struct {
 
 // CategoryScore contains the score and details for a single category
 type CategoryScore struct {
-	Score       int    `json:"score"`       // 0-2 points
-	RiskPoints  int    `json:"risk_points"` // Points assigned (higher = more risk)
-	Description string `json:"description"` // Human-readable description
-	Evidence    string `json:"evidence"`    // Evidence for the score
-	Verified    bool   `json:"verified"`    // Whether data was available to verify
+	Score       int                `json:"score"`                 // 0-2 points
+	RiskPoints  int                `json:"risk_points"`           // Points assigned (higher = more risk)
+	Description string             `json:"description"`           // Human-readable description
+	Evidence    string             `json:"evidence"`              // Evidence for the score
+	Verified    bool               `json:"verified"`              // Whether data was available to verify
+	AIInsight   *CategoryAIInsight `json:"ai_insight,omitempty"`  // AI-powered deeper analysis (optional)
+}
+
+// CategoryAIInsight contains AI-powered deeper analysis for a single scoring category.
+// This augments the rule-based CategoryScore without replacing it.
+// Populated only when AI analysis is enabled (--ai flag + API key).
+type CategoryAIInsight struct {
+	AIRiskLevel    string   `json:"ai_risk_level"`    // AI's risk assessment: HIGH, MEDIUM, LOW
+	Confidence     float64  `json:"confidence"`       // 0.0-1.0 confidence in the assessment
+	Findings       []string `json:"findings"`         // AI-identified patterns beyond rule-based scoring
+	Context        string   `json:"context"`          // Contextual analysis and amplifying/mitigating factors
+	Recommendation string   `json:"recommendation"`   // Category-specific action recommendation
 }
