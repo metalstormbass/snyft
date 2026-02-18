@@ -2054,8 +2054,8 @@ func TestCalculateSupplyChainScore_OwnershipChangesIntegration(t *testing.T) {
 	}
 
 	// Total score should be in valid range
-	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 14 {
-		t.Errorf("TotalScore = %v, want 0-14", result.SupplyChainScore.TotalScore)
+	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 20 {
+		t.Errorf("TotalScore = %v, want 0-20", result.SupplyChainScore.TotalScore)
 	}
 }
 

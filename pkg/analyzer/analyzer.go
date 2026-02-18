@@ -266,7 +266,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	// Calculate final risk score
 	a.calculateRiskScore(&result)
 
-	// Calculate supply chain score (0-14 point rubric)
+	// Calculate supply chain score (0-20 point rubric)
 	a.calculateSupplyChainScore(&result)
 
 	// Enrich with AI analysis (if enabled)

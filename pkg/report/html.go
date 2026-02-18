@@ -490,7 +490,7 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 		result.Dependency.Ecosystem)
 
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Supply Chain Score:</span> %d/14 points</div>\n",
+		_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Supply Chain Score:</span> %d/20 points</div>\n",
 			result.SupplyChainScore.TotalScore)
 	}
 
