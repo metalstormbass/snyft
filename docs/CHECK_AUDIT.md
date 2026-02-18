@@ -131,7 +131,17 @@ The CI quality scoring threshold was lowered from >= 7 to >= 3. Since `AnalyzeCI
 
 ---
 
-## Category 8: Governance — PARTIALLY BROKEN
+## Category 8: Governance — PARTIALLY FIXED
+
+### Fixed: Governance file checks no longer fail under rate limiting
+
+**Status:** FIXED
+
+Governance file checks (`SECURITY.md`, `CONTRIBUTING.md`, `CODEOWNERS`, `CODE_OF_CONDUCT.md`) previously used full GET requests via `GetFileContent`, which exhausted the GitHub API rate limit (60 req/hr unauthenticated) by the time governance scoring ran. All file checks would fail silently as "file not found", causing a constant 0/2 score.
+
+Now uses efficient cached HEAD requests via `FileExistsInRepo`, with a `raw.githubusercontent.com` CDN fallback when rate-limited. The `fileExists` cache no longer poisons entries from 403/429 responses.
+
+**Files changed:** `pkg/fetcher/github.go`, `pkg/analyzer/governance.go`
 
 ### Bug: Issue response time only measured for GitHub
 
