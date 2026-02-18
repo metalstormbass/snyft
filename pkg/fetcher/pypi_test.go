@@ -8,6 +8,221 @@ import (
 	"time"
 )
 
+// Test: extractPyPIRepoURL priority order for project_urls keys
+// Justification: Correct repository URL extraction is critical for verifying
+//                source code availability — the wrong URL leads to false
+//                negatives in source verification checks
+// Source: PyPI JSON API — project_urls is an arbitrary string→URL map
+// Methodology: Test each priority level and case-insensitive matching
+// Result: URLs are extracted in correct priority order
+func TestExtractPyPIRepoURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     PyPIInfo
+		expected string
+	}{
+		{
+			name: "Source Code key (highest priority)",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Source Code": "https://github.com/example/repo",
+					"Homepage":    "https://example.com",
+				},
+			},
+			expected: "https://github.com/example/repo",
+		},
+		{
+			name: "Source key",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Source": "https://github.com/example/repo2",
+				},
+			},
+			expected: "https://github.com/example/repo2",
+		},
+		{
+			name: "Repository key",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Repository": "https://gitlab.com/example/repo",
+				},
+			},
+			expected: "https://gitlab.com/example/repo",
+		},
+		{
+			name: "Code key",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Code": "https://github.com/example/repo3",
+				},
+			},
+			expected: "https://github.com/example/repo3",
+		},
+		{
+			name: "case insensitive matching",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"source code": "https://github.com/example/lower",
+				},
+			},
+			expected: "https://github.com/example/lower",
+		},
+		{
+			name: "Homepage with GitHub domain (accepted)",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Homepage": "https://github.com/example/repo",
+				},
+			},
+			expected: "https://github.com/example/repo",
+		},
+		{
+			name: "Homepage with non-source domain (rejected)",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Homepage": "https://example.com",
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "fallback to home_page field with GitHub domain",
+			info: PyPIInfo{
+				HomePage: "https://github.com/example/fallback",
+			},
+			expected: "https://github.com/example/fallback",
+		},
+		{
+			name: "no URLs available",
+			info: PyPIInfo{},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractPyPIRepoURL(tt.info)
+			if result != tt.expected {
+				t.Errorf("extractPyPIRepoURL() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test: countRequiresDist excludes extras-only dependencies
+// Justification: Accurate dependency count is essential for the Dependency
+//                Sprawl risk category — extras should not inflate the count
+// Source: PEP 508 — Dependency specification for Python packages
+// Methodology: Pass requires_dist entries with and without extra markers
+// Result: Only non-extra dependencies are counted
+func TestCountRequiresDist(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		expected int
+	}{
+		{
+			name:     "no dependencies",
+			input:    nil,
+			expected: 0,
+		},
+		{
+			name: "all required",
+			input: []string{
+				"charset-normalizer (<4,>=2)",
+				"idna (<4,>=2.5)",
+				"urllib3 (<3,>=1.21.1)",
+			},
+			expected: 3,
+		},
+		{
+			name: "mix of required and extras",
+			input: []string{
+				"charset-normalizer (<4,>=2)",
+				"idna (<4,>=2.5)",
+				"PySocks (!=1.5.7,>=1.5.6) ; extra == \"socks\"",
+				"chardet (>=3.0.2,<6) ; extra == \"security\"",
+			},
+			expected: 2,
+		},
+		{
+			name: "all extras",
+			input: []string{
+				"PySocks ; extra == \"socks\"",
+				"win-inet-pton ; extra == \"socks\"",
+			},
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := countRequiresDist(tt.input)
+			if result != tt.expected {
+				t.Errorf("countRequiresDist() = %d, want %d", result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test: GetOwnershipHistory with uploader fallback to info.Author
+// Justification: PyPI's public JSON API does not expose per-file uploader —
+//                the field is always "". Without fallback, all releases would
+//                appear to have the same (empty) author, masking real transfers
+// Source: PyPI JSON API behavior — uploader field is empty in public API
+// Methodology: Mock releases with empty Uploader fields
+// Result: Falls back to info.Author, still tracks stable ownership correctly
+func TestGetOwnershipHistory_PyPI_EmptyUploader(t *testing.T) {
+	response := PyPIFullResponse{
+		Info: PyPIInfo{
+			Name:   "test-package",
+			Author: "alice",
+		},
+		Releases: map[string][]PyPIReleaseFile{
+			"1.0.0": {
+				{
+					Filename:   "test-package-1.0.0.tar.gz",
+					UploadTime: time.Now().AddDate(0, -12, 0),
+					Uploader:   "", // Empty uploader (typical of public PyPI API)
+				},
+			},
+			"2.0.0": {
+				{
+					Filename:   "test-package-2.0.0.tar.gz",
+					UploadTime: time.Now().AddDate(0, -6, 0),
+					Uploader:   "", // Empty uploader
+				},
+			},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	history, err := client.GetOwnershipHistory("test-package")
+	if err != nil {
+		t.Fatalf("GetOwnershipHistory() error = %v", err)
+	}
+
+	// With empty uploaders, both releases fall back to info.Author ("alice"),
+	// so there should be 0 ownership changes
+	if history.AuthorChanges != 0 {
+		t.Errorf("GetOwnershipHistory() changes = %v, want 0 (empty uploaders should fall back to info.Author)", history.AuthorChanges)
+	}
+
+	if history.CurrentAuthor != "alice" {
+		t.Errorf("GetOwnershipHistory() current author = %q, want %q", history.CurrentAuthor, "alice")
+	}
+}
+
 func TestGetOwnershipHistory_PyPI(t *testing.T) {
 	tests := []struct {
 		name              string
