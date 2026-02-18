@@ -1,8 +1,8 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/metalstormbass/snyft/pkg/models"
 )
@@ -328,180 +328,141 @@ func TestRiskScoreCalculation_BestCase(t *testing.T) {
 	}
 }
 
-// Test: Account age detection - new accounts
+// Test: New maintainer accounts increase compromise risk via calculateRiskScore
 // Justification: New accounts with immediate publish rights = red flag
-// Pattern observed in real attacks:
+//   Pattern observed in real attacks:
 //   - Attacker creates fresh GitHub/npm account
 //   - Gains maintainer access quickly
 //   - Publishes malicious version
-//   - Account age < 30 days in 60% of cases
+//   - Account age < 30 days in 60% of supply chain attacks
 // Source: npm security incident reports (2018-2023)
-// Methodology: Check GitHub account creation date via API
-// Result: Flags accounts < 6 months as "new", < 1 month as "suspicious"
-func TestAccountAge_NewAccount(t *testing.T) {
-	// Account created 15 days ago (definitely suspicious)
-	fifteenDaysAgo := time.Now().AddDate(0, 0, -15)
-	threeMonthsAgo := time.Now().AddDate(0, -3, 0)
+// Methodology: Set HasNewMaintainers flag and verify calculateRiskScore() increases risk
+// Result: New accounts push risk from MEDIUM to HIGH; suspicious accounts (<1 month) add extra evidence
+func TestAccountAge_NewMaintainerIncreasesRisk(t *testing.T) {
+	// Baseline: 2 maintainers + personal domains + no signing
+	// Score: 0.3 + 0.3 + 0.5 = 1.1 → 1 point (MEDIUM)
+	baseline := &PublisherControlAnalysis{
+		MaintainerCount:     2,
+		HasExpirableDomains: true,
+	}
+	baseline.calculateRiskScore()
 
-	accountAge := AccountAge{
-		Username:   "newuser",
-		AccountAge: 15,
-		CreatedAt:  fifteenDaysAgo,
+	if baseline.RiskPoints != 1 {
+		t.Errorf("Baseline expected MEDIUM (1 point), got %d (evidence: %s)", baseline.RiskPoints, baseline.Evidence)
 	}
 
-	// Calculate flags
-	sixMonthsAgo := time.Now().AddDate(0, -6, 0)
-	oneMonthAgo := time.Now().AddDate(0, -1, 0)
+	// Same profile + new maintainer account
+	// Score: 0.3 + 0.3 + 0.3 (new) + 0.5 = 1.4 → 2 points (HIGH)
+	withNew := &PublisherControlAnalysis{
+		MaintainerCount:     2,
+		HasExpirableDomains: true,
+		HasNewMaintainers:   true,
+		NewMaintainerCount:  1,
+	}
+	withNew.calculateRiskScore()
 
-	accountAge.IsNew = accountAge.CreatedAt.After(sixMonthsAgo)
-	accountAge.IsSuspicious = accountAge.CreatedAt.After(oneMonthAgo)
-
-	if !accountAge.IsNew {
-		t.Error("Expected account to be flagged as new (<6 months)")
+	if withNew.RiskPoints != 2 {
+		t.Errorf("With new maintainer expected HIGH (2 points), got %d (evidence: %s)", withNew.RiskPoints, withNew.Evidence)
 	}
 
-	if !accountAge.IsSuspicious {
-		t.Error("Expected account to be flagged as suspicious (<1 month)")
+	if !strings.Contains(withNew.Evidence, "new accounts") {
+		t.Errorf("Expected evidence to mention new accounts, got: %s", withNew.Evidence)
 	}
 
-	// Test 3-month old account (new but not suspicious)
-	accountAge2 := AccountAge{
-		Username:   "user2",
-		AccountAge: 90,
-		CreatedAt:  threeMonthsAgo,
+	// Same profile + suspicious account (< 1 month old) - adds extra penalty
+	// Score: 0.3 + 0.3 + 0.3 (new) + 0.2 (suspicious) + 0.5 = 1.6 → 2 points (HIGH)
+	withSuspicious := &PublisherControlAnalysis{
+		MaintainerCount:     2,
+		HasExpirableDomains: true,
+		HasNewMaintainers:   true,
+		NewMaintainerCount:  1,
+		MaintainerAccountAges: []AccountAge{
+			{Username: "newuser", AccountAge: 15, IsSuspicious: true},
+		},
+	}
+	withSuspicious.calculateRiskScore()
+
+	if withSuspicious.RiskPoints != 2 {
+		t.Errorf("With suspicious account expected HIGH (2 points), got %d", withSuspicious.RiskPoints)
 	}
 
-	accountAge2.IsNew = accountAge2.CreatedAt.After(sixMonthsAgo)
-	accountAge2.IsSuspicious = accountAge2.CreatedAt.After(oneMonthAgo)
-
-	if !accountAge2.IsNew {
-		t.Error("Expected account to be flagged as new (<6 months)")
-	}
-
-	if accountAge2.IsSuspicious {
-		t.Error("Expected account NOT to be suspicious (>1 month)")
+	if !strings.Contains(withSuspicious.Evidence, "SUSPICIOUS") {
+		t.Errorf("Expected evidence to mention SUSPICIOUS, got: %s", withSuspicious.Evidence)
 	}
 }
 
-// Test: Account age detection - established accounts
-// Justification: Established accounts (>1 year) are:
-//   - More trustworthy (long history)
+// Test: Established accounts do not increase risk score
+// Justification: Established accounts (>6 months) are more trustworthy:
+//   - Long track record of contributions
 //   - Less likely to be throwaway accounts
 //   - Have reputation to protect
 // Source: GitHub security best practices
-// Methodology: Check account age against 6-month threshold
-// Result: Does NOT flag accounts > 6 months old
-func TestAccountAge_EstablishedAccount(t *testing.T) {
-	twoYearsAgo := time.Now().AddDate(-2, 0, 0)
+// Methodology: Verify calculateRiskScore does not penalize when HasNewMaintainers=false
+// Result: No account age penalty for established maintainers
+func TestAccountAge_EstablishedAccountsNoRiskIncrease(t *testing.T) {
+	// 4 maintainers + org domains + no signing (no new accounts)
+	// Score: 0 (4 maintainers) + 0 (org) + 0.5 (no signing) = 0.5 → 0 points (LOW)
+	established := &PublisherControlAnalysis{
+		MaintainerCount:    4,
+		HasOrgDomains:      true,
+		HasNewMaintainers:  false,
+		NewMaintainerCount: 0,
+	}
+	established.calculateRiskScore()
 
-	accountAge := AccountAge{
-		Username:   "established",
-		AccountAge: 730,
-		CreatedAt:  twoYearsAgo,
+	if established.RiskPoints != 0 {
+		t.Errorf("Expected LOW (0 points) for established accounts, got %d (evidence: %s)",
+			established.RiskPoints, established.Evidence)
 	}
 
-	sixMonthsAgo := time.Now().AddDate(0, -6, 0)
-	oneMonthAgo := time.Now().AddDate(0, -1, 0)
-
-	accountAge.IsNew = accountAge.CreatedAt.After(sixMonthsAgo)
-	accountAge.IsSuspicious = accountAge.CreatedAt.After(oneMonthAgo)
-
-	if accountAge.IsNew {
-		t.Error("Expected account NOT to be flagged as new (>6 months)")
+	if established.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk level, got %s", established.RiskLevel)
 	}
 
-	if accountAge.IsSuspicious {
-		t.Error("Expected account NOT to be flagged as suspicious (>1 month)")
+	if strings.Contains(established.Evidence, "new accounts") {
+		t.Error("Expected no account age warnings in evidence for established accounts")
 	}
 }
 
-// Test: Package concentration detection
+// Test: Package concentration detection via risk scoring
 // Justification: Maintainers with many packages = high-value targets
-// Real-world impact analysis:
 //   - Top 100 npm maintainers control 20% of packages
 //   - Compromise one account = widespread supply chain impact
 //   - left-pad maintainer had 250+ packages
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Query npm for package count per maintainer
-// Result: Flags maintainers with 50+ packages as high-concentration risk
+// Methodology: Set HasHighConcentration flag and verify calculateRiskScore reflects it in evidence
+// Result: Evidence includes high-value target warning with package count
 func TestPackageConcentration_HighValueTarget(t *testing.T) {
 	analysis := &PublisherControlAnalysis{
-		PackagesPerMaintainer: map[string]int{
-			"bigmaintainer": 75,  // High concentration
-			"normal":        5,   // Normal
-		},
+		MaintainerCount:      2,
+		HasHighConcentration: true,
+		MaxPackagesPerUser:   75,
+	}
+	analysis.calculateRiskScore()
+
+	if !strings.Contains(analysis.Evidence, "high-value target") {
+		t.Errorf("Expected evidence to mention high-value target, got: %s", analysis.Evidence)
 	}
 
-	// Check high concentration detection
-	analysis.HasHighConcentration = false
-	analysis.MaxPackagesPerUser = 0
-
-	for _, count := range analysis.PackagesPerMaintainer {
-		if count > 50 {
-			analysis.HasHighConcentration = true
-		}
-		if count > analysis.MaxPackagesPerUser {
-			analysis.MaxPackagesPerUser = count
-		}
+	if !strings.Contains(analysis.Evidence, "75 packages") {
+		t.Errorf("Expected evidence to mention 75 packages, got: %s", analysis.Evidence)
 	}
 
-	if !analysis.HasHighConcentration {
-		t.Error("Expected HasHighConcentration to be true for 75 packages")
+	// Verify control (no concentration) does NOT mention high-value target
+	noConcentration := &PublisherControlAnalysis{
+		MaintainerCount: 2,
 	}
+	noConcentration.calculateRiskScore()
 
-	if analysis.MaxPackagesPerUser != 75 {
-		t.Errorf("Expected MaxPackagesPerUser to be 75, got %d", analysis.MaxPackagesPerUser)
+	if strings.Contains(noConcentration.Evidence, "high-value target") {
+		t.Error("Control without concentration should NOT mention high-value target")
 	}
 }
 
-// Test: Signing practices - no signing
-// Justification: Unsigned commits/releases mean:
-//   - No cryptographic proof of author identity
-//   - Easy for attackers to impersonate maintainers
-//   - Common in compromised packages
-// Source: Sigstore & SLSA specifications
-// Methodology: Check commit verification status via GitHub API
-// Result: Flags packages with no commit/release signing
-func TestSigningPractices_NoSigning(t *testing.T) {
-	analysis := &PublisherControlAnalysis{
-		HasSignedCommits:  false,
-		HasSignedReleases: false,
-		SignedCommitCount: 0,
-	}
-
-	// No signing should contribute to risk
-	if analysis.HasSignedCommits || analysis.HasSignedReleases {
-		t.Error("Expected no signing practices detected")
-	}
-}
-
-// Test: Signing practices - has signing
-// Justification: Signed commits/releases provide:
-//   - Cryptographic proof of maintainer identity
-//   - Harder for attackers to impersonate
-//   - Evidence of security consciousness
-// Source: OSSF Scorecard - "Signed-Releases" check
-// Methodology: Verify GPG signatures on commits via GitHub API
-// Result: Reduces risk points for packages with signing
-func TestSigningPractices_HasSigning(t *testing.T) {
-	analysis := &PublisherControlAnalysis{
-		HasSignedCommits:  true,
-		HasSignedReleases: true,
-		SignedCommitCount: 25,
-	}
-
-	if !analysis.HasSignedCommits {
-		t.Error("Expected HasSignedCommits to be true")
-	}
-
-	if !analysis.HasSignedReleases {
-		t.Error("Expected HasSignedReleases to be true")
-	}
-
-	if analysis.SignedCommitCount != 25 {
-		t.Errorf("Expected 25 signed commits, got %d", analysis.SignedCommitCount)
-	}
-}
+// Signing struct-only tests removed: TestSigningPractices_NoSigning and
+// TestSigningPractices_HasSigning only tested Go struct field assignment, not
+// production code. Signing impact is tested through calculateRiskScore in
+// TestRiskScoreCalculation_BestCase and TestPublisherControl_SingleMaintainerNoSigning_IsHigh.
 
 // Test: Complete risk assessment flow
 // Justification: Integration test to verify all factors work together
@@ -897,5 +858,172 @@ func TestPackageProfile_PyPI_PythonJose_FewMaintainers_MediumRisk(t *testing.T) 
 	}
 	if analysis.RiskLevel != "MEDIUM" {
 		t.Errorf("python-jose: Expected MEDIUM risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// ============================================================
+// Additional package profiles from /Users/mike/Projects/mike-libraries
+// Packages: axios (npm), helmet (npm), cryptography (PyPI),
+//           pydantic (PyPI), guava (Maven)
+// ============================================================
+
+// Test: axios (npm) - small team, personal emails, no signing
+// Profile: ~3 maintainers, personal email domains, personal GitHub accounts
+// Source: npm/axios - popular HTTP client, moderate team size
+// Justification: Popular utility with limited maintainers creates moderate supply chain risk
+// Result: MEDIUM risk (1 point) - small team + personal emails
+func TestPackageProfile_NPM_Axios_SmallTeam_MediumRisk(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "axios",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{
+				"dev1@gmail.com",
+				"dev2@gmail.com",
+				"dev3@gmail.com",
+			},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.MaintainerCount != 3 {
+		t.Errorf("axios: Expected 3 maintainers, got %d", analysis.MaintainerCount)
+	}
+	// Score: 0.3 (3 maintainers ≤3) + 0.3 (personal emails) + 0.5 (no signing) = 1.1 → 1 point
+	if analysis.RiskPoints != 1 {
+		t.Errorf("axios: Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("axios: Expected MEDIUM risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: helmet (npm) - security-focused but small team
+// Profile: 2 maintainers, helmetjs org, mixed org + personal email domains
+// Source: helmetjs/helmet on GitHub - HTTP security headers middleware
+// Justification: Security-critical middleware with only 2 maintainers represents
+//   moderate risk despite being security-focused (bus factor concern)
+// Result: MEDIUM risk (1 point) - small team with mixed domains
+func TestPackageProfile_NPM_Helmet_SmallSecurityTeam_MediumRisk(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "helmet",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{
+				"dev@helmetjs.io",
+				"contributor@gmail.com",
+			},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.MaintainerCount != 2 {
+		t.Errorf("helmet: Expected 2 maintainers, got %d", analysis.MaintainerCount)
+	}
+	// 2 maintainers (0.3) + mixed: has expirable gmail (0.3) + no signing (0.5) = 1.1 → 1 point
+	if analysis.RiskPoints != 1 {
+		t.Errorf("helmet: Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("helmet: Expected MEDIUM risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: cryptography (PyPI) - PyCA org, multiple maintainers, signed
+// Profile: Organization-owned (PyCA), 5+ maintainers, org email domains, signed releases
+// Source: pyca/cryptography on GitHub - Python Cryptographic Authority
+// Justification: Critical security library with strong organizational governance
+//   reduces single-point-of-failure risk substantially
+// Result: LOW risk (0 points) - org + multiple maintainers + signing
+func TestPackageProfile_PyPI_Cryptography_OrgMaintained_LowRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:   5,
+		SingleMaintainer:  false,
+		IsOrganization:    true,
+		OrgName:           "pyca",
+		HasOrgDomains:     true,
+		HasSignedCommits:  true,
+		HasSignedReleases: true,
+	}
+	analysis.calculateRiskScore()
+
+	if analysis.RiskPoints != 0 {
+		t.Errorf("cryptography: Expected 0 risk points, got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("cryptography: Expected LOW risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: pydantic (PyPI) - popular modern Python library, moderate team
+// Profile: 3 maintainers, mixed personal/org email domains
+// Source: pydantic/pydantic on GitHub - data validation library
+// Justification: Popular library with moderate maintainer count and mixed email domains
+//   creates moderate supply chain risk from the mixed-domain weakest-link model
+// Result: MEDIUM risk (1 point) - small team + mixed domains
+func TestPackageProfile_PyPI_Pydantic_ModerateTeam_MediumRisk(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "pydantic",
+			Ecosystem: models.EcosystemPyPI,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{
+				"dev1@pydantic.dev",
+				"dev2@gmail.com",
+				"dev3@pydantic.dev",
+			},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.MaintainerCount != 3 {
+		t.Errorf("pydantic: Expected 3 maintainers, got %d", analysis.MaintainerCount)
+	}
+	// 3 maintainers (0.3) + mixed: has expirable gmail (0.3) + no signing (0.5) = 1.1 → 1 point
+	if analysis.RiskPoints != 1 {
+		t.Errorf("pydantic: Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("pydantic: Expected MEDIUM risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: guava (Maven) - Google org, many committers, signed
+// Profile: Google org, 20+ committers, org emails, signed releases
+// Source: google/guava on GitHub - Google core Java library
+// Justification: Large corporate org with formal governance, many maintainers,
+//   and signed releases provides strong institutional accountability
+// Result: LOW risk (0 points) - corporate org + many maintainers + signing
+func TestPackageProfile_Maven_Guava_GoogleOrg_LowRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:   20,
+		SingleMaintainer:  false,
+		IsOrganization:    true,
+		OrgName:           "google",
+		HasOrgDomains:     true,
+		HasSignedCommits:  true,
+		HasSignedReleases: true,
+	}
+	analysis.calculateRiskScore()
+
+	if analysis.RiskPoints != 0 {
+		t.Errorf("guava: Expected 0 risk points, got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("guava: Expected LOW risk, got %s", analysis.RiskLevel)
 	}
 }

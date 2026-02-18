@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -485,14 +486,7 @@ func TestScoreReleaseSecurity_EvidenceContainsExpectedSignals(t *testing.T) {
 	}
 
 	for _, check := range evidenceChecks {
-		found := false
-		for i := 0; i <= len(score.Evidence)-len(check.contains); i++ {
-			if score.Evidence[i:i+len(check.contains)] == check.contains {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !strings.Contains(score.Evidence, check.contains) {
 			t.Errorf("Expected evidence to contain %q for %s signal, got: %q",
 				check.contains, check.signal, score.Evidence)
 		}
@@ -690,6 +684,126 @@ func TestScoreReleaseSecurity_RealWorldProfile_EnterpriseJavaLibrary(t *testing.
 
 	if score.Score < 4 {
 		t.Errorf("Expected high score for enterprise library, got %d", score.Score)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+}
+
+// ============================================================
+// Additional real-world profiles from /Users/mike/Projects/mike-libraries
+// npm-specific release security patterns
+// ============================================================
+
+// Test: Real-world profile - popular npm package (express/axios/helmet pattern)
+// Justification: Popular npm packages from mike-libraries (express, axios, helmet) typically
+//                have CI-based releases via GitHub Actions, branch protection, and at least
+//                1 required reviewer. Signed releases are uncommon in the npm ecosystem.
+// Source: Analysis of common npm package practices (express: github.com/expressjs/express,
+//         axios: github.com/axios/axios, helmet: github.com/helmetjs/helmet)
+// Methodology: Simulate metadata of a well-maintained npm package: CI releases, branch
+//              protection, no signed releases, at least 1 reviewer
+// Result: 1 risk point - typical for popular npm packages with good CI but no cryptographic signing
+func TestScoreReleaseSecurity_RealWorldProfile_PopularNPMPackage(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/popular-org/npm-package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   1,
+			CISystems:           []string{"GitHub Actions"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// 3 points (CI + branch protection + reviewers) → riskPoints=1 (moderate)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for popular npm package, got %d", score.RiskPoints)
+	}
+
+	if score.Score < 2 || score.Score > 4 {
+		t.Errorf("Expected score 2-4 for well-maintained npm package, got %d", score.Score)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+}
+
+// Test: Real-world profile - small npm utility (cors/dotenv/uuid pattern)
+// Justification: Small npm utility packages from mike-libraries (cors, dotenv, uuid,
+//                compression, morgan) often lack formal release security controls.
+//                They may have CI for tests but publish manually from maintainer machines.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - small packages form
+//         critical nodes in dependency trees with weak security practices
+// Methodology: Simulate metadata of a small npm utility: no CI release process, no branch
+//              protection, no signing, no required reviews
+// Result: 2 risk points - common for small npm utilities with manual publishing
+func TestScoreReleaseSecurity_RealWorldProfile_SmallNPMUtility(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/single-maintainer/small-utility",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   false,
+			HasBranchProtection: false,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			CISystems:           []string{},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// 0 points → riskPoints=2 (high risk)
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for small npm utility, got %d", score.RiskPoints)
+	}
+
+	if score.Score > 0 {
+		t.Errorf("Expected 0 score for no controls, got %d", score.Score)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score (repository URL present)")
+	}
+}
+
+// Test: Real-world profile - security-sensitive npm package (jsonwebtoken/bcryptjs pattern)
+// Justification: Security-sensitive npm packages from mike-libraries (jsonwebtoken, bcryptjs,
+//                passport) handle authentication and cryptography. These often have CI-based
+//                publishing and some branch protection, but their small team sizes mean
+//                limited reviewer coverage and no signed releases.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - security-critical packages
+//         are high-value targets for supply chain attacks
+// Methodology: Simulate metadata of a security-sensitive npm package: CI releases, partial
+//              branch protection, no signing, no required reviews
+// Result: 1 risk point - has CI but missing signing and review requirements
+func TestScoreReleaseSecurity_RealWorldProfile_SecuritySensitiveNPMPackage(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/auth-lib/jwt-package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			CISystems:           []string{"GitHub Actions"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// 2 points (CI + branch protection) → riskPoints=1 (moderate)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for security-sensitive npm package, got %d", score.RiskPoints)
+	}
+
+	if !strings.Contains(score.Evidence, "No required code reviews") {
+		t.Errorf("Expected evidence to flag missing code reviews, got: %s", score.Evidence)
 	}
 
 	if !score.Verified {
