@@ -111,7 +111,7 @@ The SLSA attestation check on GitHub requires `.slsa-provenance.json` or `.githu
 
 ---
 
-## Category 7: Health — STUB (GitLab/Bitbucket)
+## Category 7: Health — PARTIALLY FIXED
 
 ### Bug: PR stats stubs for GitLab/Bitbucket
 
@@ -121,13 +121,13 @@ The SLSA attestation check on GitHub requires `.slsa-provenance.json` or `.githu
 
 `GetPullRequestStats` returns empty `PRStats{}` for both platforms. `CodeReviewRate`, `RequiredReviewers`, and `HasBranchProtection` are always zero/false.
 
-### Bug: CI quality always 5/10 for GitLab/Bitbucket
-
-**Status:** OPEN
-
-`AnalyzeCIQuality` returns a hardcoded `QualityScore = 5` when CI is found for these platforms. The health scoring requires `>= 7` to award a CI quality point. **GitLab/Bitbucket repos with CI can never earn the CI health point.**
-
 **Recommendation:** Implement basic GitLab MR stats via `/projects/{id}/merge_requests` API. Implement Bitbucket PR stats via `/repositories/{owner}/{slug}/pullrequests` API.
+
+### Fixed: CI quality threshold lowered so GitLab/Bitbucket can earn CI point
+
+**Status:** FIXED
+
+The CI quality scoring threshold was lowered from >= 7 to >= 3. Since `AnalyzeCIQuality` returns a base `QualityScore = 5` when CI is found for GitLab/Bitbucket, these platforms can now earn the CI health point. CI presence (quality >= 3 or `HasCI` flag) is treated as a meaningful supply chain signal.
 
 ---
 
@@ -178,7 +178,7 @@ Any package hosted on GitLab or Bitbucket is biased toward higher risk scores, t
 **Remaining affected categories for GitLab/Bitbucket:**
 - ~~PublisherControl: signing always marked absent (+0.5)~~ → **FIXED** (now treated as unchecked)
 - ~~Provenance: always max risk (+2)~~ → **PARTIALLY FIXED** (checks CI config for cosign/sigstore/SLSA)
-- Health: PR stats absent, CI quality capped at 5/10
+- Health: PR stats absent ~~, CI quality capped at 5/10~~ → **CI quality FIXED** (threshold lowered to >= 3)
 - Governance: issue response time unavailable
 - ReleaseSecurity: branch protection always false
 
@@ -198,7 +198,7 @@ Any package hosted on GitLab or Bitbucket is biased toward higher risk scores, t
 | ~~P3~~ | ~~Provenance~~ | ~~PyPI has_sig deprecated~~ | **FIXED** (PEP 740 attestations) |
 | P0 | Dependency Sprawl | `dep.Source` always empty → lock file always skipped | OPEN |
 | P1 | Ownership Changes | PyPI `Uploader` field doesn't exist | OPEN |
-| P2 | Health | GitLab/Bitbucket PR/CI stubs | OPEN |
+| P2 | Health | GitLab/Bitbucket PR stubs | OPEN (CI quality **FIXED**) |
 | P2 | Governance | Issue response only for GitHub | OPEN |
 | ~~P2~~ | ~~Release Security~~ | ~~`HasReleaseProcess` too broad~~ | **MITIGATED** (OSSF Packaging fallback) |
 | ~~P2~~ | ~~Release Security~~ | ~~GitLab/Bitbucket branch protection stubs~~ | **MITIGATED** (OSSF fallbacks for all 4 components) |
