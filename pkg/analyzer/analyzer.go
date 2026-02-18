@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -397,20 +398,35 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 }
 
 func (a *Analyzer) analyzeDependencySprawl(result *models.AnalysisResult, dep models.Dependency) {
-	// Try to find and analyze lock file based on the source manifest
-	if dep.Source == "" {
-		return
+	// Try to find and analyze lock file based on the source manifest.
+	// When dep.Source is empty (e.g. scanning by package name via CLI), fall
+	// back to the current working directory so that lock files present in the
+	// user's project are still used for analysis.
+	var dir string
+	if dep.Source != "" {
+		dir = filepath.Dir(dep.Source)
+	} else {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return
+		}
+		dir = cwd
 	}
-
-	dir := filepath.Dir(dep.Source)
 	var metrics *models.DependencyMetrics
 	var err error
 
 	switch dep.Ecosystem {
 	case models.EcosystemNPM:
-		// Look for package-lock.json
+		// Look for package-lock.json first, then fall back to yarn.lock.
+		// CountTransitiveDependencies expects npm's JSON lock format; yarn.lock
+		// uses a different format so that fallback will return an error, which is
+		// handled gracefully below (metrics stays nil, heuristic scoring applies).
 		lockfilePath := filepath.Join(dir, "package-lock.json")
 		metrics, err = parser.CountTransitiveDependencies(lockfilePath)
+		if err != nil {
+			yarnPath := filepath.Join(dir, "yarn.lock")
+			metrics, err = parser.CountTransitiveDependencies(yarnPath)
+		}
 
 	case models.EcosystemPyPI:
 		// Look for Pipfile.lock first, then fall back to requirements.txt
@@ -448,8 +464,62 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 	result.Metadata.CISystems = ciSystems
 	result.Metadata.HasCI = len(ciSystems) > 0
 
+	// Classify each CI system into structured BuildSystemInfo
+	buildSystems := fetcher.ClassifyBuildSystems(ciSystems)
+
+	// For GitHub Actions, optionally inspect workflow content for self-hosted runner detection
+	for i, bs := range buildSystems {
+		if bs.Platform == "GitHub Actions" && repoURL != "" {
+			// Try to fetch a workflow file and check runner type
+			workflowContent, err := gitClient.GetFileContent(repoURL, ".github/workflows/release.yml")
+			if err != nil {
+				workflowContent, _ = gitClient.GetFileContent(repoURL, ".github/workflows/publish.yml")
+			}
+			if workflowContent != "" {
+				isSelfHosted, runnerLabel := fetcher.CheckGitHubActionsRunnerType(workflowContent)
+				if isSelfHosted {
+					buildSystems[i].IsSelfHosted = true
+					buildSystems[i].HostedBy = "Self-hosted"
+					buildSystems[i].RunnerDetails = runnerLabel
+				} else if runnerLabel != "" {
+					buildSystems[i].RunnerDetails = runnerLabel
+				}
+			}
+		}
+	}
+
+	result.Metadata.BuildSystems = buildSystems
+
+	// Check if any build system uses self-hosted runners
+	for _, bs := range buildSystems {
+		if bs.IsSelfHosted {
+			result.Metadata.HasSelfHosted = true
+			break
+		}
+	}
+
 	if len(ciSystems) > 0 {
-		result.BuildInfrastructure = "CI detected: " + strings.Join(ciSystems, ", ")
+		// Build a human-readable description showing platform and host
+		descriptions := make([]string, 0, len(buildSystems))
+		for _, bs := range buildSystems {
+			if bs.IsSelfHosted {
+				descriptions = append(descriptions, bs.Platform+" (self-hosted)")
+			} else {
+				descriptions = append(descriptions, bs.Platform+" ("+bs.HostedBy+")")
+			}
+		}
+		result.BuildInfrastructure = "CI detected: " + strings.Join(descriptions, ", ")
+
+		if result.Metadata.HasSelfHosted {
+			result.Findings = append(result.Findings, models.Finding{
+				Severity:    "HIGH",
+				Category:    "Self-Hosted CI Runners",
+				Description: "Self-hosted CI runners detected: build environment is not controlled by a trusted cloud provider",
+				Check:       "Build System Location Check",
+				Evidence:    result.BuildInfrastructure,
+			})
+			result.RiskFactors = append(result.RiskFactors, "Self-hosted build runners (uncontrolled build environment)")
+		}
 	} else {
 		result.BuildInfrastructure = "No CI detected"
 		result.Findings = append(result.Findings, models.Finding{
@@ -628,9 +698,9 @@ func packageMetadataFromMaven(pkg *fetcher.MavenPackage) models.PackageMetadata 
 	}
 }
 
-// calculateSupplyChainScore implements a 0-18 point supply chain security rubric
-// Each of 9 categories is scored 0-2 points (0=good, 2=high risk)
-// Total: 0-5=Low risk, 6-12=Medium risk, 13+=High risk
+// calculateSupplyChainScore implements a 0-20 point supply chain security rubric
+// Each of 10 categories is scored 0-2 points (0=good, 2=high risk)
+// Total: 0-5=Low risk, 6-14=Medium risk, 15+=High risk
 func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	score := &models.SupplyChainScore{
 		CategoryScores: models.CategoryScores{},
@@ -663,6 +733,9 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	// Category 9: Release Security (CI publishing/branch protection/signed tags)
 	score.CategoryScores.ReleaseSecurity = a.scoreReleaseSecurity(result)
 
+	// Category 10: Package Maturity (age/update frequency/staleness)
+	score.CategoryScores.PackageMaturity = a.scorePackageMaturity(result)
+
 	// Calculate total score
 	score.TotalScore = score.CategoryScores.PublisherControl.RiskPoints +
 		score.CategoryScores.OwnershipChanges.RiskPoints +
@@ -672,10 +745,11 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		score.CategoryScores.Provenance.RiskPoints +
 		score.CategoryScores.Health.RiskPoints +
 		score.CategoryScores.Governance.RiskPoints +
-		score.CategoryScores.ReleaseSecurity.RiskPoints
+		score.CategoryScores.ReleaseSecurity.RiskPoints +
+		score.CategoryScores.PackageMaturity.RiskPoints
 
-	// Determine risk level based on total score (9 categories, 0-18 points)
-	if score.TotalScore >= 13 {
+	// Determine risk level based on total score (10 categories, 0-20 points)
+	if score.TotalScore >= 15 {
 		score.RiskLevel = "HIGH"
 	} else if score.TotalScore >= 6 {
 		score.RiskLevel = "MEDIUM"

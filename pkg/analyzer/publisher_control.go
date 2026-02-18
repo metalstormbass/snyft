@@ -52,7 +52,17 @@ type PublisherControlAnalysis struct {
 	SignedCommitCount     int    `json:"signed_commit_count"`
 
 	// MFA detection (if available from API)
-	MFAStatus             string `json:"mfa_status"` // "enabled", "disabled", "unknown"
+	// Check: MFA/2FA enforcement for package maintainers
+	// Justification: Accounts without MFA are primary targets for credential
+	//                stuffing attacks - the leading cause of supply chain compromise.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	//         https://arxiv.org/abs/2005.09535
+	// Methodology: GitHub org two_factor_requirement_enabled (publicly available);
+	//              npm/PyPI per-maintainer MFA not publicly accessible (requires auth).
+	// Result: 0 = MFA enforced, 1 = MFA optional/unknown, 2 = MFA not enforced
+	MFAStatus   string `json:"mfa_status"`   // "enforced", "not_enforced", "unknown"
+	MFAEnforced bool   `json:"mfa_enforced"` // true if org-level MFA is required
+	MFAChecked  bool   `json:"mfa_checked"`  // true if we successfully determined MFA status
 
 	// Overall risk assessment
 	RiskPoints            int    `json:"risk_points"`  // 0-2 points
@@ -147,6 +157,12 @@ func (a *Analyzer) AnalyzePublisherControl(result *models.AnalysisResult, repoUR
 	// 6. Check signing and authentication (5% weight)
 	if repoURL != "" && gitClient != nil {
 		analysis.checkSigningPractices(gitClient, repoURL)
+	}
+
+	// 7. Check MFA/2FA enforcement
+	// Only GitHub org-level 2FA status is publicly accessible without auth
+	if repoURL != "" && gitClient != nil {
+		analysis.checkMFAEnforcement(gitClient, repoURL)
 	}
 
 	// Calculate final risk assessment
@@ -385,6 +401,65 @@ func (analysis *PublisherControlAnalysis) checkSigningPractices(gitClient fetche
 	}
 }
 
+// checkMFAEnforcement detects whether the package owner enforces MFA/2FA
+//
+// Check: MFA/2FA enforcement for package maintainers
+// Justification: Accounts without MFA are primary targets for credential stuffing
+//                attacks - the leading cause of supply chain compromise. Phishing
+//                and credential stuffing become trivially easy without MFA.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+//         https://arxiv.org/abs/2005.09535
+// Methodology:
+//   - GitHub orgs: GET /orgs/{owner} → two_factor_requirement_enabled (PUBLICLY AVAILABLE)
+//   - npm maintainers: tfa field requires auth → NOT publicly available, skip gracefully
+//   - PyPI maintainers: no 2FA field in public JSON API → NOT publicly available, skip
+//   - GitHub users (personal): GitHub does not expose 2FA status (privacy policy) → skip
+// Result: Sets MFAEnforced, MFAStatus, MFAChecked on the analysis
+func (analysis *PublisherControlAnalysis) checkMFAEnforcement(gitClient fetcher.GitPlatformClient, repoURL string) {
+	analysis.MFAStatus = "unknown"
+	analysis.MFAChecked = false
+	analysis.MFAEnforced = false
+
+	// Extract owner from repo URL
+	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(repoURL, "https://"), "http://"), "/")
+	if len(parts) < 3 {
+		return
+	}
+	owner := parts[1]
+	if owner == "" {
+		return
+	}
+
+	// MFA enforcement is only meaningful at the organization level.
+	// GitHub does not expose individual user 2FA status (privacy policy).
+	// npm/PyPI do not expose per-maintainer 2FA without authentication.
+	isOrg, _ := gitClient.CheckIfOrganization(owner)
+	if !isOrg {
+		// Personal account: cannot determine MFA status publicly
+		analysis.MFAStatus = "unknown"
+		analysis.MFAChecked = false
+		return
+	}
+
+	// For organizations: query MFA enforcement via platform API
+	mfaRequired, dataAvailable := gitClient.CheckOrgMFARequired(owner)
+	if !dataAvailable {
+		// Platform does not expose MFA status publicly (GitLab, Bitbucket)
+		analysis.MFAStatus = "unknown"
+		analysis.MFAChecked = false
+		return
+	}
+
+	analysis.MFAChecked = true
+	if mfaRequired {
+		analysis.MFAEnforced = true
+		analysis.MFAStatus = "enforced"
+	} else {
+		analysis.MFAEnforced = false
+		analysis.MFAStatus = "not_enforced"
+	}
+}
+
 // calculateRiskScore computes the final risk score based on all factors
 //
 // Scoring rubric (0-2 risk points):
@@ -465,6 +540,27 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 		if riskScore > 0.2 {
 			riskScore -= 0.2
 		}
+	}
+
+	// Factor 6: MFA enforcement (when data is available)
+	// MFA is the single most impactful account security control.
+	// Only GitHub org-level MFA status is publicly verifiable.
+	if analysis.MFAChecked {
+		if analysis.MFAEnforced {
+			// Org enforces MFA - significant risk reduction
+			evidenceParts = append(evidenceParts, "org MFA enforced (good)")
+			if riskScore > 0.3 {
+				riskScore -= 0.3
+			} else {
+				riskScore = 0
+			}
+		} else {
+			// Org does NOT enforce MFA - high risk signal
+			riskScore += 0.5
+			evidenceParts = append(evidenceParts, "org MFA NOT enforced (HIGH RISK)")
+		}
+	} else if analysis.MFAStatus == "unknown" {
+		evidenceParts = append(evidenceParts, "MFA status unknown (personal account or platform limitation)")
 	}
 
 	// Convert to 0-2 risk points scale

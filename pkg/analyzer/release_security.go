@@ -84,21 +84,27 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		evidence = append(evidence, "No required code reviews")
 	}
 
-	// Component 5: GitHub Actions Permissions
-	// Check for overly permissive workflow configurations
-	// This is a heuristic based on CI system detection
-	if len(result.Metadata.CISystems) > 0 {
-		// If using GitHub Actions, we should ideally check workflow file permissions
-		// For now, we award a point if CI is detected (implies some automation)
-		for _, ci := range result.Metadata.CISystems {
-			if strings.Contains(strings.ToLower(ci), "github actions") {
-				// Note: Detailed workflow permission analysis would require
-				// parsing .github/workflows/*.yml files for permissions: declarations
-				// This is a future enhancement opportunity
-				evidence = append(evidence, "GitHub Actions detected (workflow permissions not analyzed)")
-				break
+	// Component 5: Build System Location (self-hosted runner detection)
+	// Self-hosted runners give attackers who compromise the runner full control over
+	// the build environment and published artifacts. Cloud-hosted runners are isolated.
+	// Source: SLSA Build L3 - https://slsa.dev/spec/v1.0/levels
+	if result.Metadata.HasSelfHosted {
+		// Self-hosted runners negate the value of CI-based publishing
+		// because the build environment is not controlled by a trusted provider
+		points-- // Penalize: self-hosted erodes release security regardless of other controls
+		if points < 0 {
+			points = 0
+		}
+		selfHostedNames := []string{}
+		for _, bs := range result.Metadata.BuildSystems {
+			if bs.IsSelfHosted {
+				selfHostedNames = append(selfHostedNames, bs.Platform)
 			}
 		}
+		evidence = append(evidence, fmt.Sprintf("Self-hosted CI runners detected (%s): build environment not controlled by trusted provider",
+			strings.Join(selfHostedNames, ", ")))
+	} else if len(result.Metadata.BuildSystems) > 0 {
+		evidence = append(evidence, fmt.Sprintf("Cloud-hosted CI: %s", result.Metadata.CISystems[0]))
 	}
 
 	// Calculate risk points based on total security controls

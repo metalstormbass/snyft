@@ -202,26 +202,19 @@ func (c *GitLabClient) DetectCISystems(repoURL string) ([]string, error) {
 
 	var ciSystems []string
 
-	// Check for GitLab CI
-	if c.fileExists(instance, owner, repo, ".gitlab-ci.yml") {
-		ciSystems = append(ciSystems, "GitLab CI")
-	}
-
-	// Check for other CI systems
-	if c.fileExists(instance, owner, repo, ".github/workflows") {
-		ciSystems = append(ciSystems, "GitHub Actions")
-	}
-
-	if c.fileExists(instance, owner, repo, ".travis.yml") {
-		ciSystems = append(ciSystems, "Travis CI")
-	}
-
-	if c.fileExists(instance, owner, repo, ".circleci/config.yml") {
-		ciSystems = append(ciSystems, "Circle CI")
-	}
-
-	if c.fileExists(instance, owner, repo, "Jenkinsfile") {
-		ciSystems = append(ciSystems, "Jenkins")
+	for _, entry := range ExtendedCIConfigFiles() {
+		if c.fileExists(instance, owner, repo, entry.Path) {
+			alreadyAdded := false
+			for _, existing := range ciSystems {
+				if existing == entry.Name {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded {
+				ciSystems = append(ciSystems, entry.Name)
+			}
+		}
 	}
 
 	return ciSystems, nil
@@ -426,20 +419,48 @@ func (c *GitLabClient) GetFileContent(repoURL, filePath string) (string, error) 
 	return string(body), nil
 }
 
-// GetProvenanceInfo checks for various provenance indicators (stub implementation)
+// GetProvenanceInfo checks for various provenance indicators in a GitLab repository.
+// It inspects .gitlab-ci.yml for sigstore/cosign and SLSA usage, and checks for
+// a .cosign directory or cosign.pub file indicating signing infrastructure.
 func (c *GitLabClient) GetProvenanceInfo(repoURL string) (*models.ProvenanceInfo, error) {
-	// Simplified implementation - GitLab has different provenance mechanisms
 	info := &models.ProvenanceInfo{}
 
 	// Check for basic CI/CD which could indicate provenance
 	ciSystems, _ := c.DetectCISystems(repoURL)
-	if len(ciSystems) > 0 {
-		// GitLab CI provides some level of build provenance
-		for _, ci := range ciSystems {
-			if ci == "GitLab CI" {
-				info.BuildSystem = "GitLab CI"
-				break
-			}
+	for _, ci := range ciSystems {
+		if ci == "GitLab CI" {
+			info.BuildSystem = "GitLab CI"
+			break
+		}
+	}
+
+	// Fetch .gitlab-ci.yml and inspect for signing/attestation tooling.
+	// Missing file is acceptable - we degrade gracefully.
+	ciContent, err := c.GetFileContent(repoURL, ".gitlab-ci.yml")
+	if err == nil {
+		ciLower := strings.ToLower(ciContent)
+
+		// Sigstore/cosign usage in the pipeline indicates artifact signing.
+		// Source: Sigstore project - https://www.sigstore.dev/
+		if strings.Contains(ciLower, "cosign") || strings.Contains(ciLower, "sigstore") {
+			info.HasSigstoreSignature = true
+		}
+
+		// SLSA generator usage indicates provenance attestation.
+		// Source: SLSA specification - https://slsa.dev/spec/v1.0/
+		if strings.Contains(ciLower, "slsa") {
+			info.HasSLSAAttestation = true
+		}
+	}
+
+	// Check for a cosign public key or config directory in the repository root.
+	// Presence indicates the project has set up signing infrastructure.
+	// Source: Sigstore/cosign documentation - https://github.com/sigstore/cosign
+	cosignFiles := []string{".cosign/", "cosign.pub"}
+	for _, f := range cosignFiles {
+		if _, ferr := c.GetFileContent(repoURL, f); ferr == nil {
+			info.HasSigstoreSignature = true
+			break
 		}
 	}
 
@@ -766,4 +787,12 @@ func (c *GitLabClient) GetUserAccountCreatedDate(username string) (time.Time, er
 	// Stub implementation - would require GitLab API call to /users
 	// Return zero time to indicate unavailable
 	return time.Time{}, fmt.Errorf("account age check not implemented for GitLab")
+}
+
+// CheckOrgMFARequired checks for MFA enforcement on GitLab groups.
+// GitLab's require_two_factor_authentication field is only accessible to group admins
+// and is not exposed via the public API without authentication.
+// Returns (false, false) to indicate data is not publicly available.
+func (c *GitLabClient) CheckOrgMFARequired(owner string) (required bool, available bool) {
+	return false, false
 }

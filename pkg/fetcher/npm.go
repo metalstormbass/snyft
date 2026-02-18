@@ -84,11 +84,12 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 		Scripts:       make(map[string]string),
 	}
 
-	// Extract repository URL
+	// Extract repository URL — npm registry `repository` field comes in many forms;
+	// normalizeNPMRepoURL handles all of them.
 	if npmResp.Repository.URL != "" {
-		pkg.RepositoryURL = cleanRepositoryURL(npmResp.Repository.URL)
+		pkg.RepositoryURL = normalizeNPMRepoURL(npmResp.Repository.URL)
 	} else if npmResp.Repository.TypeString != "" {
-		pkg.RepositoryURL = cleanRepositoryURL(npmResp.Repository.TypeString)
+		pkg.RepositoryURL = normalizeNPMRepoURL(npmResp.Repository.TypeString)
 	}
 
 	// Get latest version info and scripts
@@ -104,11 +105,38 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 		}
 	}
 
-	// Get download count (would need to query npm download stats API)
-	// This is a simplified version - full implementation would make additional API call
-	pkg.Downloads = 0
+	// Fetch download count from the npm downloads API.
+	// Errors are handled gracefully: if the request fails, Downloads stays 0.
+	pkg.Downloads = c.fetchDownloadCount(packageName)
 
 	return pkg, nil
+}
+
+// fetchDownloadCount fetches the last-month download count for a package from
+// the npm downloads API: GET https://api.npmjs.org/downloads/point/last-month/{name}
+// Returns 0 on any error so callers can treat it as a best-effort enrichment.
+func (c *NPMClient) fetchDownloadCount(packageName string) int64 {
+	url := fmt.Sprintf("https://api.npmjs.org/downloads/point/last-month/%s", packageName)
+
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+
+	var dlResp struct {
+		Downloads int64  `json:"downloads"`
+		Package   string `json:"package"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&dlResp); err != nil {
+		return 0
+	}
+
+	return dlResp.Downloads
 }
 
 // NPMRegistryResponse represents the npm registry API response
@@ -170,7 +198,14 @@ type NPMOwnershipHistory struct {
 func extractMaintainers(maintainers []NPMMaintainer) []string {
 	var names []string
 	for _, m := range maintainers {
-		if m.Name != "" {
+		if m.Name == "" {
+			continue
+		}
+		if m.Email != "" {
+			// Include email so downstream email domain analysis can classify the domain.
+			// Format: "username <email@domain.com>" which extractUsernameFromEmail handles.
+			names = append(names, fmt.Sprintf("%s <%s>", m.Name, m.Email))
+		} else {
 			names = append(names, m.Name)
 		}
 	}
