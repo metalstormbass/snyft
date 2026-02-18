@@ -82,7 +82,7 @@ The `setup.py` analysis is gated behind `if repoURL != ""`. Packages without a r
 
 ---
 
-## Category 6: Provenance — PARTIALLY FIXED
+## Category 6: Provenance — MOSTLY FIXED
 
 ### Fixed: GitLab/Bitbucket provenance now checks CI config files
 
@@ -93,21 +93,33 @@ The `setup.py` analysis is gated behind `if repoURL != ""`. Packages without a r
 - Checks for SLSA generator usage in CI pipelines
 - Checks for `cosign.pub` or `.cosign/` directory presence
 
-Packages that use Sigstore or SLSA in their CI pipelines will now receive provenance credit. Packages without these tools still receive 2 risk points, which is correct (no verifiable provenance).
+Packages that use Sigstore or SLSA in their CI pipelines will now receive provenance credit.
 
-### Note: SLSA detection requires specific file patterns
-
-**Status:** KNOWN LIMITATION
-
-The SLSA attestation check on GitHub requires `.slsa-provenance.json` or `.github/workflows/slsa*.yml` files. Repos using SLSA generators without these specific naming patterns may not be detected.
-
-### Fixed: PyPI signature check now includes Trusted Publisher attestations
+### Fixed: NPM attestation field mapping
 
 **Status:** FIXED
 
-`CheckPyPISignatures` now checks for PEP 740 Trusted Publisher attestations (the `provenance` field on release URLs) in addition to the deprecated PGP `has_sig` field. Packages using PyPI's Trusted Publisher mechanism will now receive provenance credit.
+The `NPMAttestation` struct previously mapped `ProvenanceURL` to `json:"provenance_url"`, but the npm registry API returns `provenance` as an object, not a URL string. Now checks the `Attestations.URL` field which is populated for packages with provenance (e.g., sigstore, next).
 
-**File changed:** `pkg/fetcher/pypi.go`
+### Fixed: GitHub SLSA detection expanded
+
+**Status:** FIXED (was KNOWN LIMITATION)
+
+SLSA detection on GitHub previously only checked 3 specific filenames. Now includes additional common workflow names (`slsa-goreleaser.yml`, `provenance.yml`, `attest.yml`) and scans all workflow filenames for SLSA/attestation/provenance keywords.
+
+### Fixed: PyPI signature check with Simple API fallback
+
+**Status:** FIXED
+
+`CheckPyPISignatures` now checks for PEP 740 Trusted Publisher attestations via the deprecated PGP `has_sig` field and a new fallback to the PyPI Simple API (PEP 691 JSON format) which includes `provenance` URLs for packages published with Trusted Publisher attestations.
+
+**Files changed:** `pkg/fetcher/pypi.go`
+
+### Fixed: CI/CD as weak provenance signal
+
+**Status:** FIXED
+
+Packages with CI/CD pipelines but no formal provenance attestations now receive partial provenance credit (1 risk point instead of 2). This aligns with SLSA Level 1 ("build process documented") — CI presence is a meaningful, though weak, provenance indicator.
 
 ---
 
