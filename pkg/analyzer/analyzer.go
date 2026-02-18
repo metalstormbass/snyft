@@ -1819,9 +1819,17 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		}
 	}
 
+	// CI/CD pipeline is a minimal provenance signal — SLSA Level 1 requires
+	// "the build process to be documented". Having CI demonstrates automated,
+	// repeatable builds, which is the baseline for supply chain hygiene.
+	if provenanceScore == 0 && result.Metadata.HasCI {
+		provenanceScore += 1
+		evidence = append(evidence, "CI/CD pipeline detected (SLSA L1 baseline)")
+	}
+
 	// Determine final risk level based on accumulated provenance indicators
 	// Strong indicators (SLSA, Sigstore, npm provenance, PyPI signatures) = 2 points each
-	// Weaker indicators (signed releases, reproducible builds, OSSF) = 1 point each
+	// Weaker indicators (signed releases, reproducible builds, OSSF, CI) = 1 point each
 	// Score >= 2: Full provenance (0 risk points) - at least one strong indicator
 	// Score 1: Partial provenance (1 risk point) - only weak indicators
 	// Score 0: No provenance (2 risk points)
@@ -1864,7 +1872,7 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		RiskPoints:  riskPoints,
 		Description: description,
 		Evidence:    evidenceStr,
-		Verified:    len(evidence) > 0 || provenanceScore == 0,
+		Verified:    true,
 	}
 }
 

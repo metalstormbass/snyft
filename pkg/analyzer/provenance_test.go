@@ -430,6 +430,66 @@ func TestScoreProvenance_OSSFAtThreshold(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance recognizes CI/CD pipeline as weak provenance indicator
+// Justification: SLSA Level 1 requires "the build process to be documented" —
+//                having a CI/CD pipeline demonstrates automated, repeatable builds
+//                which is the baseline for supply chain hygiene
+// Source: SLSA specification v1.0 — Level 1 requirements
+//         https://slsa.dev/spec/v1.0/levels
+// Methodology: Set only HasCI=true with no other provenance signals;
+//              call scoreProvenance to check CI is counted as weak indicator
+// Result: 1 risk point (partial provenance from CI baseline)
+func TestScoreProvenance_CIAsWeakProvenance(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasCI: true,
+		},
+	}
+
+	score := a.scoreProvenance(result)
+
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with CI pipeline, got %d", score.RiskPoints)
+	}
+
+	if score.Score != 1 {
+		t.Errorf("Expected score 1 with CI pipeline, got %d", score.Score)
+	}
+
+	if score.Description != "Partial provenance" {
+		t.Errorf("Expected 'Partial provenance', got '%s'", score.Description)
+	}
+}
+
+// Test: scoreProvenance does not double-count CI when stronger indicators exist
+// Justification: CI is only added when provenanceScore is 0; when stronger
+//                indicators (SLSA, Sigstore, etc.) already contribute points,
+//                CI should not be counted again
+// Source: SLSA specification v1.0 — higher levels subsume lower ones
+// Methodology: Set HasCI=true AND HasSLSAAttestation=true; verify CI is not added
+// Result: 0 risk points (full provenance from SLSA, CI not double-counted)
+func TestScoreProvenance_CINotDoubleCountedWithStrongIndicator(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasCI:              true,
+			HasSLSAAttestation: true,
+			SLSALevel:          "SLSA_LEVEL_2",
+		},
+	}
+
+	score := a.scoreProvenance(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points with SLSA+CI, got %d", score.RiskPoints)
+	}
+
+	if score.Score != 2 {
+		t.Errorf("Expected score 2 with SLSA+CI, got %d", score.Score)
+	}
+}
+
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsSubstring(s, substr))

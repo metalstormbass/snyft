@@ -262,8 +262,15 @@ type NPMDist struct {
 }
 
 type NPMAttestation struct {
-	URL           string `json:"url"`
-	ProvenanceURL string `json:"provenance_url"`
+	URL        string             `json:"url"`
+	Provenance *NPMProvenanceInfo `json:"provenance,omitempty"`
+}
+
+// NPMProvenanceInfo represents the provenance object within npm attestations.
+// The npm registry returns this as {"predicateType": "https://slsa.dev/provenance/v1"}
+// when a package was published with provenance via GitHub Actions.
+type NPMProvenanceInfo struct {
+	PredicateType string `json:"predicateType"`
 }
 
 type NPMOwnershipHistory struct {
@@ -311,9 +318,12 @@ func (c *NPMClient) CheckNPMProvenance(packageName string) (bool, string, error)
 	}
 
 	// Check the latest version for provenance
+	// The npm registry includes an attestations object with a URL field pointing
+	// to the attestation bundle, and a provenance object with the SLSA predicate
+	// type when the package was built with provenance in GitHub Actions.
 	if latest, ok := npmResp.Versions[npmResp.DistTags.Latest]; ok {
-		if latest.Dist.Attestations != nil && latest.Dist.Attestations.ProvenanceURL != "" {
-			return true, latest.Dist.Attestations.ProvenanceURL, nil
+		if latest.Dist.Attestations != nil && latest.Dist.Attestations.URL != "" {
+			return true, latest.Dist.Attestations.URL, nil
 		}
 	}
 
