@@ -726,6 +726,321 @@ func TestCacheKey_RealPackageNames(t *testing.T) {
 	}
 }
 
+// Test: CreateMessage returns cached response on cache hit
+// Justification: Cache deduplication is critical when scanning large dependency
+//                graphs where the same popular package (lodash, express) appears
+//                in many projects - avoiding redundant API calls saves cost and time
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - npm dependency
+//         graphs often share common packages across projects
+// Methodology: Enable cache, make a request, verify second request returns cached
+//              response without hitting the server
+// Result: Second call returns cached response; server receives only one request
+func TestCreateMessage_CacheHit(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id": "msg_cached_123",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5-20250929",
+			"content": [{"type": "text", "text": "cached analysis result"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 50, "output_tokens": 10}
+		}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = true
+	cfg.CacheTTL = 1 * time.Hour
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+		MaxTokens: 100,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("analyze express")),
+		},
+	}
+
+	// First call hits the server
+	msg1, err := client.CreateMessage(context.Background(), params)
+	if err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if msg1.ID != "msg_cached_123" {
+		t.Errorf("expected msg_cached_123, got %s", msg1.ID)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 server call, got %d", callCount)
+	}
+
+	// Ristretto cache needs a brief moment to process the Set
+	time.Sleep(10 * time.Millisecond)
+
+	// Second call should return cached response without hitting server
+	msg2, err := client.CreateMessage(context.Background(), params)
+	if err != nil {
+		t.Fatalf("second call failed: %v", err)
+	}
+	if msg2.ID != "msg_cached_123" {
+		t.Errorf("expected cached msg_cached_123, got %s", msg2.ID)
+	}
+	if callCount != 1 {
+		t.Errorf("expected still 1 server call after cache hit, got %d", callCount)
+	}
+}
+
+// Test: CreateMessage retries on retryable errors and eventually succeeds
+// Justification: Transient API failures (503 from load balancers, 429 rate limits)
+//                are common during bulk supply chain analysis and should be retried
+//                automatically to avoid losing valid results
+// Source: "Exponential Backoff And Jitter" - AWS Architecture Blog
+// Methodology: Mock server returns 500 on first two calls, then succeeds on third;
+//              verify the client retries and eventually returns the successful response
+// Result: Client retries through transient failures and returns valid response
+func TestCreateMessage_RetrySuccess(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount <= 2 {
+			// First two calls return retryable 500 error
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"temporary failure"}}`)
+			return
+		}
+		// Third call succeeds
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id": "msg_retry_success",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5-20250929",
+			"content": [{"type": "text", "text": "analysis after retry"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 100, "output_tokens": 20}
+		}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+	cfg.EnableRetry = true
+	cfg.MaxRetries = 3
+	cfg.RetryBackoffMin = 1 * time.Millisecond // Fast retries for testing
+	cfg.RetryBackoffMax = 5 * time.Millisecond
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+		MaxTokens: 100,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("test retry")),
+		},
+	}
+
+	msg, err := client.CreateMessage(context.Background(), params)
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if msg.ID != "msg_retry_success" {
+		t.Errorf("expected msg_retry_success, got %s", msg.ID)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 server calls (2 failures + 1 success), got %d", callCount)
+	}
+}
+
+// Test: CreateMessage returns error when all retries are exhausted
+// Justification: When the API is persistently unavailable, the client must report
+//                failure clearly rather than hanging indefinitely; operators need
+//                clear error messages to diagnose API issues during batch analysis
+// Source: Circuit breaker and retry pattern best practices
+// Methodology: Mock server always returns 500; verify client gives up after max retries
+//              and returns a clear error message
+// Result: Error includes "max retries exceeded" with the underlying error
+func TestCreateMessage_MaxRetriesExceeded(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"persistent failure"}}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+	cfg.EnableRetry = true
+	cfg.MaxRetries = 2
+	cfg.RetryBackoffMin = 1 * time.Millisecond
+	cfg.RetryBackoffMax = 5 * time.Millisecond
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+		MaxTokens: 100,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("test exhaustion")),
+		},
+	}
+
+	_, err = client.CreateMessage(context.Background(), params)
+	if err == nil {
+		t.Fatal("expected error after max retries exhausted")
+	}
+	if !strings.Contains(err.Error(), "max retries exceeded") {
+		t.Errorf("expected 'max retries exceeded' error, got: %v", err)
+	}
+	// Server should have been called multiple times (exact count depends on SDK retry behavior)
+	if callCount < 3 {
+		t.Errorf("expected at least 3 server calls (initial + retries), got %d", callCount)
+	}
+}
+
+// Test: CreateMessage respects context cancellation during retry backoff
+// Justification: When a user cancels an analysis (e.g., Ctrl+C), the client must
+//                stop retrying immediately rather than waiting through the full
+//                backoff period, which could be seconds long
+// Source: Go context cancellation best practices
+// Methodology: Start a request with retries enabled against an always-failing server;
+//              cancel the context during the backoff period; verify prompt cancellation
+// Result: Client returns context error without waiting for full backoff
+func TestCreateMessage_ContextCancelDuringRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"fail"}}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+	cfg.EnableRetry = true
+	cfg.MaxRetries = 5
+	cfg.RetryBackoffMin = 5 * time.Second // Long backoff so cancel happens during wait
+	cfg.RetryBackoffMax = 10 * time.Second
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+		MaxTokens: 100,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("test cancel")),
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = client.CreateMessage(ctx, params)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from context cancellation")
+	}
+
+	// Should have cancelled quickly, not waited for full backoff
+	if elapsed > 2*time.Second {
+		t.Errorf("context cancellation took too long: %v (expected < 2s)", elapsed)
+	}
+}
+
+// Test: CreateMessage returns rate limiter error when context is cancelled during wait
+// Justification: Rate limiter must not block indefinitely when the caller's context
+//                is cancelled; this prevents resource leaks in concurrent analysis
+// Source: Go concurrency patterns - context-aware rate limiting
+// Methodology: Create client with 1 req/min rate limit, exhaust the token,
+//              then try another request with already-cancelled context
+// Result: Returns rate limit wait error with context cancellation
+func TestCreateMessage_RateLimiterContextCancel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id": "msg_rl_test",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5-20250929",
+			"content": [{"type": "text", "text": "ok"}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 10, "output_tokens": 5}
+		}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = true
+	cfg.RateLimit = 1 // 1 request per minute
+	cfg.EnableCircuitBreaker = false
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+		MaxTokens: 100,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("test")),
+		},
+	}
+
+	// First call succeeds and uses the only token
+	_, err = client.CreateMessage(context.Background(), params)
+	if err != nil {
+		t.Fatalf("first call should succeed: %v", err)
+	}
+
+	// Second call with cancelled context should fail on rate limiter
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err = client.CreateMessage(ctx, params)
+	if err == nil {
+		t.Fatal("expected error when rate limiter waits on cancelled context")
+	}
+	if !strings.Contains(err.Error(), "rate limit wait failed") {
+		t.Errorf("expected rate limit error, got: %v", err)
+	}
+}
+
 // Test: CreateMessage with mocked API returns correct response
 // Justification: The CreateMessage path is the core API interaction for all
 //                AI-powered supply chain analysis; must work correctly with

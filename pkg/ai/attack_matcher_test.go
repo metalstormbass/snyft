@@ -689,6 +689,115 @@ func TestCallClaudeForComparison(t *testing.T) {
 	})
 }
 
+// Test: callClaudeForComparison handles response with no text content blocks
+// Justification: The API may return content blocks of type "image" or other types
+//                that don't contain text; the parser must detect this and return
+//                a clear error rather than silently producing an empty result
+// Source: Anthropic API content block types specification
+// Methodology: Mock the API to return a message with a non-text content block;
+//              verify the function returns an appropriate error
+// Result: Returns "no text content" error when all content blocks are non-text
+func TestCallClaudeForComparison_NoTextContent(t *testing.T) {
+	// Response has a content block but it's not of type "text"
+	apiResp := `{
+		"id": "msg_test_nontext",
+		"type": "message",
+		"role": "assistant",
+		"model": "claude-sonnet-4-5-20250929",
+		"content": [{"type": "tool_use", "id": "tool_1", "name": "test", "input": {}}],
+		"stop_reason": "tool_use",
+		"usage": {"input_tokens": 100, "output_tokens": 50}
+	}`
+
+	server := mockAnthropicServer(t, apiResp)
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	_, err = callClaudeForComparison(context.Background(), client, "test prompt")
+	if err == nil {
+		t.Fatal("expected error for response with no text content")
+	}
+	if !strings.Contains(err.Error(), "no text content") {
+		t.Errorf("expected 'no text content' error, got: %v", err)
+	}
+}
+
+// Test: buildPackageProfile includes Sigstore signature in provenance field
+// Justification: Packages with Sigstore signatures have verified provenance;
+//                this must be reflected in the profile for accurate attack matching
+// Source: Sigstore - https://www.sigstore.dev/ - keyless signing and transparency
+// Methodology: Build profile with HasSigstoreSignature=true, HasSLSAAttestation=false;
+//              verify "Has Provenance: true" appears in output
+// Result: Profile correctly shows provenance as true when Sigstore signature exists
+func TestBuildPackageProfile_SigstoreProvenance(t *testing.T) {
+	result := models.AnalysisResult{
+		RiskLevel:           "LOW",
+		RiskScore:           3,
+		SourceCodeAvailable: true,
+		Metadata: models.PackageMetadata{
+			Maintainers:          []string{"m1", "m2"},
+			HasSigstoreSignature: true,
+			HasSLSAAttestation:   false,
+		},
+	}
+
+	profile := buildPackageProfile("sigstore-pkg", models.EcosystemNPM, result)
+
+	if !strings.Contains(profile, "Has Provenance: true") {
+		t.Error("profile should show provenance as true when Sigstore signature exists")
+	}
+}
+
+// Test: buildPackageProfile includes only HIGH/CRITICAL findings, not MEDIUM/LOW
+// Justification: Attack comparison profiles should focus on high-severity findings
+//                to avoid noise in similarity assessment; including low-severity
+//                findings would dilute the signal
+// Source: OSSF Scorecard severity classification
+// Methodology: Build profile with findings of all severities; verify only
+//              HIGH and CRITICAL findings appear in output
+// Result: HIGH and CRITICAL findings present; MEDIUM and LOW findings absent
+func TestBuildPackageProfile_FindingSeverityFilter(t *testing.T) {
+	result := models.AnalysisResult{
+		RiskLevel: "MEDIUM",
+		RiskScore: 50,
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"m1"},
+		},
+		Findings: []models.Finding{
+			{Severity: "CRITICAL", Category: "Install Execution", Description: "Obfuscated postinstall script"},
+			{Severity: "HIGH", Category: "Publisher Control", Description: "Single maintainer"},
+			{Severity: "MEDIUM", Category: "Health", Description: "Low test coverage"},
+			{Severity: "LOW", Category: "Governance", Description: "No SECURITY.md"},
+		},
+	}
+
+	profile := buildPackageProfile("mixed-findings", models.EcosystemNPM, result)
+
+	if !strings.Contains(profile, "Obfuscated postinstall script") {
+		t.Error("profile should include CRITICAL findings")
+	}
+	if !strings.Contains(profile, "Single maintainer") {
+		t.Error("profile should include HIGH findings")
+	}
+	if strings.Contains(profile, "Low test coverage") {
+		t.Error("profile should NOT include MEDIUM findings")
+	}
+	if strings.Contains(profile, "No SECURITY.md") {
+		t.Error("profile should NOT include LOW findings")
+	}
+}
+
 // Test: MatchAgainstKnownAttacks correctly filters by ecosystem and returns matches
 // Justification: Core matching logic must filter irrelevant attacks and return
 //                properly structured matches above the threshold
