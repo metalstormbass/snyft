@@ -1763,18 +1763,27 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 	}
 }
 
-// enrichWithAIAnalysis enhances the analysis result with AI-powered semantic analysis
-// This method is opt-in and only runs if the Claude API client is configured
+// enrichWithAIAnalysis enhances the analysis result with AI-powered semantic analysis.
+// This method is opt-in and only runs if the Claude API client is configured.
 //
 // Methodology:
-// 1. Semantic Analysis - Analyzes package metadata and behavior patterns to identify risk indicators
-// 2. Attack Pattern Matching - Compares observed behaviors to documented supply chain attack patterns
-// 3. Executive Summary - Generates a stakeholder-friendly explanation of the risk assessment
+//  1. Per-Category Analysis - Runs AI analysis for each of the 10 scoring categories,
+//     providing deeper contextual analysis beyond the rule-based checks. Results are
+//     stored as CategoryScore.AIInsight on each category score.
+//  2. Attack Pattern Matching - Compares observed behaviors to documented supply chain
+//     attack patterns (event-stream, ua-parser-js, coa, node-ipc, eslint-scope, etc.)
+//  3. Executive Summary - Generates a stakeholder-friendly explanation of the overall
+//     risk assessment.
 //
-// Justification: AI analysis provides contextual understanding of risk patterns that static rules may miss
-// Source: "Large Language Models for Software Supply Chain Security" (emerging research area)
+// The per-category analysis runs all 10 categories in parallel using Claude Haiku for
+// speed and cost efficiency. The attack matching and executive summary use Claude Sonnet
+// for higher quality cross-cutting analysis.
 //
-// The analysis is performed asynchronously with graceful degradation - failures do not block the scan
+// Justification: AI analysis provides contextual understanding of risk patterns that
+// static rules may miss - semantic interpretation of install scripts, contextual
+// assessment of ownership patterns, intelligent interpretation of anomalies.
+//
+// All failures are graceful - AI analysis never blocks or fails the main scan.
 func (a *Analyzer) enrichWithAIAnalysis(result *models.AnalysisResult) {
 	// Check if AI analysis is enabled (client initialized and not explicitly disabled)
 	if a.claudeClient == nil || !a.aiEnabled {
@@ -1790,11 +1799,18 @@ func (a *Analyzer) enrichWithAIAnalysis(result *models.AnalysisResult) {
 		AttackPatterns:    []models.AttackPatternMatch{},
 	}
 
-	// Context with timeout for AI operations (60 seconds max)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Extended timeout for AI operations: 10 parallel category analyses + attack matching + exec summary
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	// Run attack pattern matching (always enabled)
+	// Step 1: Run per-category AI analysis in parallel.
+	// This augments each CategoryScore with an AIInsight containing deeper contextual analysis.
+	// Results are written directly into result.SupplyChainScore.CategoryScores.*.AIInsight.
+	// Failures are graceful - a failed category analysis leaves AIInsight as nil.
+	checkAnalyzer := ai.NewCheckAnalyzer(a.claudeClient)
+	checkAnalyzer.AnalyzeAllCategories(ctx, result.Dependency.Name, result.Dependency.Ecosystem, result)
+
+	// Step 2: Run attack pattern matching (cross-cutting analysis)
 	attackPatterns, err := a.runAttackPatternMatching(ctx, result)
 	if err != nil {
 		// Log error but continue - don't fail the scan
@@ -1803,7 +1819,7 @@ func (a *Analyzer) enrichWithAIAnalysis(result *models.AnalysisResult) {
 		aiResult.AttackPatterns = attackPatterns
 	}
 
-	// Generate executive explanation (always enabled)
+	// Step 3: Generate executive explanation (cross-cutting summary)
 	execSummary, err := a.generateExecutiveExplanation(ctx, result)
 	if err != nil {
 		// Log error but continue
@@ -1812,7 +1828,7 @@ func (a *Analyzer) enrichWithAIAnalysis(result *models.AnalysisResult) {
 		aiResult.ExecutiveSummary = execSummary
 	}
 
-	// Calculate overall confidence based on successful analyses
+	// Calculate overall confidence based on successful cross-cutting analyses
 	confidenceCount := 0
 	confidenceSum := 0.0
 
@@ -1834,8 +1850,10 @@ func (a *Analyzer) enrichWithAIAnalysis(result *models.AnalysisResult) {
 		aiResult.OverallConfidence = confidenceSum / float64(confidenceCount)
 	}
 
-	// Only attach AI analysis if we got meaningful results
-	if len(aiResult.AttackPatterns) > 0 || aiResult.ExecutiveSummary != nil {
+	// Attach AI analysis result if we have cross-cutting findings.
+	// Note: per-category insights are stored on CategoryScore.AIInsight directly,
+	// not on AIAnalysisResult - they belong with their respective category scores.
+	if len(aiResult.AttackPatterns) > 0 || aiResult.ExecutiveSummary != nil || aiResult.AnalysisNotes != "" {
 		result.AIAnalysis = aiResult
 	}
 }
