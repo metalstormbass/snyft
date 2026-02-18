@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -1971,8 +1972,8 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 				t.Errorf("scoreHealth() RiskPoints = %d, want %d (evidence: %s)",
 					score.RiskPoints, tt.wantRisk, score.Evidence)
 			}
-			if score.RiskPoints == 0 && score.Score < 3 {
-				t.Errorf("scoreHealth() with 0 risk should have Score >= 3, got %d", score.Score)
+			if score.RiskPoints == 0 && score.Score < 2 {
+				t.Errorf("scoreHealth() with 0 risk should have Score >= 2 (max), got %d", score.Score)
 			}
 		})
 	}
@@ -2462,11 +2463,12 @@ func TestScoreHealth_CodeReviewVerification(t *testing.T) {
 
 			score := analyzer.scoreHealth(result)
 
-			// With bus factor and good CI, score should be at least 2
-			// If reviews give a point, should be 3
-			minExpectedScore := 2
+			// Score is now 0-2 (consistent with other categories).
+			// With bus factor + CI (2 internal points) → Score 1.
+			// With bus factor + CI + reviews (3 internal points) → Score 2.
+			minExpectedScore := 1 // bus factor + CI = 2 internal points → Score 1
 			if tt.expectsReviewPoint {
-				minExpectedScore = 3
+				minExpectedScore = 2 // bus factor + CI + reviews = 3 internal points → Score 2
 			}
 
 			if score.Score < minExpectedScore {
@@ -2536,11 +2538,272 @@ func TestScoreHealth_CIQualityAssessment(t *testing.T) {
 
 			score := analyzer.scoreHealth(result)
 
-			// Score should be at least 1 (bus factor)
-			// If CI quality gives a point, should be 2+
-			if tt.expectsPoint && score.Score < 2 {
+			// Score is now 0-2 (consistent with other categories).
+			// Bus factor alone = 1 internal point → Score 0.
+			// Bus factor + CI quality point = 2 internal points → Score 1.
+			if tt.expectsPoint && score.Score < 1 {
 				t.Errorf("scoreHealth() expected CI quality point but Score = %d (evidence: %s)",
 					score.Score, score.Evidence)
+			}
+		})
+	}
+}
+
+// Test: TopContributorPct gates bus factor point when concentration is extreme
+// Justification: A project with bus factor 3 but top contributor at 90%+ has nominal
+//                diversity but practical concentration — the bus factor metric alone is
+//                misleading and should not award a health point.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) — key person dependency
+// Methodology: Set bus factor >= 3 with TopContributorPct >= 90%, verify bus factor
+//              point is withheld
+// Result: No bus factor point when concentration >= 90%
+func TestScoreHealth_TopContributorConcentration(t *testing.T) {
+	analyzer := NewAnalyzer()
+	tests := []struct {
+		name              string
+		busFactor         int
+		topContributorPct float64
+		wantBusPoint      bool // Whether bus factor point should be awarded
+	}{
+		{
+			name:              "High bus factor, low concentration",
+			busFactor:         5,
+			topContributorPct: 30.0,
+			wantBusPoint:      true,
+		},
+		{
+			name:              "High bus factor, moderate concentration",
+			busFactor:         3,
+			topContributorPct: 80.0,
+			wantBusPoint:      true, // 80% is noted but not gated
+		},
+		{
+			name:              "High bus factor, extreme concentration",
+			busFactor:         4,
+			topContributorPct: 92.0,
+			wantBusPoint:      false, // 90%+ concentration negates bus factor
+		},
+		{
+			name:              "Bus factor 3, exactly 90% concentration",
+			busFactor:         3,
+			topContributorPct: 90.0,
+			wantBusPoint:      false, // >= 90% gated
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Only bus factor component, no CI or reviews
+			result := &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:         tt.busFactor,
+					TopContributorPct: tt.topContributorPct,
+					HasCI:             false,
+					CIQualityScore:    0,
+					CodeReviewRate:    0,
+				},
+			}
+
+			score := analyzer.scoreHealth(result)
+
+			if tt.wantBusPoint {
+				// With bus factor point but no CI/review points: 1 internal point → Score 0, RiskPoints 2
+				// (still high risk overall, but bus factor was acknowledged)
+				if score.RiskPoints != 2 {
+					t.Errorf("Expected RiskPoints 2 (bus factor point but no CI/reviews), got %d (evidence: %s)",
+						score.RiskPoints, score.Evidence)
+				}
+			} else {
+				// No bus factor point + no CI/review points: 0 internal points → Score 0, RiskPoints 2
+				if score.RiskPoints != 2 {
+					t.Errorf("Expected RiskPoints 2 (no points), got %d (evidence: %s)",
+						score.RiskPoints, score.Evidence)
+				}
+				// Verify evidence mentions concentration
+				if !strings.Contains(score.Evidence, "concentrated") {
+					t.Errorf("Expected evidence to mention concentration, got: %s", score.Evidence)
+				}
+			}
+		})
+	}
+}
+
+// Test: OSSF Scorecard fallback for bus factor, code review, and CI
+// Justification: When direct API calls fail (rate limiting, non-GitHub platforms),
+//                OSSF Scorecard checks provide verified supplementary data that should
+//                be used rather than penalizing the project for data unavailability.
+// Source: OSSF Scorecard methodology — https://github.com/ossf/scorecard
+// Methodology: Set bus factor/review/CI to 0, provide OSSF checks, verify fallback
+// Result: OSSF data awards points when direct data is unavailable
+func TestScoreHealth_OSSFFallback(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	tests := []struct {
+		name       string
+		ossfChecks map[string]int
+		wantRisk   int
+	}{
+		{
+			name: "OSSF provides all three signals",
+			ossfChecks: map[string]int{
+				"Contributors": 8,
+				"Code-Review":  9,
+				"CI-Tests":     8,
+			},
+			wantRisk: 0, // 3 OSSF points → low risk
+		},
+		{
+			name: "OSSF provides two signals",
+			ossfChecks: map[string]int{
+				"Contributors": 8,
+				"Code-Review":  7,
+				"CI-Tests":     3, // Low CI-Tests score, no point
+			},
+			wantRisk: 1, // 2 OSSF points → medium risk
+		},
+		{
+			name: "OSSF provides one signal",
+			ossfChecks: map[string]int{
+				"Contributors": 3, // Low
+				"Code-Review":  2, // Low
+				"CI-Tests":     9, // High
+			},
+			wantRisk: 2, // 1 OSSF point → high risk
+		},
+		{
+			name: "OSSF all low scores",
+			ossfChecks: map[string]int{
+				"Contributors": 3,
+				"Code-Review":  2,
+				"CI-Tests":     3,
+			},
+			wantRisk: 2, // No OSSF points → high risk
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					// No direct API data
+					BusFactor:      0,
+					Maintainers:    []string{},
+					CodeReviewRate: 0,
+					HasCI:          false,
+					CIQualityScore: 0,
+					// OSSF data available
+					OSSFChecks: tt.ossfChecks,
+				},
+			}
+
+			score := analyzer.scoreHealth(result)
+
+			if score.RiskPoints != tt.wantRisk {
+				t.Errorf("scoreHealth() with OSSF fallback: RiskPoints = %d, want %d (evidence: %s)",
+					score.RiskPoints, tt.wantRisk, score.Evidence)
+			}
+			if !score.Verified && len(tt.ossfChecks) > 0 {
+				t.Errorf("scoreHealth() should be verified when OSSF data is available")
+			}
+		})
+	}
+}
+
+// Test: CI presence awards a point even when quality is not assessed
+// Justification: CI presence is a meaningful supply chain signal even when the
+//                quality assessment fails (e.g., API rate limiting, non-GitHub platform).
+//                Having CI at all means automated builds are happening, reducing the
+//                window for unverified code to reach users.
+// Source: "Continuous Integration, Delivery and Deployment: A Systematic Review" (Shahin et al., 2017)
+// Methodology: Set HasCI=true with CIQualityScore=0, verify CI point is awarded
+// Result: CI presence earns a health point
+func TestScoreHealth_CIPresencePartialCredit(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	// CI present but quality not assessed (e.g., non-GitHub platform stub)
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			BusFactor:      3,         // Gets bus factor point
+			HasCI:          true,      // CI detected
+			CISystems:      []string{"GitHub Actions"},
+			CIQualityScore: 0,         // Quality not assessed
+			CIHasTests:     false,
+			CodeReviewRate: 80,        // Gets review point
+		},
+	}
+
+	score := analyzer.scoreHealth(result)
+
+	// Should get 3 points: bus factor + CI presence + reviews → Score 2, RiskPoints 0
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points (bus factor + CI presence + reviews), got %d (evidence: %s)",
+			score.RiskPoints, score.Evidence)
+	}
+	if score.Score != 2 {
+		t.Errorf("Expected Score 2 (max), got %d (evidence: %s)", score.Score, score.Evidence)
+	}
+}
+
+// Test: Score field is always in 0-2 range (consistent with other categories)
+// Justification: CategoryScore.Score is defined as 0-2 in models.go. All other
+//                scoring categories return 0-2. Health was the only one returning
+//                0-3 which broke the model contract.
+// Source: Internal model consistency requirement
+// Methodology: Test all combinations of internal points (0-3) and verify Score <= 2
+// Result: Score is always 0, 1, or 2
+func TestScoreHealth_ScoreRange(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	tests := []struct {
+		name   string
+		result *models.AnalysisResult
+	}{
+		{
+			name: "Zero internal points",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{},
+			},
+		},
+		{
+			name: "One internal point (bus factor only)",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor: 5,
+				},
+			},
+		},
+		{
+			name: "Two internal points (bus factor + CI)",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:      5,
+					CIQualityScore: 9,
+					HasCI:          true,
+				},
+			},
+		},
+		{
+			name: "Three internal points (all components)",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:           5,
+					CIQualityScore:      9,
+					HasCI:               true,
+					HasBranchProtection: true,
+					RequiredReviewers:   2,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := analyzer.scoreHealth(tt.result)
+			if score.Score < 0 || score.Score > 2 {
+				t.Errorf("scoreHealth() Score = %d, must be in 0-2 range", score.Score)
+			}
+			if score.RiskPoints < 0 || score.RiskPoints > 2 {
+				t.Errorf("scoreHealth() RiskPoints = %d, must be in 0-2 range", score.RiskPoints)
 			}
 		})
 	}

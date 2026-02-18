@@ -594,7 +594,78 @@ func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL s
 	if err == nil && ciQuality != nil {
 		result.Metadata.CIQualityScore = ciQuality.QualityScore
 		result.Metadata.CIHasTests = ciQuality.HasTests
+
+		// Supplement CI quality with workflow content analysis when the basic
+		// heuristic (file-name-only) reports no tests. The AnalyzeCIQuality
+		// method in fetcher only checks workflow file names for test keywords.
+		// Many projects name their CI workflow "build.yml" or "main.yml" but
+		// still run comprehensive tests inside. Checking actual content catches
+		// these cases.
+		if !ciQuality.HasTests && ciQuality.HasCI {
+			hasTestsFromContent := a.checkWorkflowContentForTests(gitClient, repoURL)
+			if hasTestsFromContent {
+				result.Metadata.CIHasTests = true
+				// Boost CI quality score if tests detected in content but not filenames
+				// Base CI score is 3 (CI exists) + 1-2 (workflow count). Add 4 for tests.
+				if result.Metadata.CIQualityScore < 7 {
+					result.Metadata.CIQualityScore = result.Metadata.CIQualityScore + 4
+					if result.Metadata.CIQualityScore > 10 {
+						result.Metadata.CIQualityScore = 10
+					}
+				}
+			}
+		}
 	}
+}
+
+// checkWorkflowContentForTests fetches actual CI workflow file content and checks
+// for test-related commands/steps. This supplements the filename-only heuristic in
+// fetcher.AnalyzeCIQuality which misses workflows named "build.yml" or "main.yml"
+// that still run tests.
+//
+// Test: CI workflow content analysis for test detection
+// Justification: CI quality assessment based only on workflow filenames produces false
+//                negatives for projects that name their CI workflow generically (e.g.,
+//                "build.yml", "main.yml") but run comprehensive test suites inside.
+// Source: OSSF Scorecard "CI-Tests" methodology
+// Methodology: Fetch common workflow file paths and search content for test commands
+// Result: Returns true if any workflow content contains test-related patterns
+func (a *Analyzer) checkWorkflowContentForTests(gitClient fetcher.GitPlatformClient, repoURL string) bool {
+	// Common workflow file paths to check
+	workflowPaths := []string{
+		".github/workflows/build.yml",
+		".github/workflows/main.yml",
+		".github/workflows/ci.yml",
+		".github/workflows/push.yml",
+		".github/workflows/build.yaml",
+		".github/workflows/main.yaml",
+		".github/workflows/ci.yaml",
+	}
+
+	// Test-related patterns in workflow content
+	testPatterns := []string{
+		"npm test", "npm run test", "yarn test", "pnpm test",
+		"pytest", "python -m pytest", "tox",
+		"mvn test", "gradle test", "./gradlew test",
+		"go test", "cargo test", "dotnet test",
+		"jest", "mocha", "vitest", "playwright",
+		"run: test", "run: make test",
+	}
+
+	for _, path := range workflowPaths {
+		content, err := gitClient.GetFileContent(repoURL, path)
+		if err != nil || content == "" {
+			continue
+		}
+
+		lower := strings.ToLower(content)
+		for _, pattern := range testPatterns {
+			if strings.Contains(lower, pattern) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL string) {
@@ -1637,125 +1708,209 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 }
 
 // scoreHealth: bus factor/review process/CI (0-2 pts)
-// Score: 0 = high bus factor/no CI/no reviews (high risk)
-//        1 = moderate indicators (medium risk)
-//        2 = low bus factor with CI and reviews (low risk)
+//
+// Test: Repository health scoring for supply chain risk
+// Justification: Low bus factor, absent code review, and missing CI each create vectors
+//                for undetected compromise. A single maintainer is a single point of failure;
+//                unreviewed code allows malicious commits; no CI means no automated verification.
+// Source: "Measuring the Health of Open Source Software Ecosystems" (Manikas & Hansen, 2013)
+//         "Backstabber's Knife Collection" (Ohm et al., 2020) - maintainer compromise patterns
+//         OSSF Scorecard methodology - https://github.com/ossf/scorecard
+// Methodology: Three-component scoring (bus factor, code review, CI quality) with OSSF
+//              Scorecard supplementation when direct API data is unavailable. TopContributorPct
+//              gates the bus factor point to prevent inflated bus factor from masking concentration.
+// Result:
+//   - 0 risk points (best): Distributed development (bus factor >= 3, <90% concentration),
+//                            code reviews enforced, high-quality CI with tests
+//   - 1 risk point (moderate): Two of three components satisfied
+//   - 2 risk points (worst): At most one component satisfied (concentrated development,
+//                             no reviews, no CI)
 func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategoryScore {
 	points := 0
 	evidence := []string{}
 	verified := false
 
 	// Component 1: Bus Factor (from commit distribution)
-	// Low bus factor = concentrated development = higher risk
+	//
+	// Justification: Low bus factor = concentrated development = single point of failure.
+	// A bus factor >= 3 indicates distributed knowledge, but only if commit concentration
+	// is not extreme. A project with bus factor 3 but top contributor at 90%+ has nominal
+	// diversity but practical concentration — the bus factor point is revoked.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — key person dependency
 	busFactor := result.Metadata.BusFactor
 	if busFactor > 0 {
 		verified = true
 		if busFactor >= 3 {
-			// Multiple contributors (low risk)
-			points++
-			evidence = append(evidence, fmt.Sprintf("Bus factor: %d", busFactor))
+			// Check top contributor concentration: a high bus factor is meaningless
+			// if one person still does 90%+ of all commits
+			if result.Metadata.TopContributorPct >= 90 {
+				// Nominal diversity but practical concentration — no point awarded
+				evidence = append(evidence, fmt.Sprintf("Bus factor: %d but top contributor: %.0f%% (concentrated)", busFactor, result.Metadata.TopContributorPct))
+			} else {
+				// Genuinely distributed development
+				points++
+				evidence = append(evidence, fmt.Sprintf("Bus factor: %d", busFactor))
+				if result.Metadata.TopContributorPct >= 80 {
+					evidence = append(evidence, fmt.Sprintf("Top contributor: %.0f%% of commits", result.Metadata.TopContributorPct))
+				}
+			}
 		} else if busFactor == 2 {
-			// Moderate risk - 2 contributors
 			evidence = append(evidence, fmt.Sprintf("Bus factor: %d (moderate)", busFactor))
 		} else {
-			// High risk - single contributor
 			evidence = append(evidence, fmt.Sprintf("Bus factor: %d (high risk)", busFactor))
 		}
-
-		// Additional evidence: top contributor concentration
-		if result.Metadata.TopContributorPct > 0 {
-			if result.Metadata.TopContributorPct >= 80 {
-				evidence = append(evidence, fmt.Sprintf("Top contributor: %.0f%% of commits", result.Metadata.TopContributorPct))
+	} else {
+		// Fallback 1: OSSF Scorecard "Contributors" or "Maintained" checks
+		// These are available when direct API calls fail (e.g., rate limiting)
+		ossfContribScore := 0
+		if result.Metadata.OSSFChecks != nil {
+			if cs, ok := result.Metadata.OSSFChecks["Contributors"]; ok {
+				ossfContribScore = cs
 			}
 		}
-	} else {
-		// Fallback to maintainer count if bus factor unavailable
-		maintainerCount := len(result.Metadata.Maintainers)
-		if maintainerCount >= 3 {
+		if ossfContribScore >= 7 {
 			points++
-			evidence = append(evidence, fmt.Sprintf("%d maintainers", maintainerCount))
+			evidence = append(evidence, fmt.Sprintf("OSSF Contributors: %d/10", ossfContribScore))
 			verified = true
-		} else if maintainerCount > 0 {
-			evidence = append(evidence, fmt.Sprintf("Only %d maintainer(s)", maintainerCount))
+		} else if ossfContribScore > 0 {
+			evidence = append(evidence, fmt.Sprintf("OSSF Contributors: %d/10 (low)", ossfContribScore))
 			verified = true
+		} else {
+			// Fallback 2: maintainer count from registry
+			maintainerCount := len(result.Metadata.Maintainers)
+			if maintainerCount >= 3 {
+				points++
+				evidence = append(evidence, fmt.Sprintf("%d maintainers", maintainerCount))
+				verified = true
+			} else if maintainerCount > 0 {
+				evidence = append(evidence, fmt.Sprintf("Only %d maintainer(s)", maintainerCount))
+				verified = true
+			}
 		}
 	}
 
 	// Component 2: Code Review Process
-	// No reviews = higher risk
+	//
+	// Justification: Unreviewed code is the primary vector for malicious commit injection.
+	// Branch protection with required reviewers is the gold standard; high PR review rate
+	// is a strong signal. When direct API data is unavailable (e.g., GitLab/Bitbucket stubs
+	// or rate limiting), OSSF Scorecard "Code-Review" check supplements.
+	// Source: "Expectations, Outcomes, and Challenges Of Modern Code Review" (Bacchelli & Bird, 2013)
+	//         "Modern Code Review: A Case Study at Google" (Sadowski et al., 2018)
 	if result.Metadata.HasBranchProtection && result.Metadata.RequiredReviewers > 0 {
-		// Branch protection with required reviews (best case)
 		points++
 		evidence = append(evidence, fmt.Sprintf("%d required reviewers", result.Metadata.RequiredReviewers))
 		verified = true
 	} else if result.Metadata.CodeReviewRate > 0 {
-		// Some code reviews happening
 		if result.Metadata.CodeReviewRate >= 75 {
-			// Most PRs reviewed (good)
 			points++
 			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed", result.Metadata.CodeReviewRate))
 		} else if result.Metadata.CodeReviewRate >= 50 {
-			// Some PRs reviewed (moderate)
 			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (moderate)", result.Metadata.CodeReviewRate))
 		} else {
-			// Few PRs reviewed (low)
 			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (low)", result.Metadata.CodeReviewRate))
 		}
 		verified = true
 	} else {
-		evidence = append(evidence, "No code review process detected")
+		// Fallback: OSSF Scorecard "Code-Review" check
+		ossfReviewScore := 0
+		if result.Metadata.OSSFChecks != nil {
+			if rs, ok := result.Metadata.OSSFChecks["Code-Review"]; ok {
+				ossfReviewScore = rs
+			}
+		}
+		if ossfReviewScore >= 7 {
+			points++
+			evidence = append(evidence, fmt.Sprintf("OSSF Code-Review: %d/10", ossfReviewScore))
+			verified = true
+		} else if ossfReviewScore > 0 {
+			evidence = append(evidence, fmt.Sprintf("OSSF Code-Review: %d/10 (low)", ossfReviewScore))
+			verified = true
+		} else {
+			evidence = append(evidence, "No code review process detected")
+		}
 	}
 
 	// Component 3: CI Quality
-	// No CI or low-quality CI = higher risk
-	if result.Metadata.CIQualityScore > 0 {
-		verified = true
-		if result.Metadata.CIQualityScore >= 7 {
-			// High-quality CI with tests
-			points++
-			evidence = append(evidence, fmt.Sprintf("CI quality: %d/10", result.Metadata.CIQualityScore))
-			if result.Metadata.CIHasTests {
-				evidence = append(evidence, "CI includes tests")
-			}
-		} else if result.Metadata.CIQualityScore >= 4 {
-			// Moderate CI
-			evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (moderate)", result.Metadata.CIQualityScore))
-		} else {
-			// Basic CI only
-			evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (basic)", result.Metadata.CIQualityScore))
+	//
+	// Justification: CI with automated tests catches malicious or buggy code before release.
+	// High-quality CI (score >= 7) earns a point; CI presence without quality assessment
+	// also earns a point since CI existence is itself a meaningful supply chain signal.
+	// When neither direct CI data nor quality is available, OSSF "CI-Tests" supplements.
+	// Source: "Continuous Integration, Delivery and Deployment: A Systematic Review" (Shahin et al., 2017)
+	if result.Metadata.CIQualityScore >= 7 {
+		// High-quality CI with tests
+		points++
+		evidence = append(evidence, fmt.Sprintf("CI quality: %d/10", result.Metadata.CIQualityScore))
+		if result.Metadata.CIHasTests {
+			evidence = append(evidence, "CI includes tests")
 		}
+		verified = true
+	} else if result.Metadata.CIQualityScore >= 4 {
+		// Moderate CI — not enough for a point but acknowledged
+		evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (moderate)", result.Metadata.CIQualityScore))
+		verified = true
+	} else if result.Metadata.CIQualityScore > 0 {
+		// Basic CI only
+		evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (basic)", result.Metadata.CIQualityScore))
+		verified = true
 	} else if result.Metadata.HasCI {
-		// CI detected but quality not assessed
-		evidence = append(evidence, fmt.Sprintf("CI: %v", result.Metadata.CISystems))
+		// CI detected but quality not assessed (e.g., API failure or non-GitHub platform).
+		// CI presence is still a meaningful signal for supply chain integrity —
+		// automated builds reduce the window for unverified code to reach users.
+		points++
+		evidence = append(evidence, fmt.Sprintf("CI detected: %v (quality not assessed)", result.Metadata.CISystems))
 		verified = true
 	} else {
-		evidence = append(evidence, "No CI detected")
+		// Fallback: OSSF Scorecard "CI-Tests" check
+		ossfCIScore := 0
+		if result.Metadata.OSSFChecks != nil {
+			if cs, ok := result.Metadata.OSSFChecks["CI-Tests"]; ok {
+				ossfCIScore = cs
+			}
+		}
+		if ossfCIScore >= 7 {
+			points++
+			evidence = append(evidence, fmt.Sprintf("OSSF CI-Tests: %d/10", ossfCIScore))
+			verified = true
+		} else if ossfCIScore > 0 {
+			evidence = append(evidence, fmt.Sprintf("OSSF CI-Tests: %d/10 (low)", ossfCIScore))
+			verified = true
+		} else {
+			evidence = append(evidence, "No CI detected")
+		}
 	}
 
-	// Calculate risk points based on total points earned
-	// Points earned represents good indicators, so we invert for risk
-	// 0-1 points earned = high risk (2 risk points)
-	// 2 points earned = medium risk (1 risk point)
-	// 3+ points earned = low risk (0 risk points)
-	riskPoints := 2
-	if points >= 3 {
+	// Map internal points (0-3) to CategoryScore fields (0-2 range)
+	// All other scoring categories use Score 0-2; health must be consistent.
+	// 0-1 internal points = high risk (Score 0, RiskPoints 2)
+	// 2 internal points   = moderate risk (Score 1, RiskPoints 1)
+	// 3 internal points   = low risk (Score 2, RiskPoints 0)
+	var score, riskPoints int
+	switch {
+	case points >= 3:
+		score = 2
 		riskPoints = 0
-	} else if points >= 2 {
+	case points >= 2:
+		score = 1
 		riskPoints = 1
+	default:
+		score = 0
+		riskPoints = 2
 	}
 
-	// Determine description
 	description := "Poor health: high bus factor, no CI, or no reviews"
-	if points >= 3 {
+	switch {
+	case points >= 3:
 		description = "Good health: distributed development, CI with tests, code reviews"
-	} else if points >= 2 {
+	case points >= 2:
 		description = "Moderate health: some good practices but gaps remain"
-	} else if points >= 1 {
+	case points >= 1:
 		description = "Limited health: few contributors or missing CI/reviews"
 	}
 
 	return models.CategoryScore{
-		Score:       points,
+		Score:       score,
 		RiskPoints:  riskPoints,
 		Description: description,
 		Evidence:    strings.Join(evidence, "; "),
