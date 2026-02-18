@@ -16,18 +16,6 @@ Unlike vulnerability scanners focused on CVEs, Snyft assesses the **likelihood o
 go install github.com/metalstormbass/snyft@latest
 ```
 
-### Download Pre-built Binary
-
-Download from the [releases page](https://github.com/metalstormbass/snyft/releases):
-
-- **macOS**: `snyft_[version]_Darwin_x86_64.tar.gz` or `snyft_[version]_Darwin_arm64.tar.gz`
-- **Linux**: `snyft_[version]_Linux_x86_64.tar.gz` or `snyft_[version]_Linux_arm64.tar.gz`
-
-```bash
-tar -xzf snyft_*.tar.gz
-./snyft version
-```
-
 ### Build from Source
 
 Requires Go 1.24+.
