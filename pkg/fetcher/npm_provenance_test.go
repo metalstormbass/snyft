@@ -31,8 +31,10 @@ func TestCheckNPMProvenance_WithAttestation(t *testing.T) {
 					Shasum:    "abc123def456",
 					Integrity: "sha512-AAAA",
 					Attestations: &NPMAttestation{
-						URL:           "https://registry.npmjs.org/-/npm/v1/attestations/sigstore-enabled-pkg@2.0.0",
-						ProvenanceURL: "https://registry.npmjs.org/-/npm/v1/attestations/sigstore-enabled-pkg@2.0.0/provenance",
+						URL: "https://registry.npmjs.org/-/npm/v1/attestations/sigstore-enabled-pkg@2.0.0",
+						Provenance: &NPMProvenanceInfo{
+							PredicateType: "https://slsa.dev/provenance/v1",
+						},
 					},
 				},
 			},
@@ -59,7 +61,7 @@ func TestCheckNPMProvenance_WithAttestation(t *testing.T) {
 		t.Error("CheckNPMProvenance() = false, want true for package with attestation")
 	}
 
-	expectedURL := "https://registry.npmjs.org/-/npm/v1/attestations/sigstore-enabled-pkg@2.0.0/provenance"
+	expectedURL := "https://registry.npmjs.org/-/npm/v1/attestations/sigstore-enabled-pkg@2.0.0"
 	if provenanceURL != expectedURL {
 		t.Errorf("CheckNPMProvenance() provenanceURL = %q, want %q", provenanceURL, expectedURL)
 	}
@@ -116,14 +118,14 @@ func TestCheckNPMProvenance_NoAttestation(t *testing.T) {
 	}
 }
 
-// Test: CheckNPMProvenance with attestation URL but empty provenance URL
-// Justification: Some packages have partial attestation data — the attestation
-//                object exists but the provenance_url field is empty, which
-//                means provenance cannot be verified
+// Test: CheckNPMProvenance with empty attestation URL
+// Justification: Some packages may have a malformed attestation object where
+//                the URL field is empty, which means the attestation bundle
+//                cannot be retrieved for verification
 // Source: npm registry API — attestations object structure
-// Methodology: Mock response with non-nil Attestations but empty ProvenanceURL
-// Result: Returns false — partial attestation without provenance URL is insufficient
-func TestCheckNPMProvenance_AttestationWithoutProvenanceURL(t *testing.T) {
+// Methodology: Mock response with non-nil Attestations but empty URL
+// Result: Returns false — attestation without URL is insufficient
+func TestCheckNPMProvenance_AttestationWithoutURL(t *testing.T) {
 	npmResp := NPMRegistryResponse{
 		Name: "partial-attest-pkg",
 		DistTags: NPMDistTags{
@@ -137,8 +139,7 @@ func TestCheckNPMProvenance_AttestationWithoutProvenanceURL(t *testing.T) {
 					Shasum:    "bbb222",
 					Integrity: "sha512-CCCC",
 					Attestations: &NPMAttestation{
-						URL:           "https://registry.npmjs.org/-/npm/v1/attestations/partial-attest-pkg@1.0.0",
-						ProvenanceURL: "", // Empty provenance URL
+						URL: "", // Empty attestation URL
 					},
 				},
 			},
@@ -162,7 +163,7 @@ func TestCheckNPMProvenance_AttestationWithoutProvenanceURL(t *testing.T) {
 	}
 
 	if hasProvenance {
-		t.Error("CheckNPMProvenance() = true, want false when provenance URL is empty")
+		t.Error("CheckNPMProvenance() = true, want false when attestation URL is empty")
 	}
 
 	if provenanceURL != "" {
@@ -236,8 +237,10 @@ func TestCheckNPMProvenance_MissingLatestVersion(t *testing.T) {
 				Dist: NPMDist{
 					Tarball: "https://registry.npmjs.org/missing-latest-pkg/-/missing-latest-pkg-2.0.0.tgz",
 					Attestations: &NPMAttestation{
-						URL:           "https://registry.npmjs.org/...",
-						ProvenanceURL: "https://registry.npmjs.org/.../provenance",
+						URL: "https://registry.npmjs.org/-/npm/v1/attestations/missing-latest-pkg@2.0.0",
+						Provenance: &NPMProvenanceInfo{
+							PredicateType: "https://slsa.dev/provenance/v1",
+						},
 					},
 				},
 			},

@@ -597,20 +597,29 @@ func (c *GitHubClient) checkSLSAAttestation(owner, repo string) (bool, string) {
 		".slsa-provenance.json",
 		".github/workflows/slsa-generic-generator.yml",
 		".github/workflows/slsa.yml",
+		".github/workflows/slsa-goreleaser.yml",
+		".github/workflows/provenance.yml",
+		".github/workflows/attest.yml",
 	}
 
 	for _, file := range slsaFiles {
 		if c.fileExists(owner, repo, file) {
-			// If SLSA workflow exists, assume at least SLSA Level 2
 			return true, "SLSA_LEVEL_2"
 		}
 	}
 
-	// Check GitHub Actions for SLSA generator usage
-	// This would require parsing workflow files - simplified version
-	if c.fileExists(owner, repo, ".github/workflows") {
-		// If workflows exist, check for SLSA generator references
-		return false, ""
+	// Check workflow filenames for SLSA/attestation patterns
+	workflows, err := c.getWorkflowFiles(owner, repo)
+	if err == nil {
+		slsaKeywords := []string{"slsa", "provenance", "attest", "supply-chain", "supply_chain"}
+		for _, wf := range workflows {
+			lower := strings.ToLower(wf)
+			for _, keyword := range slsaKeywords {
+				if strings.Contains(lower, keyword) {
+					return true, "SLSA_LEVEL_2"
+				}
+			}
+		}
 	}
 
 	return false, ""
