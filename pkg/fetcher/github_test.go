@@ -2,6 +2,7 @@ package fetcher
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1144,5 +1145,165 @@ func TestNewGitHubClientTimeout(t *testing.T) {
 	client := NewGitHubClient()
 	if client.httpClient.Timeout != 10*time.Second {
 		t.Errorf("client timeout = %v, want 10s", client.httpClient.Timeout)
+	}
+}
+
+// Test: GetPullRequestStats counts merged PRs and tracks review rate
+// Justification: Code review is a critical defense against supply chain attacks. A package
+//                where most PRs merge without review is much easier to compromise – an
+//                attacker who gains commit access can push malicious code unchecked.
+// Source: OSSF Scorecard "Code-Review" check – https://github.com/ossf/scorecard
+// Methodology: Mock the pulls API with known merged/reviewed patterns; verify stats.
+// Result: MergedPRs, PRsWithReviews, and CodeReviewRate match expected values.
+func TestGetPullRequestStats(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name             string
+		prs              []GitHubPullRequest
+		reviewedPRs      map[int]bool // PR number -> has reviews
+		wantMergedPRs    int
+		wantWithReviews  int
+		wantReviewRateGT float64 // rate should be greater than this
+	}{
+		{
+			name: "all PRs reviewed",
+			prs: []GitHubPullRequest{
+				{Number: 1, State: "closed", MergedAt: &now},
+				{Number: 2, State: "closed", MergedAt: &now},
+			},
+			reviewedPRs:      map[int]bool{1: true, 2: true},
+			wantMergedPRs:    2,
+			wantWithReviews:  2,
+			wantReviewRateGT: 99.0,
+		},
+		{
+			name: "no PRs reviewed",
+			prs: []GitHubPullRequest{
+				{Number: 1, State: "closed", MergedAt: &now},
+				{Number: 2, State: "closed", MergedAt: &now},
+			},
+			reviewedPRs:      map[int]bool{},
+			wantMergedPRs:    2,
+			wantWithReviews:  0,
+			wantReviewRateGT: -1.0, // 0%
+		},
+		{
+			name: "mixed: closed but not merged PRs ignored",
+			prs: []GitHubPullRequest{
+				{Number: 1, State: "closed", MergedAt: &now},
+				{Number: 2, State: "closed", MergedAt: nil}, // closed, not merged
+			},
+			reviewedPRs:      map[int]bool{1: true},
+			wantMergedPRs:    1,
+			wantWithReviews:  1,
+			wantReviewRateGT: 99.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+
+				// Handle PR list
+				if strings.Contains(r.URL.Path, "/pulls") && !strings.Contains(r.URL.Path, "/reviews") {
+					_ = json.NewEncoder(w).Encode(tt.prs)
+					return
+				}
+				// Handle review check for individual PRs
+				if strings.Contains(r.URL.Path, "/reviews") {
+					// Extract PR number from path
+					for prNum, hasReviews := range tt.reviewedPRs {
+						if strings.Contains(r.URL.Path, fmt.Sprintf("/pulls/%d/", prNum)) && hasReviews {
+							_ = json.NewEncoder(w).Encode([]GitHubReview{{ID: 1, State: "APPROVED"}})
+							return
+						}
+					}
+					_ = json.NewEncoder(w).Encode([]GitHubReview{})
+					return
+				}
+				// Handle repo info (for branch protection)
+				if strings.Contains(r.URL.Path, "/repos/") && !strings.Contains(r.URL.Path, "/pulls") {
+					repo := GitHubRepository{DefaultBranch: "main"}
+					_ = json.NewEncoder(w).Encode(repo)
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
+			}
+
+			stats, err := client.GetPullRequestStats("https://github.com/owner/repo")
+			if err != nil {
+				t.Fatalf("GetPullRequestStats() unexpected error: %v", err)
+			}
+
+			if stats.MergedPRs != tt.wantMergedPRs {
+				t.Errorf("MergedPRs = %d, want %d", stats.MergedPRs, tt.wantMergedPRs)
+			}
+			if stats.PRsWithReviews != tt.wantWithReviews {
+				t.Errorf("PRsWithReviews = %d, want %d", stats.PRsWithReviews, tt.wantWithReviews)
+			}
+			if stats.CodeReviewRate <= tt.wantReviewRateGT && tt.wantReviewRateGT >= 0 {
+				t.Errorf("CodeReviewRate = %.1f, want > %.1f", stats.CodeReviewRate, tt.wantReviewRateGT)
+			}
+		})
+	}
+}
+
+// Test: parseGitHubURL correctly handles real-world repository URLs from mike-libraries packages
+// Justification: Repository URLs in npm/PyPI metadata use varied formats (git+https://,
+//                trailing .git). Parsing must handle all real-world forms to correctly
+//                identify the repo for supply chain analysis.
+// Source: npm registry repository field formats
+// Methodology: Call parseGitHubURL with canonical URLs as they appear in registry metadata.
+// Result: Each URL parses to the correct owner/repo pair.
+func TestParseGitHubURL_RealPackages(t *testing.T) {
+	tests := []struct {
+		pkg   string
+		url   string
+		owner string
+		repo  string
+	}{
+		// JavaScript packages (npm registry format: git+https://)
+		{"express", "git+https://github.com/expressjs/express.git", "expressjs", "express"},
+		{"axios", "git+https://github.com/axios/axios.git", "axios", "axios"},
+		{"lodash", "git+https://github.com/lodash/lodash.git", "lodash", "lodash"},
+		{"helmet", "git+https://github.com/helmetjs/helmet.git", "helmetjs", "helmet"},
+		{"jsonwebtoken", "git+https://github.com/auth0/node-jsonwebtoken.git", "auth0", "node-jsonwebtoken"},
+		{"socket.io", "git+https://github.com/socketio/socket.io.git", "socketio", "socket.io"},
+		{"mongoose", "git+https://github.com/Automattic/mongoose.git", "Automattic", "mongoose"},
+		{"pino", "git+https://github.com/pinojs/pino.git", "pinojs", "pino"},
+
+		// Python packages (PyPI format: plain HTTPS)
+		{"Flask", "https://github.com/pallets/flask", "pallets", "flask"},
+		{"requests", "https://github.com/psf/requests", "psf", "requests"},
+		{"pandas", "https://github.com/pandas-dev/pandas", "pandas-dev", "pandas"},
+		{"FastAPI", "https://github.com/tiangolo/fastapi", "tiangolo", "fastapi"},
+		{"SQLAlchemy", "https://github.com/sqlalchemy/sqlalchemy", "sqlalchemy", "sqlalchemy"},
+		{"cryptography", "https://github.com/pyca/cryptography", "pyca", "cryptography"},
+		{"celery", "https://github.com/celery/celery", "celery", "celery"},
+		{"pydantic", "https://github.com/pydantic/pydantic", "pydantic", "pydantic"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			owner, repo, err := parseGitHubURL(tt.url)
+			if err != nil {
+				t.Fatalf("parseGitHubURL(%q) [%s] unexpected error: %v", tt.url, tt.pkg, err)
+			}
+			if owner != tt.owner {
+				t.Errorf("owner = %q, want %q", owner, tt.owner)
+			}
+			if repo != tt.repo {
+				t.Errorf("repo = %q, want %q", repo, tt.repo)
+			}
+		})
 	}
 }

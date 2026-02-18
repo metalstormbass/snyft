@@ -548,16 +548,126 @@ func TestGetProvenanceInfo_InvalidURL(t *testing.T) {
 	}
 }
 
-// Test: GetProvenanceInfo returns clean result for repo with no provenance indicators
-// Justification: Ensures the absence of provenance indicators is correctly reported as
-//                all-false/zero values, not as errors — many legitimate packages simply
-//                haven't adopted SLSA/Sigstore yet.
+// Test: Real-world provenance patterns for packages from mike-libraries
+// Justification: Real-package provenance profiles exercise the detection logic with
+//                realistic release asset names and file structures seen in popular
+//                open-source projects.
+// Source: npm/PyPI registry metadata for well-known packages
+// Methodology: Simulate the release asset patterns of well-known packages using mocked
+//              HTTP; verify checkSignedReleases returns accurate counts.
+// Result: Each simulated package profile returns the expected signed/total counts.
+func TestCheckSignedReleases_RealPackageProfiles(t *testing.T) {
+	tests := []struct {
+		pkg             string
+		releases        []GitHubRelease
+		wantSignedCount int
+		wantTotalCount  int
+	}{
+		{
+			// cryptography (pyca/cryptography) signs every release with .asc
+			pkg: "cryptography",
+			releases: []GitHubRelease{
+				{TagName: "42.0.0", Assets: []GitHubAsset{
+					{Name: "cryptography-42.0.0.tar.gz"},
+					{Name: "cryptography-42.0.0.tar.gz.asc"},
+				}},
+				{TagName: "41.0.0", Assets: []GitHubAsset{
+					{Name: "cryptography-41.0.0.tar.gz"},
+					{Name: "cryptography-41.0.0.tar.gz.asc"},
+				}},
+			},
+			wantSignedCount: 2,
+			wantTotalCount:  2,
+		},
+		{
+			// express (expressjs/express) — no signature assets in releases
+			pkg: "express",
+			releases: []GitHubRelease{
+				{TagName: "4.18.2", Assets: []GitHubAsset{}},
+				{TagName: "4.18.1", Assets: []GitHubAsset{}},
+			},
+			wantSignedCount: 0,
+			wantTotalCount:  2,
+		},
+		{
+			// lodash (lodash/lodash) — no release assets at all (npm-only)
+			pkg:             "lodash",
+			releases:        []GitHubRelease{},
+			wantSignedCount: 0,
+			wantTotalCount:  0,
+		},
+		{
+			// Pattern: project provides SHA256SUMS (like many Go/Rust tools)
+			pkg: "gunicorn-style-checksums",
+			releases: []GitHubRelease{
+				{TagName: "v23.0.0", Assets: []GitHubAsset{
+					{Name: "gunicorn-23.0.0.tar.gz"},
+					{Name: "SHA256SUMS"},
+				}},
+				{TagName: "v22.0.0", Assets: []GitHubAsset{
+					{Name: "gunicorn-22.0.0.tar.gz"},
+				}},
+			},
+			wantSignedCount: 1,
+			wantTotalCount:  2,
+		},
+		{
+			// Pattern: mixed signing across releases (common in projects
+			// that adopted signing after initial releases)
+			pkg: "celery-style-mixed",
+			releases: []GitHubRelease{
+				{TagName: "5.3.6", Assets: []GitHubAsset{
+					{Name: "celery-5.3.6.tar.gz"},
+					{Name: "celery-5.3.6.tar.gz.sig"},
+				}},
+				{TagName: "5.3.5", Assets: []GitHubAsset{
+					{Name: "celery-5.3.5.tar.gz"},
+					{Name: "celery-5.3.5.tar.gz.sig"},
+				}},
+				{TagName: "5.2.0", Assets: []GitHubAsset{
+					{Name: "celery-5.2.0.tar.gz"},
+				}},
+			},
+			wantSignedCount: 2,
+			wantTotalCount:  3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pkg, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tt.releases)
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
+			}
+
+			gotSigned, gotTotal := client.checkSignedReleases("owner", "repo")
+			if gotSigned != tt.wantSignedCount {
+				t.Errorf("[%s] signedCount = %d, want %d", tt.pkg, gotSigned, tt.wantSignedCount)
+			}
+			if gotTotal != tt.wantTotalCount {
+				t.Errorf("[%s] totalCount = %d, want %d", tt.pkg, gotTotal, tt.wantTotalCount)
+			}
+		})
+	}
+}
+
+// Test: GetProvenanceInfo for a repo with no provenance signals
+// Justification: A repo with zero provenance signals represents the common case for
+//                packages with poor supply chain hygiene. We must return a valid
+//                (zero-value) ProvenanceInfo without errors.
 // Source: OSSF Scorecard methodology – https://github.com/ossf/scorecard
-// Methodology: Mock all GitHub API endpoints to return 404/empty for every check.
+// Methodology: Mock a server that returns 404 for all file checks and empty releases.
 // Result: All provenance fields are false/zero.
-func TestGetProvenanceInfo_NoIndicators(t *testing.T) {
+func TestGetProvenanceInfo_NoSignals(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/releases") {
+		if strings.Contains(r.URL.Path, "/releases") && r.Method == "GET" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode([]GitHubRelease{})
 			return
