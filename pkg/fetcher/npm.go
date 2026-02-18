@@ -26,16 +26,17 @@ type NPMClient struct {
 
 // NPMPackage represents package information from npm
 type NPMPackage struct {
-	Name          string
-	Version       string
-	LatestVersion string
-	RepositoryURL string
-	Homepage      string
-	License       string
-	Downloads     int64
-	PublishedAt   time.Time
-	Maintainers   []string
-	Scripts       map[string]string // Install-time scripts (postinstall, preinstall, etc.)
+	Name           string
+	Version        string
+	LatestVersion  string
+	RepositoryURL  string
+	Homepage       string
+	License        string
+	Downloads      int64
+	PublishedAt    time.Time
+	Maintainers    []string
+	Scripts        map[string]string // Install-time scripts (postinstall, preinstall, etc.)
+	DirectDepCount int               // Number of direct dependencies declared in the published version
 }
 
 // NewNPMClient creates a new npm registry client
@@ -107,6 +108,7 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 				pkg.Scripts[k] = string(raw)
 			}
 		}
+		pkg.DirectDepCount = len(latest.Dependencies) + len(latest.PeerDependencies)
 	}
 
 	// Get published time for the latest version
@@ -183,9 +185,11 @@ type NPMVersionDetails struct {
 	Version string `json:"version"`
 	// Scripts values can be strings OR nested objects (e.g. in old joi versions).
 	// Using json.RawMessage avoids an unmarshal failure on non-string values.
-	Scripts     map[string]json.RawMessage `json:"scripts"`
-	Dist        NPMDist                    `json:"dist"`
-	Maintainers []NPMMaintainer            `json:"maintainers"`
+	Scripts          map[string]json.RawMessage `json:"scripts"`
+	Dist             NPMDist                    `json:"dist"`
+	Maintainers      []NPMMaintainer            `json:"maintainers"`
+	Dependencies     map[string]string          `json:"dependencies"`
+	PeerDependencies map[string]string          `json:"peerDependencies"`
 }
 
 type NPMDist struct {
