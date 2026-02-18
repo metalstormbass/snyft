@@ -214,6 +214,16 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 		pkg.RepositoryURL = normalizeSCMURL(raw)
 	}
 
+	// Multi-module Maven projects often store SCM only in the parent POM.
+	// If no SCM was found locally, fetch the parent POM and check there.
+	// Source: Maven POM reference — <scm> is inherited from parent.
+	if pkg.RepositoryURL == "" &&
+		pom.Parent.GroupID != "" &&
+		pom.Parent.ArtifactID != "" &&
+		pom.Parent.Version != "" {
+		_ = c.enrichFromParentPOM(pkg, pom.Parent.GroupID, pom.Parent.ArtifactID, pom.Parent.Version)
+	}
+
 	// Apache fallback: if no SCM URL was found and the groupId starts with
 	// "org.apache.", construct a likely Apache Gitbox URL from the artifactId.
 	// Source: https://gitbox.apache.org/repos/asf/
@@ -224,6 +234,44 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 	// Extract license
 	if len(pom.Licenses) > 0 {
 		pkg.License = pom.Licenses[0].Name
+	}
+
+	return nil
+}
+
+// enrichFromParentPOM fetches the parent POM and extracts SCM URL from it.
+// Called when the artifact's own POM has no SCM element — common in multi-module
+// projects (e.g. guava, jjwt, springdoc) where the root/parent POM holds SCM.
+func (c *MavenClient) enrichFromParentPOM(pkg *MavenPackage, groupID, artifactID, version string) error {
+	groupPath := strings.ReplaceAll(groupID, ".", "/")
+	pomURL := fmt.Sprintf("%s/%s/%s/%s/%s-%s.pom",
+		c.baseURL, groupPath, artifactID, version, artifactID, version)
+
+	resp, err := c.httpClient.Get(pomURL)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("parent POM returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var pom MavenPOM
+	if err := xml.Unmarshal(body, &pom); err != nil {
+		return err
+	}
+
+	if pom.SCM.URL != "" {
+		pkg.RepositoryURL = normalizeSCMURL(pom.SCM.URL)
+	} else if pom.SCM.Connection != "" {
+		raw := strings.TrimPrefix(pom.SCM.Connection, "scm:git:")
+		pkg.RepositoryURL = normalizeSCMURL(raw)
 	}
 
 	return nil
@@ -250,15 +298,22 @@ type MavenSearchDoc struct {
 
 // Maven POM structure (simplified)
 type MavenPOM struct {
-	XMLName  xml.Name      `xml:"project"`
-	SCM      MavenSCM      `xml:"scm"`
+	XMLName  xml.Name       `xml:"project"`
+	Parent   MavenParent    `xml:"parent"`
+	SCM      MavenSCM       `xml:"scm"`
 	Licenses []MavenLicense `xml:"licenses>license"`
 }
 
+type MavenParent struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+}
+
 type MavenSCM struct {
-	Connection string `xml:"connection"`
+	Connection    string `xml:"connection"`
 	DevConnection string `xml:"developerConnection"`
-	URL        string `xml:"url"`
+	URL           string `xml:"url"`
 }
 
 type MavenLicense struct {
