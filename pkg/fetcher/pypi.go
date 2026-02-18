@@ -22,15 +22,16 @@ type PyPIClient struct {
 
 // PyPIPackage represents package information from PyPI
 type PyPIPackage struct {
-	Name          string
-	Version       string
-	LatestVersion string
-	RepositoryURL string
-	Homepage      string
-	License       string
-	Downloads     int64
-	PublishedAt   time.Time
-	Maintainers   []string
+	Name           string
+	Version        string
+	LatestVersion  string
+	RepositoryURL  string
+	Homepage       string
+	License        string
+	Downloads      int64
+	PublishedAt    time.Time
+	Maintainers    []string
+	DirectDepCount int // Number of direct dependencies from requires_dist
 }
 
 // NewPyPIClient creates a new PyPI client
@@ -89,6 +90,10 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	// PyPI doesn't provide download counts in the JSON API directly
 	pkg.Downloads = 0
 
+	// Count direct dependencies from requires_dist, excluding extras-only deps.
+	// requires_dist entries with "; extra ==" are optional extras, not required deps.
+	pkg.DirectDepCount = countRequiresDist(pypiResp.Info.RequiresDist)
+
 	return pkg, nil
 }
 
@@ -108,13 +113,14 @@ type PyPIURL struct {
 }
 
 type PyPIInfo struct {
-	Name        string            `json:"name"`
-	Version     string            `json:"version"`
-	Author      string            `json:"author"`
-	License     string            `json:"license"`
-	HomePage    string            `json:"home_page"`
-	ProjectURL  string            `json:"project_url"`
-	ProjectURLs map[string]string `json:"project_urls"`
+	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	Author       string            `json:"author"`
+	License      string            `json:"license"`
+	HomePage     string            `json:"home_page"`
+	ProjectURL   string            `json:"project_url"`
+	ProjectURLs  map[string]string `json:"project_urls"`
+	RequiresDist []string          `json:"requires_dist"`
 }
 
 // extractPyPIRepoURL extracts the best available source-code repository URL from
@@ -162,6 +168,19 @@ func extractPyPIRepoURL(info PyPIInfo) string {
 	}
 
 	return ""
+}
+
+// countRequiresDist counts required (non-extra) dependencies from requires_dist.
+// Entries with "; extra ==" are optional extras and are excluded because they
+// only apply when the consumer explicitly requests them.
+func countRequiresDist(requiresDist []string) int {
+	count := 0
+	for _, req := range requiresDist {
+		if !strings.Contains(req, "extra ==") {
+			count++
+		}
+	}
+	return count
 }
 
 // CheckPyPISignatures checks if a package has cryptographic signatures

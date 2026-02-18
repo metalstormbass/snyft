@@ -1368,11 +1368,15 @@ func TestScoreDependencySprawl_EdgeCase_Exactly50(t *testing.T) {
 }
 
 func TestScoreDependencySprawl_Fallback_NoMetrics(t *testing.T) {
-	// Test: No dependency metrics available, low popularity package
-	// Justification: Cannot verify dependency tree; low adoption packages have higher risk of unmaintained dependencies
-	// Source: "Small World with High Risks" (Zimmerman et al., 2019) - npm ecosystem analysis
-	//         Shows correlation between package popularity and security maintenance
-	// Methodology: Uses popularity heuristics (stars, downloads) as proxy for dependency quality
+	// Test: No dependency metrics available — neither lock file nor registry data
+	// Justification: Stars and download counts are not valid proxies for dependency sprawl.
+	//   A package with 5 stars might have zero dependencies; a package with 1M downloads
+	//   (e.g. aws-sdk) can have hundreds of transitive dependencies.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — npm analysis shows
+	//   dependency count is independent of package popularity metrics.
+	// Methodology: When no lock file or registry dependency data is available, assign
+	//   neutral moderate risk (1 point) rather than an unreliable star-based estimate.
+	// Result: 1 risk point (neutral/unknown), unverified
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
@@ -1383,14 +1387,159 @@ func TestScoreDependencySprawl_Fallback_NoMetrics(t *testing.T) {
 
 	score := a.scoreDependencySprawl(result)
 
-	// Should fall back to heuristics
+	// Should be unverified — no lock file or registry data
 	if score.Verified {
-		t.Error("Expected unverified score when using heuristics")
+		t.Error("Expected unverified score when no dependency data available")
 	}
 
-	// Low stars = high risk (2 points)
+	// No data = neutral 1 risk point (unknown, not high risk based on irrelevant metrics)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point (neutral) when no dependency data available, got %d", score.RiskPoints)
+	}
+}
+
+func TestScoreDependencySprawl_RegistryDirect_FewDeps(t *testing.T) {
+	// Test: Package with few direct dependencies from registry (unverified, no lock file)
+	// Justification: Registry direct dep count is a reliable proxy for total transitive exposure.
+	//   "Small World with High Risks" (Zimmermann et al., 2019) shows each direct dep
+	//   carries its own transitive tree, multiplicatively expanding the attack surface.
+	// Methodology: DirectCount from npm `dependencies` or PyPI `requires_dist` fields;
+	//   Verified=false because no lock file traversal was performed.
+	// Result: 0 risk points for ≤5 direct deps
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				DirectCount: 3,
+				Verified:    false,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for 3 direct deps, got %d", score.RiskPoints)
+	}
+	if score.Verified {
+		t.Error("Expected unverified score for registry-based data")
+	}
+	if score.Description != "Few direct dependencies" {
+		t.Errorf("Unexpected description: %s", score.Description)
+	}
+}
+
+func TestScoreDependencySprawl_RegistryDirect_ModerateDeps(t *testing.T) {
+	// Test: Package with moderate direct dependencies from registry
+	// Justification: 6-15 direct deps indicates moderate transitive exposure.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+	// Methodology: DirectCount from registry, Verified=false (no lock file)
+	// Result: 1 risk point for 6-15 direct deps
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				DirectCount: 10,
+				Verified:    false,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for 10 direct deps, got %d", score.RiskPoints)
+	}
+	if score.Description != "Moderate direct dependencies" {
+		t.Errorf("Unexpected description: %s", score.Description)
+	}
+}
+
+func TestScoreDependencySprawl_RegistryDirect_ManyDeps(t *testing.T) {
+	// Test: Package with many direct dependencies from registry (e.g. aws-sdk-like packages)
+	// Justification: 16+ direct deps creates a large transitive attack surface. Packages
+	//   like aws-sdk carry 30+ direct deps with hundreds of transitives.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019);
+	//   "Backstabber's Knife Collection" (Ohm et al., 2020) - large dep trees are
+	//   commonly exploited for supply chain poisoning via transitive compromise.
+	// Methodology: DirectCount from registry, Verified=false (no lock file)
+	// Result: 2 risk points for 16+ direct deps
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				DirectCount: 32,
+				Verified:    false,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
 	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for low popularity, got %d", score.RiskPoints)
+		t.Errorf("Expected 2 risk points for 32 direct deps, got %d", score.RiskPoints)
+	}
+	if score.Description != "Many direct dependencies" {
+		t.Errorf("Unexpected description: %s", score.Description)
+	}
+}
+
+func TestScoreDependencySprawl_RegistryDirect_ZeroDeps(t *testing.T) {
+	// Test: Package with explicitly zero direct dependencies from registry (e.g. uuid)
+	// Justification: Zero dependencies means minimal transitive attack surface. DependencyMetrics
+	//   is always pre-populated by packageMetadataFromNPM/PyPI, so Verified=false with
+	//   DependencyMetrics!=nil reliably means "registry data was fetched and is authoritative."
+	//   This correctly distinguishes "zero deps" from "no data fetched."
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+	// Methodology: DirectCount=0 from registry — npm `dependencies` field is empty/absent.
+	//   Packages like `uuid@9` have zero dependencies and represent minimal supply chain risk.
+	// Result: 0 risk points (falls into "few direct dependencies" ≤5 branch)
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				DirectCount: 0,
+				Verified:    false,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	// DirectCount=0, Verified=false → Path 2 fires (registry data was fetched), 0 ≤ 5 → 0 pts
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for genuinely zero direct dependencies, got %d", score.RiskPoints)
+	}
+	if score.Description != "Few direct dependencies" {
+		t.Errorf("Unexpected description: %s", score.Description)
+	}
+}
+
+func TestScoreDependencySprawl_LockFileOverridesRegistry(t *testing.T) {
+	// Test: Lock file data (Verified=true) takes priority over registry data
+	// Justification: Lock file provides exact transitive count and is more accurate
+	//   than registry-based direct dep count. Lock file traversal is always preferred.
+	// Methodology: Verified=true means data came from package-lock.json or equivalent
+	// Result: Uses TransitiveCount (from lock file) not DirectCount (from registry)
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				DirectCount:     30, // Would be "many" if used for registry scoring
+				TransitiveCount: 5,  // Lock file says "few" — this should win
+				Verified:        true,
+			},
+		},
+	}
+
+	score := a.scoreDependencySprawl(result)
+
+	// Lock file (Verified=true) should use TransitiveCount=5 → 0 risk points
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points (lock file TransitiveCount=5 wins), got %d", score.RiskPoints)
+	}
+	if !score.Verified {
+		t.Error("Expected verified score when using lock file data")
 	}
 }
 
