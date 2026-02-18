@@ -11,25 +11,33 @@ import (
 
 // GovernanceMetrics contains governance-related metrics for risk assessment
 type GovernanceMetrics struct {
-	HasSecurityPolicy   bool
-	HasContributing     bool
-	HasCodeOwners       bool
+	HasSecurityPolicy    bool
+	HasContributing      bool
+	HasCodeOwners        bool
+	HasCodeOfConduct     bool    // CODE_OF_CONDUCT.md indicates community governance
 	AvgIssueResponseDays float64
-	RecentActivityGap    float64  // Days since last activity
+	RecentActivityGap    float64 // Days since last activity
 	HasAbandonmentPattern bool
-	Verified            bool
+	Verified             bool
 }
 
 // AnalyzeGovernance checks for governance documentation and maintainer responsiveness
 // Test: Governance risk assessment for supply chain security
 // Justification: Poor governance = unmaintained packages = higher likelihood of
-//                account takeover or malicious code injection. Abandoned packages
-//                that suddenly reactivate are a common supply chain attack pattern.
+//
+//	account takeover or malicious code injection. Abandoned packages
+//	that suddenly reactivate are a common supply chain attack pattern.
+//
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
-//         https://arxiv.org/abs/2005.09535
-//         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
-// Methodology: Check for SECURITY.md, CONTRIBUTING.md, CODEOWNERS files via Git API;
-//              Analyze issue response times; Detect dormancy patterns
+//
+//	https://arxiv.org/abs/2005.09535
+//	"Towards Measuring Supply Chain Attacks" (NDSS 2020)
+//
+// Methodology: Check for SECURITY.md (+ .github/SECURITY.md), CONTRIBUTING.md,
+//
+//	CODEOWNERS, CODE_OF_CONDUCT.md files via Git API;
+//	Analyze issue response times; Detect dormancy patterns
+//
 // Result: Assigns 0-2 risk points based on governance quality and abandonment signals
 func (a *Analyzer) analyzeGovernance(result *models.AnalysisResult, repoURL string) *GovernanceMetrics {
 	if repoURL == "" {
@@ -39,11 +47,15 @@ func (a *Analyzer) analyzeGovernance(result *models.AnalysisResult, repoURL stri
 	gitClient := a.getGitClient(repoURL)
 	metrics := &GovernanceMetrics{Verified: true}
 
-	// Check for governance documentation files
-	metrics.HasSecurityPolicy = a.checkGovernanceFile(gitClient, repoURL, "SECURITY.md")
+	// Check for security policy in both common locations
+	metrics.HasSecurityPolicy = a.checkGovernanceFile(gitClient, repoURL, "SECURITY.md") ||
+		a.checkGovernanceFile(gitClient, repoURL, ".github/SECURITY.md")
+
+	// Check for other governance documentation files
 	metrics.HasContributing = a.checkGovernanceFile(gitClient, repoURL, "CONTRIBUTING.md")
 	metrics.HasCodeOwners = a.checkGovernanceFile(gitClient, repoURL, "CODEOWNERS") ||
 		a.checkGovernanceFile(gitClient, repoURL, ".github/CODEOWNERS")
+	metrics.HasCodeOfConduct = a.checkGovernanceFile(gitClient, repoURL, "CODE_OF_CONDUCT.md")
 
 	// Analyze issue response times (GitHub-specific for now)
 	if gitClient.GetPlatformName() == "GitHub" {
@@ -82,21 +94,31 @@ func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repo
 // scoreGovernance: governance documentation and maintainer responsiveness (0-2 pts)
 // Test: Governance risk scoring for supply chain security
 // Justification: Packages without clear governance = unclear maintainership =
-//                higher risk of account takeover going unnoticed. Poor responsiveness
-//                indicates unmaintained packages that could be compromised.
-//                Abandonment followed by sudden activity is a red flag for takeover.
+//
+//	higher risk of account takeover going unnoticed. Poor responsiveness
+//	indicates unmaintained packages that could be compromised.
+//	Abandonment followed by sudden activity is a red flag for takeover.
+//	Archived repositories represent permanently unmaintained packages.
+//
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
-//         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
-//         OSSF Scorecard Specification (Security Policy check)
-// Methodology: Score based on presence of governance docs, issue response times,
-//              and activity patterns
-// Result: 0 risk points = Strong governance (all docs, fast response)
-//         1 risk point = Moderate governance (some docs, slow response)
-//         2 risk points = Poor governance (no docs, unresponsive, or abandoned)
+//
+//	"Towards Measuring Supply Chain Attacks" (NDSS 2020)
+//	OSSF Scorecard Specification (Security Policy check)
+//
+// Methodology: Score based on presence of governance docs (SECURITY.md, CONTRIBUTING.md,
+//
+//	CODEOWNERS, CODE_OF_CONDUCT.md), OSSF Security-Policy check, issue response
+//	times, branch protection, and activity patterns
+//
 // Scoring:
-//   - 0 risk points (best): Has governance docs + responsive maintainers
-//   - 1 risk point (moderate): Partial governance or slow response
-//   - 2 risk points (worst): No governance docs or abandoned/unresponsive
+//
+//	Points are earned from two components:
+//	  Docs component (0-2 pts): 1 pt for any governance doc, 2 pts for 2+ docs
+//	  Process component (0-1 pt): fast issue response OR branch protection enabled
+//	Total 3 points = 0 risk (strong governance)
+//	Total 1-2 points = 1 risk (moderate governance)
+//	Total 0 points = 2 risk (poor governance)
+//	Override: Archived repos and abandoned packages always get 2 risk
 func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.CategoryScore {
 	// Early return if no repository URL
 	if result.RepositoryURL == "" {
@@ -106,6 +128,32 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Description: "No repository available for governance assessment",
 			Evidence:    "No source repository URL found",
 			Verified:    false,
+		}
+	}
+
+	// Early return for archived repositories (permanently unmaintained)
+	if result.Metadata.RepoArchived {
+		return models.CategoryScore{
+			Score:       0,
+			RiskPoints:  2,
+			Description: "Archived repository: no active governance",
+			Evidence:    "Repository is archived and no longer accepting contributions",
+			Verified:    true,
+		}
+	}
+
+	// Early return for abandoned packages (avoid expensive HTTP calls)
+	// If metadata already tells us the package is abandoned, skip file fetching.
+	if !result.Metadata.RepoLastCommit.IsZero() {
+		daysSince := time.Since(result.Metadata.RepoLastCommit).Hours() / 24
+		if daysSince > 180 {
+			return models.CategoryScore{
+				Score:       0,
+				RiskPoints:  2,
+				Description: "Abandoned project: high risk of compromise",
+				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince),
+				Verified:    true,
+			}
 		}
 	}
 
@@ -124,11 +172,15 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 
 	// Build evidence list
 	evidenceParts := []string{}
-	points := 0
 
-	// Component 1: Governance Documentation (worth up to 1 point)
+	// -----------------------------------------------------------------------
+	// Component 1: Governance Documentation (0-2 points)
+	// 1 point for any governance doc, 2 points for 2+ governance docs.
+	// A security policy is the most important individual document.
+	// -----------------------------------------------------------------------
 	docsCount := 0
 	docsList := []string{}
+
 	if govMetrics.HasSecurityPolicy {
 		docsCount++
 		docsList = append(docsList, "SECURITY.md")
@@ -141,74 +193,90 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		docsCount++
 		docsList = append(docsList, "CODEOWNERS")
 	}
-
-	if docsCount >= 2 {
-		// Has multiple governance docs
-		points++
-		evidenceParts = append(evidenceParts, fmt.Sprintf("Governance docs: %s", strings.Join(docsList, ", ")))
-	} else if docsCount == 1 {
-		// Has some governance docs
-		evidenceParts = append(evidenceParts, fmt.Sprintf("Limited governance: %s", strings.Join(docsList, ", ")))
-	} else {
-		// No governance docs
-		evidenceParts = append(evidenceParts, "No governance documentation found")
+	if govMetrics.HasCodeOfConduct {
+		docsCount++
+		docsList = append(docsList, "CODE_OF_CONDUCT.md")
 	}
 
-	// Component 2: Maintainer Responsiveness (worth up to 1 point)
-	if govMetrics.AvgIssueResponseDays > 0 {
-		if govMetrics.AvgIssueResponseDays <= 7 {
-			// Fast response (<= 1 week)
-			points++
-			evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days", govMetrics.AvgIssueResponseDays))
-		} else if govMetrics.AvgIssueResponseDays <= 30 {
-			// Moderate response (1-4 weeks)
-			evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days (moderate)", govMetrics.AvgIssueResponseDays))
-		} else {
-			// Slow response (>30 days)
-			evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days (slow)", govMetrics.AvgIssueResponseDays))
+	// OSSF Security-Policy check is a more authoritative source than file presence
+	// If OSSF confirms a security policy (score >= 5/10), count it even if file check missed it
+	if result.Metadata.OSSFChecks != nil {
+		if spScore, exists := result.Metadata.OSSFChecks["Security-Policy"]; exists && spScore >= 5 {
+			if !govMetrics.HasSecurityPolicy {
+				docsCount++
+				docsList = append(docsList, "OSSF:Security-Policy")
+			}
 		}
 	}
 
-	// Component 3: Abandonment Detection (negative indicator)
-	if govMetrics.HasAbandonmentPattern {
-		// Abandonment is a strong negative signal
-		points = 0 // Override any points earned
-		evidenceParts = append(evidenceParts, fmt.Sprintf("Abandoned: %.0f days since last commit", govMetrics.RecentActivityGap))
-	} else if govMetrics.RecentActivityGap > 90 {
-		// Long gap but not quite abandoned
+	docsPoints := 0
+	switch {
+	case docsCount >= 2:
+		docsPoints = 2
+		evidenceParts = append(evidenceParts, fmt.Sprintf("Governance docs: %s", strings.Join(docsList, ", ")))
+	case docsCount == 1:
+		docsPoints = 1
+		evidenceParts = append(evidenceParts, fmt.Sprintf("Single governance doc: %s", strings.Join(docsList, ", ")))
+	default:
+		evidenceParts = append(evidenceParts, "No governance documentation found")
+	}
+
+	// -----------------------------------------------------------------------
+	// Component 2: Maintainer Process (0-1 point)
+	// Fast issue response OR branch protection both indicate active governance.
+	// Either signal earns the point; no data = 0 points (not penalized further).
+	// -----------------------------------------------------------------------
+	processPoints := 0
+
+	if govMetrics.AvgIssueResponseDays > 0 && govMetrics.AvgIssueResponseDays <= 14 {
+		// Responsive maintainers (within 2 weeks)
+		processPoints = 1
+		evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days", govMetrics.AvgIssueResponseDays))
+	} else if result.Metadata.HasBranchProtection {
+		// Branch protection signals an enforced review/merge process
+		processPoints = 1
+		if result.Metadata.RequiredReviewers > 0 {
+			evidenceParts = append(evidenceParts, fmt.Sprintf("Branch protection with %d required reviewer(s)", result.Metadata.RequiredReviewers))
+		} else {
+			evidenceParts = append(evidenceParts, "Branch protection enabled")
+		}
+	} else if govMetrics.AvgIssueResponseDays > 14 {
+		// Slow response is worth noting even though it doesn't earn a point
+		evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days (slow)", govMetrics.AvgIssueResponseDays))
+	}
+
+	// Note slight inactivity (90-180 days) in evidence without overriding the score
+	if govMetrics.RecentActivityGap > 90 {
 		evidenceParts = append(evidenceParts, fmt.Sprintf("Inactive: %.0f days since last commit", govMetrics.RecentActivityGap))
 	}
 
-	// Calculate final risk points (invert points earned)
-	// 2+ points earned = 0 risk points (good governance)
-	// 1 point earned = 1 risk point (moderate governance)
-	// 0 points earned = 2 risk points (poor governance)
-	riskPoints := 2
-	if points >= 2 {
-		riskPoints = 0
-	} else if points >= 1 {
-		riskPoints = 1
-	}
+	// -----------------------------------------------------------------------
+	// Final risk calculation
+	// Total possible: 3 points (2 docs + 1 process)
+	// 3 pts = 0 risk (strong governance)
+	// 1-2 pts = 1 risk (moderate governance)
+	// 0 pts = 2 risk (poor governance)
+	// Abandonment/archive are handled as early returns above.
+	// -----------------------------------------------------------------------
+	totalPoints := docsPoints + processPoints
 
-	// Override: Abandoned packages always get highest risk
-	if govMetrics.HasAbandonmentPattern {
-		riskPoints = 2
+	riskPoints := 2
+	switch {
+	case totalPoints >= 3:
+		riskPoints = 0
+	case totalPoints >= 1:
+		riskPoints = 1
 	}
 
 	// Determine description based on risk level
 	var description string
-	switch riskPoints {
-	case 0:
-		description = "Strong governance: documented policies and responsive maintenance"
-	case 1:
-		description = "Moderate governance: some documentation or moderate responsiveness"
+	switch {
+	case riskPoints == 0:
+		description = "Strong governance: comprehensive documentation and active maintenance process"
+	case riskPoints == 1:
+		description = "Moderate governance: some documentation or maintenance signals present"
 	default:
-		description = "Poor governance: no documentation or unresponsive"
-	}
-
-	// Special case for abandonment
-	if govMetrics.HasAbandonmentPattern {
-		description = "Abandoned project: high risk of compromise"
+		description = "Poor governance: no documentation or maintenance signals"
 	}
 
 	return models.CategoryScore{
