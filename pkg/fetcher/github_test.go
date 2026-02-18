@@ -549,6 +549,59 @@ func TestGetLicenseName(t *testing.T) {
 	}
 }
 
+// Test: CheckSignedCommits correctly handles exactly 50% threshold
+// Justification: The >50% threshold is the boundary condition for commit signing.
+//                Exactly 50% should NOT count as "signed commits enabled" since the
+//                check uses strict greater-than, not greater-than-or-equal.
+// Source: Implementation in github.go — hasSigning := float64(verifiedCount)/float64(len(commits)) > 0.5
+// Methodology: Send exactly 2 commits with 1 verified (50%) and verify it returns false.
+// Result: Exactly 50% returns hasSigning=false.
+func TestCheckSignedCommits_ExactlyHalf(t *testing.T) {
+	commits := []GitHubCommit{
+		{SHA: "abc123", Commit: GitHubCommitInfo{Verification: GitHubCommitVerification{Verified: true}}},
+		{SHA: "def456", Commit: GitHubCommitInfo{Verification: GitHubCommitVerification{Verified: false}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(commits)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	hasSigning, count, err := client.CheckSignedCommits("https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hasSigning {
+		t.Error("expected hasSigning=false for exactly 50% signed commits")
+	}
+	if count != 1 {
+		t.Errorf("expected count=1, got %d", count)
+	}
+}
+
+// Test: GetRepositoryInfo returns error for non-GitHub URLs
+// Justification: The function should reject non-GitHub URLs early to avoid
+//                sending requests to incorrect API endpoints.
+// Methodology: Call GetRepositoryInfo with a non-GitHub URL.
+// Result: Returns an error, not a nil RepositoryInfo.
+func TestGetRepositoryInfo_InvalidURL(t *testing.T) {
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    "https://api.github.com",
+	}
+
+	_, err := client.GetRepositoryInfo("https://gitlab.com/owner/repo")
+	if err == nil {
+		t.Error("expected error for non-GitHub URL, got nil")
+	}
+}
+
 // Test: GetCommitStats calculates bus factor and contributor concentration from commits
 // Justification: Bus factor is a key supply chain risk metric — single-maintainer packages
 //                are the most vulnerable to account takeover. GetCommitStats is the function
