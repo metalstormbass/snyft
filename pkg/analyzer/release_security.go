@@ -20,9 +20,9 @@ import (
 //         SLSA Build Level Requirements (https://slsa.dev/spec/v1.0/levels)
 // Methodology:
 //   - Check HasAutomatedReleases via CI/CD detection
-//   - Query branch protection rules via GitHub/GitLab/Bitbucket APIs
-//   - Verify signed releases via GetProvenanceInfo and CheckSignedReleases
-//   - Check required PR reviews from branch protection settings
+//   - Query branch protection rules via GitHub/GitLab/Bitbucket APIs (with OSSF fallback)
+//   - Verify signed releases via GetProvenanceInfo and CheckSignedReleases (with OSSF fallback)
+//   - Check required PR reviews from branch protection or code review rate (with OSSF fallback)
 //   - Analyze GitHub Actions workflow permissions for least privilege
 // Result:
 //   - 0 risk points (score 2): CI publishing + branch protection + signed tags + required reviews
@@ -59,16 +59,45 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		points++
 		evidence = append(evidence, "Automated CI/CD release process detected")
 	} else {
-		evidence = append(evidence, "No automated release process (local publishing risk)")
+		// Fallback: OSSF Scorecard "Packaging" check indicates automated packaging/publishing
+		ossfPackaging := 0
+		if result.Metadata.OSSFChecks != nil {
+			if ps, ok := result.Metadata.OSSFChecks["Packaging"]; ok {
+				ossfPackaging = ps
+			}
+		}
+		if ossfPackaging >= 7 {
+			points++
+			evidence = append(evidence, fmt.Sprintf("OSSF Packaging: %d/10 (automated publishing)", ossfPackaging))
+		} else {
+			evidence = append(evidence, "No automated release process (local publishing risk)")
+		}
 	}
 
 	// Component 2: Branch Protection
-	// Without branch protection, attackers with push access can bypass all controls
+	// Without branch protection, attackers with push access can bypass all controls.
+	// The GitHub branch protection API requires admin access, so direct checks often
+	// fail for third-party packages. OSSF Scorecard provides this data without requiring
+	// admin permissions.
 	if result.Metadata.HasBranchProtection {
 		points++
 		evidence = append(evidence, "Branch protection enabled on default branch")
 	} else {
-		evidence = append(evidence, "No branch protection (direct push allowed)")
+		// Fallback: OSSF Scorecard "Branch-Protection" check
+		ossfBranchProt := 0
+		if result.Metadata.OSSFChecks != nil {
+			if bp, ok := result.Metadata.OSSFChecks["Branch-Protection"]; ok {
+				ossfBranchProt = bp
+			}
+		}
+		if ossfBranchProt >= 7 {
+			points++
+			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10", ossfBranchProt))
+		} else if ossfBranchProt > 0 {
+			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10 (weak)", ossfBranchProt))
+		} else {
+			evidence = append(evidence, "No branch protection detected")
+		}
 	}
 
 	// Component 3: Signed Releases/Tags
@@ -77,16 +106,49 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		points++
 		evidence = append(evidence, "Releases are cryptographically signed")
 	} else {
-		evidence = append(evidence, "Releases not signed")
+		// Fallback: OSSF Scorecard "Signed-Releases" check
+		ossfSigned := 0
+		if result.Metadata.OSSFChecks != nil {
+			if sr, ok := result.Metadata.OSSFChecks["Signed-Releases"]; ok {
+				ossfSigned = sr
+			}
+		}
+		if ossfSigned >= 7 {
+			points++
+			evidence = append(evidence, fmt.Sprintf("OSSF Signed-Releases: %d/10", ossfSigned))
+		} else {
+			evidence = append(evidence, "Releases not signed")
+		}
 	}
 
 	// Component 4: Required PR Reviews
-	// Code review is critical for catching malicious code before merge
+	// Code review is critical for catching malicious code before merge.
+	// The branch protection API (which provides RequiredReviewers) requires admin access,
+	// so we fall back to code review rate and OSSF Scorecard data.
 	if result.Metadata.RequiredReviewers > 0 {
 		points++
 		evidence = append(evidence, fmt.Sprintf("%d required reviewers for PRs", result.Metadata.RequiredReviewers))
+	} else if result.Metadata.CodeReviewRate >= 75 {
+		// High code review rate is strong evidence of review practices even without
+		// branch protection API access
+		points++
+		evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (strong review practice)", result.Metadata.CodeReviewRate))
 	} else {
-		evidence = append(evidence, "No required code reviews")
+		// Fallback: OSSF Scorecard "Code-Review" check
+		ossfReview := 0
+		if result.Metadata.OSSFChecks != nil {
+			if cr, ok := result.Metadata.OSSFChecks["Code-Review"]; ok {
+				ossfReview = cr
+			}
+		}
+		if ossfReview >= 7 {
+			points++
+			evidence = append(evidence, fmt.Sprintf("OSSF Code-Review: %d/10", ossfReview))
+		} else if result.Metadata.CodeReviewRate >= 50 {
+			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (moderate)", result.Metadata.CodeReviewRate))
+		} else {
+			evidence = append(evidence, "No required code reviews detected")
+		}
 	}
 
 	// Component 5: CI/CD Workflow Security (parsed from config files)

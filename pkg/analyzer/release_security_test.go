@@ -301,9 +301,9 @@ func TestScoreReleaseSecurity_HighRisk_SelfHostedRunnerPenalty(t *testing.T) {
 			HasSelfHosted:       true, // Self-hosted runner: erodes CI security
 			BuildSystems: []models.BuildSystemInfo{
 				{
-					Platform:     "GitHub Actions",
-					HostedBy:     "Self-hosted",
-					IsSelfHosted: true,
+					Platform:      "GitHub Actions",
+					HostedBy:      "Self-hosted",
+					IsSelfHosted:  true,
 					RunnerDetails: "custom-runner",
 				},
 			},
@@ -924,12 +924,12 @@ func TestScoreReleaseSecurity_CIWorkflowRiskPenalty(t *testing.T) {
 			CISystems:           []string{"GitHub Actions"},
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
-					Platform:            "GitHub Actions",
-					UnpinnedActions:     []string{"actions/checkout@v4", "actions/setup-node@v3"},
-					HasExcessivePermissions: true,
-					HasScriptInjection:  false,
+					Platform:                     "GitHub Actions",
+					UnpinnedActions:              []string{"actions/checkout@v4", "actions/setup-node@v3"},
+					HasExcessivePermissions:      true,
+					HasScriptInjection:           false,
 					MissingEnvironmentProtection: true,
-					RiskCount:           4,
+					RiskCount:                    4,
 					Details: []string{
 						"Unpinned action actions/checkout@v4",
 						"Unpinned action actions/setup-node@v3",
@@ -1003,14 +1003,14 @@ func TestScoreReleaseSecurity_CIWorkflowRiskEvidence(t *testing.T) {
 			CISystems:           []string{"GitHub Actions"},
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
-					Platform:            "GitHub Actions",
-					UnpinnedActions:     []string{"actions/checkout@v4", "actions/setup-node@v3"},
-					HasScriptInjection:  true,
-					DangerousTriggers:   []string{"pull_request_target"},
-					HasExcessivePermissions: true,
+					Platform:                     "GitHub Actions",
+					UnpinnedActions:              []string{"actions/checkout@v4", "actions/setup-node@v3"},
+					HasScriptInjection:           true,
+					DangerousTriggers:            []string{"pull_request_target"},
+					HasExcessivePermissions:      true,
 					MissingEnvironmentProtection: true,
-					RiskCount:           6,
-					Details:             []string{"Various risks"},
+					RiskCount:                    6,
+					Details:                      []string{"Various risks"},
 				},
 			},
 		},
@@ -1057,10 +1057,10 @@ func TestScoreReleaseSecurity_MultipleCIPlatformRisks(t *testing.T) {
 					RiskCount:       1,
 				},
 				{
-					Platform:            "CircleCI",
+					Platform:                     "CircleCI",
 					MissingEnvironmentProtection: true,
-					UnpinnedActions: []string{"circleci/node@5"},
-					RiskCount:       2,
+					UnpinnedActions:              []string{"circleci/node@5"},
+					RiskCount:                    2,
 				},
 			},
 		},
@@ -1100,5 +1100,349 @@ func TestScoreReleaseSecurity_EmptyCIWorkflowRisks(t *testing.T) {
 
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points with empty CI workflow risks, got %d", score.RiskPoints)
+	}
+}
+
+// ===== OSSF Scorecard Fallback Tests =====
+// These tests verify that OSSF Scorecard data is used as a fallback when direct API
+// data is unavailable (e.g., branch protection API requires admin access).
+
+// Test: OSSF Branch-Protection fallback when direct API unavailable
+// Justification: The GitHub branch protection API requires admin access, which scanning tools
+//                typically don't have for third-party packages. OSSF Scorecard provides this
+//                data without requiring admin permissions, making it a reliable fallback.
+// Source: OSSF Scorecard "Branch-Protection" check methodology
+//         GitHub API docs: "Requires admin access to check branch protection"
+// Methodology: Set HasBranchProtection=false with OSSF Branch-Protection score >= 7
+// Result: Branch protection point is still awarded via OSSF fallback
+func TestScoreReleaseSecurity_OSSFFallback_BranchProtection(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/ossf-fallback/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,  // CI/CD
+			HasBranchProtection: false, // Direct API failed (no admin access)
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			OSSFChecks: map[string]int{
+				"Branch-Protection": 8, // OSSF says branch protection is good
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Should get 2 points: CI(+1) + OSSF Branch-Protection fallback(+1) → moderate risk
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with OSSF Branch-Protection fallback, got %d", score.RiskPoints)
+	}
+
+	if !strings.Contains(score.Evidence, "OSSF Branch-Protection: 8/10") {
+		t.Errorf("Expected OSSF Branch-Protection evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: OSSF Code-Review fallback when branch protection API unavailable
+// Justification: When RequiredReviewers is 0 (because branch protection API requires admin access)
+//                and code review rate is below threshold, OSSF Scorecard "Code-Review" check
+//                provides an alternative signal for review practices.
+// Source: OSSF Scorecard "Code-Review" check methodology
+// Methodology: Set RequiredReviewers=0 with OSSF Code-Review score >= 7
+// Result: Code review point is awarded via OSSF fallback
+func TestScoreReleaseSecurity_OSSFFallback_CodeReview(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/ossf-review/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,  // CI/CD
+			HasBranchProtection: false,
+			SignedReleases:      false,
+			RequiredReviewers:   0, // Branch protection API failed
+			CodeReviewRate:      0, // No PR stats available either
+			OSSFChecks: map[string]int{
+				"Code-Review": 9, // OSSF says code review practices are good
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Should get 2 points: CI(+1) + OSSF Code-Review fallback(+1) → moderate risk
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with OSSF Code-Review fallback, got %d", score.RiskPoints)
+	}
+
+	if !strings.Contains(score.Evidence, "OSSF Code-Review: 9/10") {
+		t.Errorf("Expected OSSF Code-Review evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: OSSF Signed-Releases fallback when direct release signing check unavailable
+// Justification: Direct release signing checks depend on provenance info which may not be
+//                available for all packages. OSSF Scorecard provides an alternative signal.
+// Source: OSSF Scorecard "Signed-Releases" check methodology
+// Methodology: Set SignedReleases=false with OSSF Signed-Releases score >= 7
+// Result: Signed releases point is awarded via OSSF fallback
+func TestScoreReleaseSecurity_OSSFFallback_SignedReleases(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/ossf-signed/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,  // CI/CD
+			HasBranchProtection: true,  // Direct data available
+			SignedReleases:      false, // Direct check didn't find signing
+			RequiredReviewers:   1,
+			OSSFChecks: map[string]int{
+				"Signed-Releases": 8, // OSSF says releases are signed
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Should get 4 points: CI(+1) + Branch(+1) + OSSF Signed(+1) + Reviewers(+1)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points with OSSF Signed-Releases fallback, got %d", score.RiskPoints)
+	}
+
+	if !strings.Contains(score.Evidence, "OSSF Signed-Releases: 8/10") {
+		t.Errorf("Expected OSSF Signed-Releases evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: OSSF Packaging fallback when HasReleaseProcess is false
+// Justification: HasAutomatedReleases checks for GitHub release existence, not CI automation.
+//                OSSF "Packaging" check specifically evaluates automated packaging pipelines.
+// Source: OSSF Scorecard "Packaging" check methodology
+// Methodology: Set HasReleaseProcess=false with OSSF Packaging score >= 7
+// Result: Release process point is awarded via OSSF fallback
+func TestScoreReleaseSecurity_OSSFFallback_Packaging(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/ossf-packaging/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   false, // Direct check failed
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			OSSFChecks: map[string]int{
+				"Packaging": 8, // OSSF says automated packaging exists
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Should get 2 points: OSSF Packaging(+1) + Branch(+1) → moderate risk
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with OSSF Packaging fallback, got %d", score.RiskPoints)
+	}
+
+	if !strings.Contains(score.Evidence, "OSSF Packaging: 8/10") {
+		t.Errorf("Expected OSSF Packaging evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: Code review rate fallback for required reviewers
+// Justification: When the branch protection API is unavailable (requires admin access),
+//                a high code review rate (>= 75%) is strong evidence that reviews are
+//                practiced even without formal enforcement via branch protection rules.
+// Source: "Modern Code Review: A Case Study at Google" (Sadowski et al., 2018)
+// Methodology: Set RequiredReviewers=0 with CodeReviewRate >= 75
+// Result: Code review point is awarded via review rate fallback
+func TestScoreReleaseSecurity_CodeReviewRateFallback(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/review-rate/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,    // Branch protection API unavailable
+			CodeReviewRate:      85.0, // But 85% of PRs are reviewed
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Should get 3 points: CI(+1) + Branch(+1) + CodeReviewRate(+1) → moderate risk
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with code review rate fallback, got %d", score.RiskPoints)
+	}
+
+	if !strings.Contains(score.Evidence, "85% PRs reviewed") {
+		t.Errorf("Expected code review rate evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: All OSSF fallbacks combined - realistic scenario where direct APIs all fail
+// Justification: This is the typical scenario when scanning third-party packages: the GitHub
+//                branch protection API requires admin access, signed release checks need
+//                provenance data, and PR stats may be rate-limited. OSSF Scorecard data
+//                is the primary reliable data source for these signals.
+// Source: OSSF Scorecard methodology - publicly available security metrics
+// Methodology: Set all direct checks to false/0, provide comprehensive OSSF scores
+// Result: All 4 points awarded via OSSF fallbacks → 0 risk points
+func TestScoreReleaseSecurity_AllOSSFFallbacks_ComprehensiveScorecard(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/ossf-comprehensive/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   false, // Direct checks all unavailable
+			HasBranchProtection: false,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			CodeReviewRate:      0,
+			OSSFChecks: map[string]int{
+				"Packaging":         9,
+				"Branch-Protection": 8,
+				"Signed-Releases":   7,
+				"Code-Review":       9,
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// All 4 points via OSSF fallbacks → 0 risk points
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points with comprehensive OSSF scores, got %d", score.RiskPoints)
+	}
+
+	if score.Score < 4 {
+		t.Errorf("Expected score >= 4 with all OSSF fallbacks, got %d", score.Score)
+	}
+}
+
+// Test: Low OSSF scores do not award points (below threshold)
+// Justification: OSSF scores below 7 indicate weak practices and should not count as
+//                a positive signal. The threshold of 7/10 is consistent with other OSSF
+//                fallback usage in the Health category.
+// Source: OSSF Scorecard scoring methodology - 7+ indicates good practices
+// Methodology: Provide OSSF scores below 7 for all checks
+// Result: No points awarded from weak OSSF scores
+func TestScoreReleaseSecurity_OSSFFallback_LowScoresNoCredit(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/weak-ossf/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   false,
+			HasBranchProtection: false,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			OSSFChecks: map[string]int{
+				"Packaging":         3, // Below threshold
+				"Branch-Protection": 5, // Below threshold
+				"Signed-Releases":   2, // Below threshold
+				"Code-Review":       4, // Below threshold
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// No OSSF scores >= 7, so 0 points → 2 risk points (high risk)
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points with low OSSF scores, got %d", score.RiskPoints)
+	}
+
+	// Evidence should note weak branch protection
+	if !strings.Contains(score.Evidence, "OSSF Branch-Protection: 5/10 (weak)") {
+		t.Errorf("Expected weak branch protection evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: Moderate code review rate (50-74%) doesn't earn a point but is noted
+// Justification: Moderate review rates suggest some review practices but aren't strong
+//                enough to award a full point. The evidence should note this for transparency.
+// Source: Code review rate thresholds based on industry standards
+// Methodology: Set CodeReviewRate to 60% with no other review signals
+// Result: No point awarded but evidence mentions moderate review rate
+func TestScoreReleaseSecurity_ModerateCodeReviewRate_NoCredit(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/moderate-review/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			CodeReviewRate:      60.0, // Moderate but below 75% threshold
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// 2 points (CI + branch) but no review point → moderate risk
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point, got %d", score.RiskPoints)
+	}
+
+	if !strings.Contains(score.Evidence, "60% PRs reviewed (moderate)") {
+		t.Errorf("Expected moderate review rate evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: Direct data takes precedence over OSSF fallbacks
+// Justification: When direct API data is available (e.g., branch protection API returns data),
+//                it should take precedence over OSSF Scorecard. Direct data is more current
+//                and specific to the exact branch being analyzed.
+// Source: Data freshness principle - direct API data is more authoritative
+// Methodology: Set both direct data and OSSF scores; verify direct data is used in evidence
+// Result: Evidence shows direct data, not OSSF fallback
+func TestScoreReleaseSecurity_DirectDataTakesPrecedenceOverOSSF(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/direct-precedence/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true, // Direct data available
+			SignedReleases:      true, // Direct data available
+			RequiredReviewers:   2,    // Direct data available
+			OSSFChecks: map[string]int{
+				"Branch-Protection": 9, // Also available but should not be used
+				"Signed-Releases":   8,
+				"Code-Review":       7,
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Should use direct data, not OSSF
+	if strings.Contains(score.Evidence, "OSSF") {
+		t.Errorf("Expected direct data to take precedence over OSSF, but evidence contains OSSF: %q", score.Evidence)
+	}
+
+	if !strings.Contains(score.Evidence, "Branch protection enabled on default branch") {
+		t.Errorf("Expected direct branch protection evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: Nil OSSFChecks map does not cause panic
+// Justification: OSSF Scorecard is not available for all packages (e.g., non-GitHub repos,
+//                packages not indexed by OSSF). The fallback code must handle nil maps safely.
+// Source: Defensive programming - nil map access returns zero value in Go
+// Methodology: Set OSSFChecks to nil with all direct checks false
+// Result: No panic; scores as if no OSSF data available
+func TestScoreReleaseSecurity_NilOSSFChecks_NoPanic(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/no-ossf/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   false,
+			HasBranchProtection: false,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			OSSFChecks:          nil, // OSSF not available
+		},
+	}
+
+	// Must not panic
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// 0 points → 2 risk points
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points with nil OSSF checks, got %d", score.RiskPoints)
 	}
 }
