@@ -12,13 +12,14 @@ import (
 // scoreGovernance returns early with risk=2 / Verified=false when RepositoryURL is empty.
 // All other paths require live network calls; those are in the integration tests below.
 
-// Test: No repository URL → maximum risk, unverified
+// Test: No repository URL → moderate risk (needs investigation), unverified
 // Justification: Package without a source repository cannot be audited for governance
-//                practices. Lack of transparent maintainership is itself a supply chain risk.
-// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) §4.2 – 78% of malicious
-//         packages lacked a verifiable source repository.
+//                practices. However, the absence of a repository URL may be due to an
+//                API failure rather than genuinely missing governance. Assign moderate risk
+//                rather than maximum, as further investigation is needed.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) §4.2
 // Methodology: scoreGovernance early-exit when RepositoryURL == ""
-// Result: 2 risk points, Verified=false, non-empty Description and Evidence
+// Result: 1 risk point (moderate, needs investigation), Verified=false, non-empty Description and Evidence
 func TestScoreGovernance_NoRepository(t *testing.T) {
 	analyzer := NewAnalyzer()
 
@@ -34,8 +35,8 @@ func TestScoreGovernance_NoRepository(t *testing.T) {
 
 	score := analyzer.scoreGovernance(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for missing repository, got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for missing repository (needs investigation), got %d", score.RiskPoints)
 	}
 	if score.Verified {
 		t.Error("Expected Verified=false when repository is unavailable")
@@ -100,7 +101,7 @@ func TestScoreGovernance_ArchivedRepository(t *testing.T) {
 //                consistently when a source repository is unavailable.
 // Source: OSSF Scorecard Specification – checks apply uniformly across ecosystems.
 // Methodology: Table-driven test, empty RepositoryURL, varying ecosystems.
-// Result: All ecosystems → 2 risk points, Verified=false.
+// Result: All ecosystems → 1 risk point (needs investigation), Verified=false.
 func TestScoreGovernance_NoRepository_AllEcosystems(t *testing.T) {
 	testCases := []struct {
 		name      string
@@ -148,8 +149,8 @@ func TestScoreGovernance_NoRepository_AllEcosystems(t *testing.T) {
 
 			score := analyzer.scoreGovernance(result)
 
-			if score.RiskPoints != 2 {
-				t.Errorf("[%s] expected RiskPoints=2, got %d", tc.name, score.RiskPoints)
+			if score.RiskPoints != 1 {
+				t.Errorf("[%s] expected RiskPoints=1 (needs investigation), got %d", tc.name, score.RiskPoints)
 			}
 			if score.Verified {
 				t.Errorf("[%s] expected Verified=false, got true", tc.name)
@@ -198,11 +199,12 @@ func TestScoreGovernance_CategoryScoreFields_NoRepository(t *testing.T) {
 
 // Test: Real npm packages from mike-libraries – no repository available
 // Justification: Validates that widely-used packages, when assessed without a repository
-//                URL, are correctly assigned maximum governance risk. This is the expected
-//                behaviour when Snyft cannot verify source availability.
+//                URL, are assigned moderate governance risk requiring investigation.
+//                The absence of a repository URL may be due to API failure, not genuinely
+//                missing governance.
 // Source: Packages from /Users/mike/Projects/mike-libraries/javascript/package.json
 // Methodology: scoreGovernance with empty RepositoryURL for real-world npm dependency names
-// Result: All packages → 2 risk points, Verified=false (no source to verify)
+// Result: All packages → 1 risk point (needs investigation), Verified=false
 func TestScoreGovernance_RealPackages_NPM_NoRepository(t *testing.T) {
 	// These package names come from the mike-libraries javascript application
 	// (express, axios, lodash, etc.) – well-known packages that DO have repositories
@@ -241,8 +243,8 @@ func TestScoreGovernance_RealPackages_NPM_NoRepository(t *testing.T) {
 
 			score := analyzer.scoreGovernance(result)
 
-			if score.RiskPoints != 2 {
-				t.Errorf("[%s] expected RiskPoints=2 (no repo), got %d", pkg, score.RiskPoints)
+			if score.RiskPoints != 1 {
+				t.Errorf("[%s] expected RiskPoints=1 (no repo, needs investigation), got %d", pkg, score.RiskPoints)
 			}
 			if score.Verified {
 				t.Errorf("[%s] expected Verified=false (no repo), got true", pkg)
@@ -256,7 +258,7 @@ func TestScoreGovernance_RealPackages_NPM_NoRepository(t *testing.T) {
 //                for packages that DO exist but whose repository is not provided to snyft.
 // Source: Packages from /Users/mike/Projects/mike-libraries/python/requirements.txt
 // Methodology: scoreGovernance with empty RepositoryURL for real-world PyPI package names
-// Result: All packages → 2 risk points, Verified=false
+// Result: All packages → 1 risk point (needs investigation), Verified=false
 func TestScoreGovernance_RealPackages_PyPI_NoRepository(t *testing.T) {
 	pypiPackages := []string{
 		"Flask",
@@ -287,8 +289,8 @@ func TestScoreGovernance_RealPackages_PyPI_NoRepository(t *testing.T) {
 
 			score := analyzer.scoreGovernance(result)
 
-			if score.RiskPoints != 2 {
-				t.Errorf("[%s] expected RiskPoints=2 (no repo), got %d", pkg, score.RiskPoints)
+			if score.RiskPoints != 1 {
+				t.Errorf("[%s] expected RiskPoints=1 (no repo, needs investigation), got %d", pkg, score.RiskPoints)
 			}
 			if score.Verified {
 				t.Errorf("[%s] expected Verified=false (no repo), got true", pkg)
@@ -640,10 +642,10 @@ func TestScoreGovernance_BranchProtectionReducesRisk(t *testing.T) {
 		},
 	}
 
-	// Without a repo URL, risk is always 2 — verify the metadata doesn't affect it
+	// Without a repo URL, risk is 1 (needs investigation) — verify the metadata doesn't affect it
 	score := analyzer.scoreGovernance(result)
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points when no repository URL, got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point when no repository URL (needs investigation), got %d", score.RiskPoints)
 	}
 	if score.Verified {
 		t.Error("Expected Verified=false when no repository URL")
@@ -678,10 +680,10 @@ func TestScoreGovernance_OSSFSecurityPolicyCount(t *testing.T) {
 		},
 	}
 
-	// No repo URL → 2 risk immediately (OSSF checks are only applied after govMetrics)
+	// No repo URL → 1 risk (needs investigation; OSSF checks are only applied after govMetrics)
 	score := analyzer.scoreGovernance(result)
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk for no-repo case, got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk for no-repo case (needs investigation), got %d", score.RiskPoints)
 	}
 }
 
@@ -795,7 +797,7 @@ func TestScoreGovernance_RiskThresholds(t *testing.T) {
 		{
 			name:           "No repo URL",
 			repoURL:        "",
-			expectedRisk:   2,
+			expectedRisk:   1,
 			expectedVerify: false,
 		},
 		{

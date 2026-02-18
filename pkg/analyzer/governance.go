@@ -123,12 +123,15 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 	const govSource = " [Source: OSSF Scorecard; Backstabber's Knife Collection (Ohm et al., 2020)]"
 
 	// Early return if no repository URL
+	// Assign moderate risk (1 point) rather than maximum (2 points) because
+	// the absence of a repository URL may be due to an API failure rather than
+	// genuine lack of governance. This requires further investigation.
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
-			Score:       0,
-			RiskPoints:  2,
-			Description: "No repository available for governance assessment",
-			Evidence:    "No source repository URL found" + govSource,
+			Score:       1,
+			RiskPoints:  1,
+			Description: "Unable to assess governance: no repository URL available",
+			Evidence:    "No source repository URL found; further investigation recommended" + govSource,
 			Verified:    false,
 		}
 	}
