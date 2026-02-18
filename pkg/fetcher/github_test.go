@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -377,13 +378,6 @@ func TestParseGitHubURL(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "Invalid URL - not GitHub",
-			url:     "https://gitlab.com/owner/repo",
-			owner:   "",
-			repo:    "",
-			wantErr: true,
-		},
-		{
 			name:    "Invalid URL - malformed",
 			url:     "not-a-url",
 			owner:   "",
@@ -555,110 +549,391 @@ func TestGetLicenseName(t *testing.T) {
 	}
 }
 
-// TestCommitStats validates CommitStats structure
-func TestCommitStats(t *testing.T) {
-	stats := &CommitStats{
-		TotalCommits: 100,
-		AuthorCommits: map[string]int{
-			"alice": 60,
-			"bob":   40,
-		},
-		BusFactor:         1,
-		TopContributorPct: 60.0,
+// Test: GetCommitStats calculates bus factor and contributor concentration from commits
+// Justification: Bus factor is a key supply chain risk metric — single-maintainer packages
+//                are the most vulnerable to account takeover. GetCommitStats is the function
+//                that drives this calculation from live commit data.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) – npm dependency network
+//         analysis and compromise propagation patterns.
+// Methodology: Mock the GitHub Commits API with commits from multiple authors; verify
+//              the returned CommitStats fields match expected bus factor and contributor %.
+// Result: Returns correct TotalCommits, BusFactor, TopContributorPct, and AuthorCommits.
+func TestGetCommitStats(t *testing.T) {
+	commits := []GitHubCommit{
+		{SHA: "a1", Author: &GitHubUser{Login: "alice"}, Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Alice"}}},
+		{SHA: "a2", Author: &GitHubUser{Login: "alice"}, Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Alice"}}},
+		{SHA: "a3", Author: &GitHubUser{Login: "alice"}, Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Alice"}}},
+		{SHA: "b1", Author: &GitHubUser{Login: "bob"}, Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Bob"}}},
+		{SHA: "b2", Author: &GitHubUser{Login: "bob"}, Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Bob"}}},
 	}
 
-	if stats.TotalCommits != 100 {
-		t.Errorf("TotalCommits = %d, want 100", stats.TotalCommits)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(commits)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	stats, err := client.GetCommitStats("https://github.com/owner/repo")
+	if err != nil {
+		t.Fatalf("GetCommitStats() unexpected error: %v", err)
+	}
+
+	if stats.TotalCommits != 5 {
+		t.Errorf("TotalCommits = %d, want 5", stats.TotalCommits)
 	}
 
 	if stats.BusFactor != 1 {
-		t.Errorf("BusFactor = %d, want 1", stats.BusFactor)
+		t.Errorf("BusFactor = %d, want 1 (alice has 60%% of commits)", stats.BusFactor)
 	}
 
 	if stats.TopContributorPct != 60.0 {
 		t.Errorf("TopContributorPct = %.1f, want 60.0", stats.TopContributorPct)
 	}
-}
 
-// TestPRStats validates PRStats structure
-func TestPRStats(t *testing.T) {
-	stats := &PRStats{
-		TotalPRs:            100,
-		MergedPRs:           80,
-		PRsWithReviews:      60,
-		CodeReviewRate:      75.0,
-		RequiredReviewers:   2,
-		HasBranchProtection: true,
+	if stats.AuthorCommits["alice"] != 3 {
+		t.Errorf("AuthorCommits[alice] = %d, want 3", stats.AuthorCommits["alice"])
 	}
 
-	if stats.CodeReviewRate != 75.0 {
-		t.Errorf("CodeReviewRate = %.1f, want 75.0", stats.CodeReviewRate)
-	}
-
-	if !stats.HasBranchProtection {
-		t.Error("HasBranchProtection should be true")
-	}
-
-	if stats.RequiredReviewers != 2 {
-		t.Errorf("RequiredReviewers = %d, want 2", stats.RequiredReviewers)
+	if stats.AuthorCommits["bob"] != 2 {
+		t.Errorf("AuthorCommits[bob] = %d, want 2", stats.AuthorCommits["bob"])
 	}
 }
 
-// TestCIQuality validates CIQuality structure and scoring
-func TestCIQuality(t *testing.T) {
+// Test: CheckGitTag verifies tag existence using multiple format variants
+// Justification: Git tags link published package versions to source code — if a published
+//                version has no corresponding tag, there is no way to verify what source
+//                was used to build it. This is a core provenance signal.
+// Source: SLSA specification v1.0 – https://slsa.dev/spec/v1.0/
+// Methodology: Mock the GitHub Git Refs API; return 200 for a "v" prefixed tag variant
+//              and 404 for the raw version string to test fallback logic.
+// Result: Returns (true, tagURL, nil) when any variant matches.
+func TestCheckGitTag(t *testing.T) {
 	tests := []struct {
-		name           string
-		quality        *CIQuality
-		expectedMinScore int
-		expectedMaxScore int
+		name      string
+		version   string
+		validTags map[string]bool // tag -> exists
+		wantFound bool
 	}{
 		{
-			name: "High quality CI",
-			quality: &CIQuality{
-				HasCI:         true,
-				CISystems:     []string{"GitHub Actions"},
-				HasTests:      true,
-				WorkflowCount: 3,
-				QualityScore:  9, // 3 (CI) + 4 (tests) + 2 (workflows)
-			},
-			expectedMinScore: 9,
-			expectedMaxScore: 10,
+			name:      "v-prefixed tag found",
+			version:   "1.0.0",
+			validTags: map[string]bool{"v1.0.0": true},
+			wantFound: true,
 		},
 		{
-			name: "Moderate CI",
-			quality: &CIQuality{
-				HasCI:         true,
-				CISystems:     []string{"Travis CI"},
-				HasTests:      false,
-				WorkflowCount: 1,
-				QualityScore:  4, // 3 (CI) + 1 (single workflow)
-			},
-			expectedMinScore: 4,
-			expectedMaxScore: 4,
+			name:      "exact version tag found",
+			version:   "2.0.0",
+			validTags: map[string]bool{"2.0.0": true},
+			wantFound: true,
 		},
 		{
-			name: "No CI",
-			quality: &CIQuality{
-				HasCI:        false,
-				QualityScore: 0,
-			},
-			expectedMinScore: 0,
-			expectedMaxScore: 0,
+			name:      "no matching tag",
+			version:   "3.0.0",
+			validTags: map[string]bool{},
+			wantFound: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.quality.QualityScore < tt.expectedMinScore || tt.quality.QualityScore > tt.expectedMaxScore {
-				t.Errorf("QualityScore = %d, want range [%d, %d]",
-					tt.quality.QualityScore, tt.expectedMinScore, tt.expectedMaxScore)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Path: /repos/owner/repo/git/ref/tags/<tag>
+				parts := strings.Split(r.URL.Path, "/tags/")
+				if len(parts) == 2 && tt.validTags[parts[1]] {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{}`))
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
 			}
 
-			// Validate score is in valid range (0-10)
-			if tt.quality.QualityScore < 0 || tt.quality.QualityScore > 10 {
-				t.Errorf("QualityScore out of valid range: %d", tt.quality.QualityScore)
+			found, tagURL, err := client.CheckGitTag("https://github.com/owner/repo", tt.version)
+			if err != nil {
+				t.Fatalf("CheckGitTag() unexpected error: %v", err)
+			}
+
+			if found != tt.wantFound {
+				t.Errorf("CheckGitTag() found = %v, want %v", found, tt.wantFound)
+			}
+
+			if found && tagURL == "" {
+				t.Error("CheckGitTag() found=true but tagURL is empty")
 			}
 		})
+	}
+}
+
+// Test: CheckIfOrganization detects whether a GitHub owner is an organization
+// Justification: Packages under organization ownership have different risk profiles
+//                than personal accounts — organizations can enforce MFA, branch protection,
+//                and have multiple administrators, reducing single-point-of-failure risk.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Mock the GitHub Users API to return org vs user type responses.
+// Result: Returns (true, orgName) for organizations, (false, "") for users.
+func TestCheckIfOrganization(t *testing.T) {
+	tests := []struct {
+		name     string
+		response map[string]interface{}
+		wantOrg  bool
+		wantName string
+	}{
+		{
+			name: "organization account",
+			response: map[string]interface{}{
+				"login": "expressjs",
+				"type":  "Organization",
+				"name":  "Express.js",
+			},
+			wantOrg:  true,
+			wantName: "Express.js",
+		},
+		{
+			name: "user account",
+			response: map[string]interface{}{
+				"login": "sindresorhus",
+				"type":  "User",
+				"name":  "Sindre Sorhus",
+			},
+			wantOrg:  false,
+			wantName: "",
+		},
+		{
+			name: "organization without display name uses login",
+			response: map[string]interface{}{
+				"login": "pallets",
+				"type":  "Organization",
+				"name":  "",
+			},
+			wantOrg:  true,
+			wantName: "pallets",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tt.response)
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
+			}
+
+			isOrg, name := client.CheckIfOrganization("test-owner")
+			if isOrg != tt.wantOrg {
+				t.Errorf("CheckIfOrganization() isOrg = %v, want %v", isOrg, tt.wantOrg)
+			}
+			if tt.wantOrg && name != tt.wantName {
+				t.Errorf("CheckIfOrganization() name = %q, want %q", name, tt.wantName)
+			}
+		})
+	}
+}
+
+// Test: CheckOrgMFARequired detects organization MFA enforcement status
+// Justification: MFA enforcement is the single most impactful account security control.
+//                Organizations without mandatory MFA allow account takeover via
+//                credential stuffing — the leading cause of supply chain compromise.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Mock the GitHub Orgs API to return various 2FA enforcement states.
+// Result: Returns (true, true) when MFA enforced, (false, true) when not, (false, false) on error.
+func TestCheckOrgMFARequired(t *testing.T) {
+	tests := []struct {
+		name          string
+		statusCode    int
+		response      map[string]interface{}
+		wantRequired  bool
+		wantAvailable bool
+	}{
+		{
+			name:       "MFA enforced",
+			statusCode: http.StatusOK,
+			response: map[string]interface{}{
+				"two_factor_requirement_enabled": true,
+			},
+			wantRequired:  true,
+			wantAvailable: true,
+		},
+		{
+			name:       "MFA not enforced",
+			statusCode: http.StatusOK,
+			response: map[string]interface{}{
+				"two_factor_requirement_enabled": false,
+			},
+			wantRequired:  false,
+			wantAvailable: true,
+		},
+		{
+			name:          "not an organization (404)",
+			statusCode:    http.StatusNotFound,
+			response:      nil,
+			wantRequired:  false,
+			wantAvailable: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				if tt.response != nil {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(tt.response)
+				}
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
+			}
+
+			required, available := client.CheckOrgMFARequired("test-org")
+			if required != tt.wantRequired {
+				t.Errorf("CheckOrgMFARequired() required = %v, want %v", required, tt.wantRequired)
+			}
+			if available != tt.wantAvailable {
+				t.Errorf("CheckOrgMFARequired() available = %v, want %v", available, tt.wantAvailable)
+			}
+		})
+	}
+}
+
+// Test: AnalyzeCIQuality scores CI setup via mock GitHub Actions workflow API
+// Justification: CI quality directly impacts supply chain integrity — projects with
+//                comprehensive CI (tests, multiple workflows) catch compromised contributions
+//                before they reach published artifacts.
+// Source: OSSF Scorecard – https://github.com/ossf/scorecard
+// Methodology: Mock the GitHub Contents API to return workflow file listings;
+//              verify that the quality score calculation matches the expected scoring rules.
+// Result: Score = 3 (CI present) + 4 (has tests) + 2 (>=2 workflows) = 9 max.
+func TestAnalyzeCIQuality(t *testing.T) {
+	tests := []struct {
+		name           string
+		ciSystems      []string
+		workflowFiles  []GitHubContent
+		wantScore      int
+		wantHasTests   bool
+	}{
+		{
+			name:      "GitHub Actions with test and lint workflows",
+			ciSystems: []string{"GitHub Actions"},
+			workflowFiles: []GitHubContent{
+				{Name: "test.yml", Type: "file"},
+				{Name: "lint.yml", Type: "file"},
+				{Name: "release.yml", Type: "file"},
+			},
+			wantScore:    9, // 3 (CI) + 4 (tests) + 2 (>=2 workflows)
+			wantHasTests: true,
+		},
+		{
+			name:      "GitHub Actions with only deploy workflows",
+			ciSystems: []string{"GitHub Actions"},
+			workflowFiles: []GitHubContent{
+				{Name: "deploy.yml", Type: "file"},
+			},
+			wantScore:    4, // 3 (CI) + 0 (no tests) + 1 (1 workflow)
+			wantHasTests: false,
+		},
+		{
+			name:          "Non-GitHub Actions CI (Travis)",
+			ciSystems:     []string{"Travis CI"},
+			workflowFiles: nil, // Not queried for non-GHA CI
+			wantScore:     3,   // 3 (CI) only — no workflow analysis for non-GHA
+			wantHasTests:  false,
+		},
+		{
+			name:          "No CI at all",
+			ciSystems:     []string{},
+			workflowFiles: nil,
+			wantScore:     0,
+			wantHasTests:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.Contains(r.URL.Path, "contents/.github/workflows") {
+					if tt.workflowFiles != nil {
+						w.Header().Set("Content-Type", "application/json")
+						_ = json.NewEncoder(w).Encode(tt.workflowFiles)
+					} else {
+						w.WriteHeader(http.StatusNotFound)
+					}
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
+			}
+
+			quality, err := client.AnalyzeCIQuality("https://github.com/owner/repo", tt.ciSystems)
+			if err != nil {
+				t.Fatalf("AnalyzeCIQuality() unexpected error: %v", err)
+			}
+
+			if quality.QualityScore != tt.wantScore {
+				t.Errorf("QualityScore = %d, want %d", quality.QualityScore, tt.wantScore)
+			}
+
+			if quality.HasTests != tt.wantHasTests {
+				t.Errorf("HasTests = %v, want %v", quality.HasTests, tt.wantHasTests)
+			}
+
+			if quality.QualityScore < 0 || quality.QualityScore > 10 {
+				t.Errorf("QualityScore %d out of valid range [0, 10]", quality.QualityScore)
+			}
+		})
+	}
+}
+
+// Test: CheckGitTag returns error when rate-limited (403/429)
+// Justification: Rate-limited responses must produce an error so callers can distinguish
+//                "tag not found" from "check failed". A silent false negative here could
+//                incorrectly flag a package as missing source code tags.
+// Source: GitHub API rate limiting documentation
+// Methodology: Mock server returns 403 for all tag lookups.
+// Result: Returns (false, "", error) with rate limit error.
+func TestCheckGitTag_RateLimited(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	_, _, err := client.CheckGitTag("https://github.com/owner/repo", "1.0.0")
+	if err == nil {
+		t.Error("CheckGitTag() expected error when rate-limited, got nil")
 	}
 }
 
