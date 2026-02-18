@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -658,5 +659,162 @@ func TestCIQuality(t *testing.T) {
 				t.Errorf("QualityScore out of valid range: %d", tt.quality.QualityScore)
 			}
 		})
+	}
+}
+
+// Test: GetRepositoryInfo returns cached result on second call without hitting the server
+// Justification: Without GITHUB_TOKEN the unauthenticated rate limit is 60 req/hour.
+//
+//	A single package analysis calls GetRepositoryInfo at least twice
+//	(analyzeRepository + getBranchProtection), so caching is critical to
+//	staying within the budget across a multi-package scan.
+//
+// Methodology: Count server-side requests via atomic counter; assert the
+//
+//	second call does not increment the counter.
+//
+// Result: Second call returns the same data and server receives only 1 request.
+func TestGetRepositoryInfoCaching(t *testing.T) {
+	mockRepo := GitHubRepository{
+		Name:  "cached-repo",
+		Owner: GitHubUser{Login: "owner"},
+	}
+
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(mockRepo)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	// First call — hits the server
+	info1, err := client.GetRepositoryInfo("https://github.com/owner/cached-repo")
+	if err != nil {
+		t.Fatalf("first call unexpected error: %v", err)
+	}
+	if info1.Name != "cached-repo" {
+		t.Errorf("first call: got name %q, want %q", info1.Name, "cached-repo")
+	}
+
+	// Second call — must be served from cache
+	info2, err := client.GetRepositoryInfo("https://github.com/owner/cached-repo")
+	if err != nil {
+		t.Fatalf("second call unexpected error: %v", err)
+	}
+	if info2.Name != "cached-repo" {
+		t.Errorf("second call: got name %q, want %q", info2.Name, "cached-repo")
+	}
+
+	if got := requestCount.Load(); got != 1 {
+		t.Errorf("server received %d requests, want 1 (second call should hit cache)", got)
+	}
+}
+
+// Test: fileExists returns cached result on repeated calls for the same path
+// Justification: DetectCISystems issues ~20 HEAD requests per repo on every
+//
+//	analysis call. When scanning 10 packages that share a monorepo, this
+//	produces 200 HEAD requests — quickly exhausting the 60 req/hour
+//	unauthenticated limit. Caching reduces this to 20 total per session.
+//
+// Methodology: Count HEAD requests via atomic counter; assert repeated
+//
+//	lookups for the same path do not hit the server again.
+//
+// Result: Third call for the same path receives only 1 server request total.
+func TestFileExistsCaching(t *testing.T) {
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	// Call fileExists three times for the same owner/repo/path
+	for i := 0; i < 3; i++ {
+		result := client.fileExists("owner", "repo", ".github/workflows")
+		if !result {
+			t.Errorf("call %d: expected fileExists=true", i+1)
+		}
+	}
+
+	if got := requestCount.Load(); got != 1 {
+		t.Errorf("server received %d requests, want 1 (cache should serve calls 2 and 3)", got)
+	}
+}
+
+// Test: getReleases returns cached result on second call
+// Justification: getReleases is called three times per package from provenance
+//
+//	checks (checkSigstoreSignatures, checkSignedReleases, CheckSignedReleases).
+//	Caching eliminates two redundant API calls per package.
+//
+// Methodology: Count server requests; assert only one network call is made.
+// Result: Two calls to getReleases produce exactly one HTTP request.
+func TestGetReleasesCaching(t *testing.T) {
+	releases := []GitHubRelease{
+		{TagName: "v1.0.0"},
+	}
+
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(releases)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	r1, err := client.getReleases("owner", "repo")
+	if err != nil {
+		t.Fatalf("first call error: %v", err)
+	}
+	if len(r1) != 1 {
+		t.Errorf("first call: got %d releases, want 1", len(r1))
+	}
+
+	r2, err := client.getReleases("owner", "repo")
+	if err != nil {
+		t.Fatalf("second call error: %v", err)
+	}
+	if len(r2) != 1 {
+		t.Errorf("second call: got %d releases, want 1", len(r2))
+	}
+
+	if got := requestCount.Load(); got != 1 {
+		t.Errorf("server received %d requests, want 1 (second call should hit cache)", got)
+	}
+}
+
+// Test: NewGitHubClient uses a 10-second timeout instead of 30 seconds
+// Justification: When rate-limited, the scraping fallback can stall on slow
+//
+//	responses. The 10s cap limits per-package wait time to ~10s in the
+//	worst case instead of ~30s, reducing total scan time significantly.
+//
+// Methodology: Inspect the Timeout field on the default http.Client.
+// Result: Default client timeout is 10s.
+func TestNewGitHubClientTimeout(t *testing.T) {
+	client := NewGitHubClient()
+	if client.httpClient.Timeout != 10*time.Second {
+		t.Errorf("client timeout = %v, want 10s", client.httpClient.Timeout)
 	}
 }

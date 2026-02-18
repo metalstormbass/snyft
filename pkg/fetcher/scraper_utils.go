@@ -16,7 +16,10 @@ const userAgent = "Mozilla/5.0 (compatible; Snyft/1.0; +https://github.com/metal
 // scrapeWithUserAgent performs an HTTP GET with proper user-agent headers
 func scrapeWithUserAgent(url string) (*goquery.Document, error) {
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		// 10s matches the GitHub API client timeout. Scraping is already a
+		// fallback path (triggered when the API rate-limits); we don't want
+		// a slow GitHub web response to add another 30s stall on top.
+		Timeout: 10 * time.Second,
 	}
 
 	req, err := http.NewRequest("GET", url, nil)
