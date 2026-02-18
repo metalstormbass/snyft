@@ -747,6 +747,12 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		CategoryScores: models.CategoryScores{},
 	}
 
+	// Build package identifier for evidence attribution
+	pkgID := result.Dependency.Name
+	if result.Dependency.Version != "" {
+		pkgID += "@" + result.Dependency.Version
+	}
+
 	// Category 1: Publisher Control (2FA/signing/multi-maintainer)
 	score.CategoryScores.PublisherControl = a.scorePublisherControl(result)
 
@@ -776,6 +782,26 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 
 	// Category 10: Package Maturity (age/update frequency/staleness)
 	score.CategoryScores.PackageMaturity = a.scorePackageMaturity(result)
+
+	// Prefix each category's evidence with the specific package identifier
+	// so every finding clearly references which library it applies to
+	if pkgID != "" {
+		categories := []*models.CategoryScore{
+			&score.CategoryScores.PublisherControl,
+			&score.CategoryScores.OwnershipChanges,
+			&score.CategoryScores.ReleaseAnomalies,
+			&score.CategoryScores.InstallExecution,
+			&score.CategoryScores.DependencySprawl,
+			&score.CategoryScores.Provenance,
+			&score.CategoryScores.Health,
+			&score.CategoryScores.Governance,
+			&score.CategoryScores.ReleaseSecurity,
+			&score.CategoryScores.PackageMaturity,
+		}
+		for _, cat := range categories {
+			cat.Evidence = pkgID + ": " + cat.Evidence
+		}
+	}
 
 	// Calculate total score
 	score.TotalScore = score.CategoryScores.PublisherControl.RiskPoints +
@@ -1070,11 +1096,12 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 		}
 	}
 
-	// Build final evidence string
+	// Build final evidence string with academic source citation
 	evidence := "No ownership data available"
 	if len(evidenceParts) > 0 {
 		evidence = strings.Join(evidenceParts, "; ")
 	}
+	evidence += " [Source: Backstabber's Knife Collection (Ohm et al., 2020); Towards Measuring Supply Chain Attacks (NDSS 2020)]"
 
 	// Determine description based on risk points
 	description := "Stable long-term ownership"
@@ -1098,12 +1125,14 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 // Detects dormant packages that suddenly reactivate, checks for unusual release patterns,
 // and analyzes commit frequency changes
 func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.CategoryScore {
+	const releaseAnomalySource = " [Source: Backstabber's Knife Collection (Ohm et al., 2020)]"
+
 	if result.Metadata.RepoLastCommit.IsZero() || result.RepositoryURL == "" {
 		return models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
 			Description: "Unable to verify release patterns",
-			Evidence:    "No commit history available",
+			Evidence:    "No commit history available" + releaseAnomalySource,
 			Verified:    false,
 		}
 	}
@@ -1117,7 +1146,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			Score:       1,
 			RiskPoints:  1,
 			Description: "Package appears dormant",
-			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year)", daysSinceLastCommit),
+			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year)", daysSinceLastCommit) + releaseAnomalySource,
 			Verified:    true,
 		}
 	}
@@ -1132,6 +1161,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			// Analyze release pattern
 			anomaly := a.detectReleaseAnomaly(releases, result.Metadata.RepoCreatedAt)
 			if anomaly != nil {
+				anomaly.Evidence += releaseAnomalySource
 				return *anomaly
 			}
 		}
@@ -1146,6 +1176,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 		if err1 == nil && err2 == nil {
 			anomaly := a.detectCommitFrequencyAnomaly(recentCommits, olderCommits, result.Metadata.RepoCreatedAt)
 			if anomaly != nil {
+				anomaly.Evidence += releaseAnomalySource
 				return *anomaly
 			}
 		}
@@ -1156,7 +1187,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 		Score:       2,
 		RiskPoints:  0,
 		Description: "Regular, consistent releases",
-		Evidence:    fmt.Sprintf("Last commit %.0f days ago, no anomalies detected", daysSinceLastCommit),
+		Evidence:    fmt.Sprintf("Last commit %.0f days ago, no anomalies detected", daysSinceLastCommit) + releaseAnomalySource,
 		Verified:    true,
 	}
 }
@@ -1368,13 +1399,15 @@ func convertToModelAnalysis(analysis ScriptAnalysis) *models.InstallScriptAnalys
 //   - 1 risk point (moderate): Single benign install script
 //   - 2 risk points (worst): Multiple scripts OR dangerous content detected
 func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.CategoryScore {
+	const installExecSource = " [Source: Backstabber's Knife Collection (Ohm et al., 2020); Towards Measuring Supply Chain Attacks (NDSS 2020)]"
+
 	// If no install scripts present, return best score
 	if !result.Metadata.HasInstallScripts || len(result.Metadata.InstallScripts) == 0 {
 		return models.CategoryScore{
 			Score:       2,
 			RiskPoints:  0,
 			Description: "No install-time scripts",
-			Evidence:    "No install scripts detected in package",
+			Evidence:    "No install scripts detected in package" + installExecSource,
 			Verified:    true,
 		}
 	}
@@ -1390,7 +1423,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Score:       0,
 			RiskPoints:  2,
 			Description: "Dangerous install-time operations detected",
-			Evidence:    fmt.Sprintf("Risk level: %s, Patterns: %s", result.Metadata.InstallScriptAnalysis.RiskLevel, strings.Join(patterns, ", ")),
+			Evidence:    fmt.Sprintf("Risk level: %s, Patterns: %s", result.Metadata.InstallScriptAnalysis.RiskLevel, strings.Join(patterns, ", ")) + installExecSource,
 			Verified:    true,
 		}
 	}
@@ -1411,7 +1444,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Score:       0,
 			RiskPoints:  2,
 			Description: "Multiple install-time scripts detected",
-			Evidence:    fmt.Sprintf("Scripts: %s", strings.Join(foundScripts, ", ")),
+			Evidence:    fmt.Sprintf("Scripts: %s", strings.Join(foundScripts, ", ")) + installExecSource,
 			Verified:    true,
 		}
 	}
@@ -1422,7 +1455,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Score:       0,
 			RiskPoints:  1,
 			Description: "Single install-time script detected",
-			Evidence:    fmt.Sprintf("Script: %s", foundScripts[0]),
+			Evidence:    fmt.Sprintf("Script: %s", foundScripts[0]) + installExecSource,
 			Verified:    true,
 		}
 	}
@@ -1432,7 +1465,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 		Score:       2,
 		RiskPoints:  0,
 		Description: "No install-time scripts",
-		Evidence:    "Package has scripts but no install hooks",
+		Evidence:    "Package has scripts but no install hooks" + installExecSource,
 		Verified:    true,
 	}
 }
@@ -1449,6 +1482,8 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 //     carries its own transitive tree, expanding the attack surface multiplicatively.
 //  3. No data: neutral 1-point score (unknown risk)
 func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.CategoryScore {
+	const depSprawlSource = " [Source: Small World with High Risks (Zimmermann et al., 2019)]"
+
 	// Path 1: lock file provides exact transitive count
 	if result.Metadata.DependencyMetrics != nil && result.Metadata.DependencyMetrics.Verified {
 		metrics := result.Metadata.DependencyMetrics
@@ -1463,7 +1498,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score:       2,
 				RiskPoints:  0,
 				Description: "Few transitive dependencies",
-				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
+				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount) + depSprawlSource,
 				Verified:    true,
 			}
 		} else if transitiveCount <= 50 {
@@ -1471,7 +1506,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score:       1,
 				RiskPoints:  1,
 				Description: "Moderate transitive dependencies",
-				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
+				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount) + depSprawlSource,
 				Verified:    true,
 			}
 		} else {
@@ -1479,7 +1514,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score:       0,
 				RiskPoints:  2,
 				Description: "Many transitive dependencies",
-				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
+				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount) + depSprawlSource,
 				Verified:    true,
 			}
 		}
@@ -1506,7 +1541,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score:       2,
 				RiskPoints:  0,
 				Description: "Few direct dependencies",
-				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount),
+				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount) + depSprawlSource,
 				Verified:    false,
 			}
 		} else if directCount <= 15 {
@@ -1514,7 +1549,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score:       1,
 				RiskPoints:  1,
 				Description: "Moderate direct dependencies",
-				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount),
+				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount) + depSprawlSource,
 				Verified:    false,
 			}
 		} else {
@@ -1522,7 +1557,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score:       0,
 				RiskPoints:  2,
 				Description: "Many direct dependencies",
-				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount),
+				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount) + depSprawlSource,
 				Verified:    false,
 			}
 		}
@@ -1535,7 +1570,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 		Score:       1,
 		RiskPoints:  1,
 		Description: "Dependency count unavailable",
-		Evidence:    "No lock file or registry dependency data found",
+		Evidence:    "No lock file or registry dependency data found" + depSprawlSource,
 		Verified:    false,
 	}
 }
@@ -1626,6 +1661,8 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	if result.Metadata.ProvenanceDetails != "" {
 		evidenceStr = evidenceStr + "; " + result.Metadata.ProvenanceDetails
 	}
+
+	evidenceStr += " [Source: SLSA v1.0 Specification (slsa.dev); Sigstore (sigstore.dev)]"
 
 	return models.CategoryScore{
 		Score:       score,
@@ -1758,7 +1795,7 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 		Score:       points,
 		RiskPoints:  riskPoints,
 		Description: description,
-		Evidence:    strings.Join(evidence, "; "),
+		Evidence:    strings.Join(evidence, "; ") + " [Source: OSSF Scorecard; Small World with High Risks (Zimmermann et al., 2019)]",
 		Verified:    verified,
 	}
 }

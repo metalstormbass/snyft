@@ -620,8 +620,9 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 		analysis.RiskLevel = "HIGH"
 	}
 
-	// Build evidence string
-	analysis.Evidence = strings.Join(evidenceParts, "; ")
+	// Build evidence string with academic source citation
+	analysis.Evidence = strings.Join(evidenceParts, "; ") +
+		" [Source: Backstabber's Knife Collection (Ohm et al., 2020)]"
 	analysis.Verified = len(evidenceParts) > 0
 }
 

@@ -33,12 +33,14 @@ import (
 //        1 = some controls but gaps (medium risk)
 //        2 = CI publishing with full protections (low risk)
 func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.CategoryScore {
+	const releaseSecSource = " [Source: SLSA v1.0 Build Level Requirements; Backstabber's Knife Collection (Ohm et al., 2020)]"
+
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
 			Description: "Unable to verify release security controls",
-			Evidence:    "No repository URL available",
+			Evidence:    "No repository URL available" + releaseSecSource,
 			Verified:    false,
 		}
 	}
@@ -133,7 +135,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		Score:       points,
 		RiskPoints:  riskPoints,
 		Description: description,
-		Evidence:    strings.Join(evidence, "; "),
+		Evidence:    strings.Join(evidence, "; ") + releaseSecSource,
 		Verified:    verified,
 	}
 }
