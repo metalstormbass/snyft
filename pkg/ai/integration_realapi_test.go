@@ -1,3 +1,15 @@
+// +build integration
+
+// This file contains integration tests that make REAL API calls to Claude.
+// These tests are disabled by default and only run when the "integration" build tag is set.
+//
+// To run these tests:
+//   export CLAUDE_API_KEY=your-api-key
+//   go test ./pkg/ai/... -tags=integration -v
+//
+// NOTE: These tests make real API calls and will incur costs.
+// For CI/CD and regular testing, use the mocked integration tests in integration_mocked_test.go
+
 package ai
 
 import (
