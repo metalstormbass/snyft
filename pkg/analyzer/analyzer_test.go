@@ -65,22 +65,24 @@ func TestScorePublisherControl_ModerateRisk_SingleMaintainerWithSigning(t *testi
 	}
 }
 
-func TestScorePublisherControl_ModerateRisk_FewMaintainersNoSigning(t *testing.T) {
-	// Test: 2-3 maintainers without signing controls
-	// Justification: Multiple maintainers reduce single point of compromise but lack of 2FA/signing still allows account takeover
+func TestScorePublisherControl_LowRisk_FewMaintainersSigningNotChecked(t *testing.T) {
+	// Test: 2-3 maintainers without repo URL (signing cannot be checked)
+	// Justification: Without a repo URL, signing status is unknown. We should NOT penalize
+	//   for signing when it couldn't be checked - that would create false risk inflation.
 	// Source: npm security advisories on account takeover (https://github.blog/2021-12-06-write-access-to-npm-packages/)
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
 			Maintainers: []string{"alice", "bob", "charlie"},
 		},
-		RepositoryURL: "", // No signing
+		RepositoryURL: "", // No repo URL = signing not checked
 	}
 
 	score := analyzer.scorePublisherControl(result)
 
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for few maintainers no signing, got %d", score.RiskPoints)
+	// Score: 0.3 (≤3 maintainers) + 0 (signing not checked) = 0.3 → LOW (0 points)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for few maintainers with signing not checked, got %d", score.RiskPoints)
 	}
 }
 
@@ -110,9 +112,10 @@ func TestScorePublisherControl_ModerateRisk_FewMaintainersWithoutVerifiedSigning
 	}
 }
 
-func TestScorePublisherControl_ModerateRisk_ManyMaintainersNoSigning(t *testing.T) {
-	// Test: 4+ maintainers with personal emails and without signing controls
-	// Justification: Large team reduces individual risk but personal emails + no signing still allows account takeover
+func TestScorePublisherControl_LowRisk_ManyMaintainersPersonalEmailSigningNotChecked(t *testing.T) {
+	// Test: 4+ maintainers with personal emails, signing not checked (no repo URL)
+	// Justification: Large team (4+) reduces individual risk. Personal emails add +0.3 but
+	//   without a repo URL, signing cannot be checked and should NOT be penalized.
 	// Source: SLSA v1.0 - Build Level 1 requires automation but not signing; Level 2+ requires signatures
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -125,36 +128,36 @@ func TestScorePublisherControl_ModerateRisk_ManyMaintainersNoSigning(t *testing.
 				"eve@gmail.com",
 			},
 		},
-		RepositoryURL: "", // No signing
+		RepositoryURL: "", // No repo URL = signing not checked
 	}
 
 	score := analyzer.scorePublisherControl(result)
 
-	// Many maintainers with personal emails and no signing = 1 risk point
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for many maintainers with personal emails and no signing, got %d", score.RiskPoints)
+	// Score: 0.0 (4+ maint) + 0.3 (personal emails) + 0 (signing not checked) = 0.3 → LOW (0 points)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for many maintainers with personal emails and signing not checked, got %d", score.RiskPoints)
 	}
 }
 
-func TestScorePublisherControl_ModerateRisk_ManyMaintainersWithoutVerifiedSigning(t *testing.T) {
+func TestScorePublisherControl_LowRisk_ManyMaintainersWithoutVerifiedSigning(t *testing.T) {
 	// Test: 4+ maintainers without verified signing
-	// Justification: Multiple maintainers reduce risk; without a repository URL signing cannot be
-	//                verified, so no signing penalty is applied beyond the base 0.5 for unknown
-	//                signing status. riskScore = 0.5 < 0.7 threshold → 0 risk points (low risk).
+	// Justification: Multiple maintainers reduce risk; without a repository URL, signing cannot be
+	//                verified. With the SigningChecked guard, no signing penalty is applied when
+	//                signing was not actually checked.
 	// Source: SLSA v1.0 Build L3 (https://slsa.dev/spec/v1.0/levels)
 	// Methodology: Pure unit test with no external API calls (empty RepositoryURL)
-	// Result: 6 maintainers + no signing data = riskScore 0.5 → RiskPoints 0 (below 0.7 threshold)
+	// Result: 6 maintainers + signing not checked = riskScore 0.0 → RiskPoints 0 (LOW)
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
 			Maintainers: []string{"alice", "bob", "charlie", "dave", "eve", "frank"},
 		},
-		RepositoryURL: "", // No repo URL = no real API calls, pure unit test
+		RepositoryURL: "", // No repo URL = signing not checked, pure unit test
 	}
 
 	score := analyzer.scorePublisherControl(result)
 
-	// Many maintainers with no signing data: riskScore = 0.5 (no signing) < 0.7 threshold → 0 risk points
+	// Many maintainers with signing not checked: riskScore = 0.0 → 0 risk points (LOW)
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points for many maintainers without signing data, got %d", score.RiskPoints)
 	}
