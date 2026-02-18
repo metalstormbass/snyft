@@ -297,6 +297,11 @@ func (r *Reporter) printMarkdownPackageAIAnalysis(w io.Writer, aiAnalysis *model
 			confidencePct := pattern.Confidence * 100
 			_, _ = fmt.Fprintf(w, "  - *Confidence:* %.0f%%\n", confidencePct)
 
+			// Always show academic source for AI findings - this is required for traceability
+			if pattern.AcademicSource != "" {
+				_, _ = fmt.Fprintf(w, "  - *Source:* %s\n", pattern.AcademicSource)
+			}
+
 			if r.config.Verbose && len(pattern.Evidence) > 0 {
 				_, _ = fmt.Fprintln(w, "  - *Evidence:*")
 				for _, evidence := range pattern.Evidence {

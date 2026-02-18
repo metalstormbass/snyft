@@ -617,6 +617,12 @@ func (r *Reporter) printHTMLPackageAIAnalysis(w io.Writer, aiAnalysis *models.AI
 			confidencePct := pattern.Confidence * 100
 			_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 5px;\">Confidence: %.0f%%</div>\n", confidencePct)
 
+			// Always show academic source for AI findings - required for traceability
+			if pattern.AcademicSource != "" {
+				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #555; margin-top: 5px; font-style: italic;\">Source: %s</div>\n",
+					html.EscapeString(pattern.AcademicSource))
+			}
+
 			if r.config.Verbose && len(pattern.Evidence) > 0 {
 				_, _ = fmt.Fprintln(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 8px;\">")
 				_, _ = fmt.Fprintln(w, "              <strong>Evidence:</strong>")
