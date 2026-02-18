@@ -2,9 +2,13 @@ package ai
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
@@ -716,6 +720,568 @@ func TestExplainer_ParseExecutiveResponse_JSON(t *testing.T) {
 	}
 	if explanation.Summary != "Package is high risk." {
 		t.Errorf("Expected JSON summary to be parsed, got: %s", explanation.Summary)
+	}
+}
+
+// Test: ExplainRisk generates a full executive explanation via mocked API
+// Justification: ExplainRisk is the core entry point for executive explanations;
+//                must correctly build prompts, call the API, and parse responses
+// Source: Stakeholder communication requirements for supply chain risk
+// Methodology: Mock the Claude API to return a structured response, verify the
+//              ExplainerResult contains parsed explanation with all expected fields
+// Result: Should return ExplainerResult with non-empty explanation, token count, model
+func TestExplainer_ExplainRisk_Mocked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		responseText := `## Executive Summary
+
+This package shows moderate supply chain risk due to limited maintainer diversity.
+
+## Key Risks
+
+- Low bus factor increases account takeover risk
+- No branch protection on default branch
+
+## Business Impact
+
+If compromised, could affect downstream applications relying on this package.
+
+## Recommendation
+
+REVIEW before production deployment. Verify maintainer practices.
+
+## Technical Details
+
+Top contributor accounts for 80% of commits.`
+		fmt.Fprintf(w, `{
+			"id": "msg_explain_123",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5-20250929",
+			"content": [{"type": "text", "text": %q}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 500, "output_tokens": 200}
+		}`, responseText)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	explainer := NewExplainer(&ExplainerConfig{
+		Client:         client,
+		TargetAudience: "executive",
+		IncludeAttacks: true,
+		MaxTokens:      1500,
+		Temperature:    0.5,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "MEDIUM",
+		RiskScore: 55,
+		RiskFactors: []string{
+			"Low bus factor",
+			"No branch protection",
+		},
+		Findings: []models.Finding{
+			{
+				Severity:    "MEDIUM",
+				Category:    "Health",
+				Description: "Low bus factor - concentrated development",
+				Evidence:    "Top contributor accounts for 80% of commits",
+			},
+		},
+		SupplyChainScore: &models.SupplyChainScore{
+			TotalScore: 8,
+			RiskLevel:  "MEDIUM",
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"alice", "bob"},
+			RepoStars:   150,
+			RepoForks:   20,
+		},
+	}
+
+	ctx := context.Background()
+	explainerResult, err := explainer.ExplainRisk(ctx, "test-package", models.EcosystemNPM, result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if explainerResult == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if explainerResult.Error != nil {
+		t.Fatalf("unexpected error in result: %v", explainerResult.Error)
+	}
+	if explainerResult.Explanation == nil {
+		t.Fatal("expected non-nil explanation")
+	}
+	if explainerResult.Explanation.Summary == "" {
+		t.Error("expected non-empty summary")
+	}
+	if explainerResult.RawResponse == "" {
+		t.Error("expected non-empty raw response")
+	}
+	if explainerResult.TokensUsed <= 0 {
+		t.Error("expected positive token count")
+	}
+	if explainerResult.ModelVersion == "" {
+		t.Error("expected non-empty model version")
+	}
+	if explainerResult.Explanation.GeneratedAt.IsZero() {
+		t.Error("expected non-zero generated timestamp")
+	}
+	if explainerResult.Explanation.Confidence <= 0 {
+		t.Error("expected positive confidence")
+	}
+}
+
+// Test: ExplainRisk returns error on API failure
+// Justification: API failures must be propagated as errors, not silently swallowed
+// Source: Error handling best practices for AI-powered analysis
+// Methodology: Mock API returns 400 error, verify error propagation
+// Result: Should return error and ExplainerResult with Error field set
+func TestExplainer_ExplainRisk_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+	cfg.EnableRetry = false
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	explainer := NewExplainer(&ExplainerConfig{
+		Client: client,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "MEDIUM",
+		RiskScore: 50,
+	}
+
+	explainerResult, err := explainer.ExplainRisk(context.Background(), "fail-pkg", models.EcosystemNPM, result)
+	if err == nil {
+		t.Fatal("expected error from API failure")
+	}
+
+	// The second return value is the raw API error; the wrapped error is in ExplainerResult.Error
+	if explainerResult == nil {
+		t.Fatal("expected non-nil ExplainerResult even on error")
+	}
+	if explainerResult.Error == nil {
+		t.Error("expected ExplainerResult.Error to be set")
+	} else if !strings.Contains(explainerResult.Error.Error(), "failed to generate executive explanation") {
+		t.Errorf("expected wrapped explanation error, got: %v", explainerResult.Error)
+	}
+}
+
+// Test: ExplainRisk correctly parses JSON response from API
+// Justification: When AI returns structured JSON instead of markdown, the parser
+//                should correctly deserialize all fields
+// Source: Anthropic API response format flexibility
+// Methodology: Mock API returns a JSON-formatted executive explanation
+// Result: All JSON fields should be correctly parsed into ExecutiveExplanation
+func TestExplainer_ExplainRisk_JSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		jsonResp := `{"summary":"High risk package.","key_risks":["Single maintainer","No provenance"],"business_impact":"Potential data breach","recommended_action":"BLOCK","technical_details":"Local publishing detected"}`
+		fmt.Fprintf(w, `{
+			"id": "msg_json_123",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5-20250929",
+			"content": [{"type": "text", "text": %q}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 300, "output_tokens": 100}
+		}`, jsonResp)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	explainer := NewExplainer(&ExplainerConfig{
+		Client: client,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "HIGH",
+		RiskScore: 85,
+	}
+
+	explainerResult, err := explainer.ExplainRisk(context.Background(), "json-pkg", models.EcosystemNPM, result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if explainerResult.Explanation.Summary != "High risk package." {
+		t.Errorf("expected parsed JSON summary, got: %s", explainerResult.Explanation.Summary)
+	}
+	if len(explainerResult.Explanation.KeyRisks) != 2 {
+		t.Errorf("expected 2 key risks from JSON, got %d", len(explainerResult.Explanation.KeyRisks))
+	}
+	if explainerResult.Explanation.RecommendedAction != "BLOCK" {
+		t.Errorf("expected 'BLOCK' recommendation, got: %s", explainerResult.Explanation.RecommendedAction)
+	}
+}
+
+// Test: extractTextContent correctly extracts text from Anthropic message blocks
+// Justification: Response parsing must handle single and multiple content blocks
+// Source: Anthropic API message response format
+// Methodology: Use httptest to produce properly deserialized messages, then extract text
+// Result: Should concatenate text from all text-type content blocks
+func TestExplainer_ExtractTextContent(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{})
+
+	// Helper: create a real API message via httptest to get proper SDK deserialization
+	makeMessage := func(t *testing.T, textContent string) *anthropic.Message {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{
+				"id": "msg_extract",
+				"type": "message",
+				"role": "assistant",
+				"model": "claude-sonnet-4-5-20250929",
+				"content": [{"type": "text", "text": %q}],
+				"stop_reason": "end_turn",
+				"usage": {"input_tokens": 10, "output_tokens": 5}
+			}`, textContent)
+		}))
+		defer server.Close()
+
+		cfg := DefaultConfig()
+		cfg.APIKey = "test-key"
+		cfg.BaseURL = server.URL
+		cfg.EnableCache = false
+		cfg.EnableRateLimit = false
+		cfg.EnableCircuitBreaker = false
+		client, err := NewClient(cfg)
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		defer func() { _ = client.Close() }()
+
+		msg, err := client.CreateMessage(context.Background(), anthropic.MessageNewParams{
+			Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+			MaxTokens: 100,
+			Messages:  []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock("test"))},
+		})
+		if err != nil {
+			t.Fatalf("failed to get message: %v", err)
+		}
+		return msg
+	}
+
+	t.Run("single text block", func(t *testing.T) {
+		msg := makeMessage(t, "Hello, world!")
+		text := explainer.extractTextContent(msg)
+		if text != "Hello, world!" {
+			t.Errorf("expected 'Hello, world!', got %q", text)
+		}
+	})
+
+	t.Run("extracts non-empty content", func(t *testing.T) {
+		msg := makeMessage(t, "This is a risk assessment summary.")
+		text := explainer.extractTextContent(msg)
+		if text == "" {
+			t.Error("expected non-empty extracted text")
+		}
+		if text != "This is a risk assessment summary." {
+			t.Errorf("unexpected text: %q", text)
+		}
+	})
+
+	t.Run("empty content returns empty string", func(t *testing.T) {
+		msg := &anthropic.Message{
+			Content: []anthropic.ContentBlockUnion{},
+		}
+		text := explainer.extractTextContent(msg)
+		if text != "" {
+			t.Errorf("expected empty string, got %q", text)
+		}
+	})
+}
+
+// Test: GenerateQuickSummary produces concise summary via mocked API
+// Justification: Quick summaries must be concise (2-3 sentences) and include
+//                a clear BLOCK/REVIEW/ALLOW recommendation
+// Source: Executive briefing best practices
+// Methodology: Mock API to return concise summary, verify it's returned correctly
+// Result: Should return non-empty summary string
+func TestExplainer_GenerateQuickSummary_Mocked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id": "msg_quick_123",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-haiku-4-5-20251001",
+			"content": [{"type": "text", "text": "Moderate risk. Limited maintainer diversity increases account takeover risk. Recommendation: REVIEW before production deployment."}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 100, "output_tokens": 30}
+		}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	explainer := NewExplainer(&ExplainerConfig{
+		Client: client,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "MEDIUM",
+		RiskScore: 55,
+	}
+
+	summary, err := explainer.GenerateQuickSummary(context.Background(), "test-pkg", result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if summary == "" {
+		t.Error("expected non-empty summary")
+	}
+	if !strings.Contains(summary, "REVIEW") {
+		t.Error("expected summary to contain recommendation")
+	}
+
+	// Quick summary should be concise
+	sentences := countSentences(summary)
+	if sentences > 5 {
+		t.Errorf("expected concise summary (<=5 sentences), got %d", sentences)
+	}
+}
+
+// Test: GenerateQuickSummary returns error on API failure
+// Justification: API errors must be clearly surfaced to callers
+// Source: Error handling best practices
+// Methodology: Mock API returns error, verify error propagation
+// Result: Should return empty string and error
+func TestExplainer_GenerateQuickSummary_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test"}}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+	cfg.EnableRetry = false
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	explainer := NewExplainer(&ExplainerConfig{
+		Client: client,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "HIGH",
+		RiskScore: 80,
+	}
+
+	_, err = explainer.GenerateQuickSummary(context.Background(), "fail-pkg", result)
+	if err == nil {
+		t.Fatal("expected error from API failure")
+	}
+	if !strings.Contains(err.Error(), "failed to generate quick summary") {
+		t.Errorf("expected quick summary error, got: %v", err)
+	}
+}
+
+// Test: BatchExplain processes multiple packages and handles mixed success/failure
+// Justification: Batch processing must continue on individual failures and record
+//                errors per-package without failing the entire batch
+// Source: Bulk processing requirements for dependency graph analysis
+// Methodology: Mock API that alternates success/failure, verify mixed results
+// Result: Should return results for all packages, with errors on failed ones
+func TestExplainer_BatchExplain_MixedResults(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount%2 == 0 {
+			// Even calls fail
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test"}}`)
+			return
+		}
+		// Odd calls succeed
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id": "msg_batch",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5-20250929",
+			"content": [{"type": "text", "text": "Low risk package. Good practices. Recommendation: ALLOW."}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 200, "output_tokens": 50}
+		}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+	cfg.EnableRetry = false
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	explainer := NewExplainer(&ExplainerConfig{
+		Client: client,
+	})
+
+	packages := []string{"pkg-a", "pkg-b", "pkg-c"}
+	ecosystems := []models.Ecosystem{models.EcosystemNPM, models.EcosystemPyPI, models.EcosystemNPM}
+	results := []models.AnalysisResult{
+		{RiskLevel: "LOW", RiskScore: 10},
+		{RiskLevel: "MEDIUM", RiskScore: 50},
+		{RiskLevel: "LOW", RiskScore: 15},
+	}
+
+	explainerResults, err := explainer.BatchExplain(context.Background(), packages, ecosystems, results)
+	if err != nil {
+		t.Fatalf("unexpected batch error: %v", err)
+	}
+
+	if len(explainerResults) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(explainerResults))
+	}
+
+	// First package (odd call) should succeed
+	if explainerResults[0].Error != nil {
+		t.Errorf("expected first package to succeed, got error: %v", explainerResults[0].Error)
+	}
+
+	// Second package (even call) should fail
+	if explainerResults[1].Error == nil {
+		t.Error("expected second package to have error")
+	}
+
+	// Third package (odd call) should succeed
+	if explainerResults[2].Error != nil {
+		t.Errorf("expected third package to succeed, got error: %v", explainerResults[2].Error)
+	}
+}
+
+// Test: BatchExplain with all successful results
+// Justification: Happy path must return all results with valid explanations
+// Source: Batch processing requirements
+// Methodology: Mock API returns success for all calls
+// Result: All results should have valid explanations and no errors
+func TestExplainer_BatchExplain_AllSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{
+			"id": "msg_batch_ok",
+			"type": "message",
+			"role": "assistant",
+			"model": "claude-sonnet-4-5-20250929",
+			"content": [{"type": "text", "text": "Package shows good security practices. Recommendation: ALLOW."}],
+			"stop_reason": "end_turn",
+			"usage": {"input_tokens": 200, "output_tokens": 50}
+		}`)
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	cfg.BaseURL = server.URL
+	cfg.EnableCache = false
+	cfg.EnableRateLimit = false
+	cfg.EnableCircuitBreaker = false
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	explainer := NewExplainer(&ExplainerConfig{
+		Client: client,
+	})
+
+	packages := []string{"pkg-a", "pkg-b"}
+	ecosystems := []models.Ecosystem{models.EcosystemNPM, models.EcosystemPyPI}
+	results := []models.AnalysisResult{
+		{RiskLevel: "LOW", RiskScore: 10, Metadata: models.PackageMetadata{Maintainers: []string{"a", "b"}, RepoStars: 100}},
+		{RiskLevel: "LOW", RiskScore: 15, Metadata: models.PackageMetadata{Maintainers: []string{"x"}, RepoStars: 50}},
+	}
+
+	explainerResults, err := explainer.BatchExplain(context.Background(), packages, ecosystems, results)
+	if err != nil {
+		t.Fatalf("unexpected batch error: %v", err)
+	}
+
+	for i, r := range explainerResults {
+		if r.Error != nil {
+			t.Errorf("package %d: unexpected error: %v", i, r.Error)
+		}
+		if r.Explanation == nil {
+			t.Errorf("package %d: expected non-nil explanation", i)
+		}
+		if r.RawResponse == "" {
+			t.Errorf("package %d: expected non-empty raw response", i)
+		}
 	}
 }
 
