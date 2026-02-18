@@ -95,7 +95,18 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 	// Get latest version info and scripts
 	if latest, ok := npmResp.Versions[npmResp.DistTags.Latest]; ok {
 		pkg.Version = latest.Version
-		pkg.Scripts = latest.Scripts
+		// Convert RawMessage script values to plain strings.
+		// Values that are JSON objects (not strings) are kept as their raw JSON
+		// representation so they remain inspectable without crashing the decoder.
+		pkg.Scripts = make(map[string]string, len(latest.Scripts))
+		for k, raw := range latest.Scripts {
+			var s string
+			if err := json.Unmarshal(raw, &s); err == nil {
+				pkg.Scripts[k] = s
+			} else {
+				pkg.Scripts[k] = string(raw)
+			}
+		}
 	}
 
 	// Get published time for the latest version
@@ -169,10 +180,12 @@ type NPMDistTags struct {
 }
 
 type NPMVersionDetails struct {
-	Version     string            `json:"version"`
-	Scripts     map[string]string `json:"scripts"`
-	Dist        NPMDist           `json:"dist"`
-	Maintainers []NPMMaintainer   `json:"maintainers"`
+	Version string `json:"version"`
+	// Scripts values can be strings OR nested objects (e.g. in old joi versions).
+	// Using json.RawMessage avoids an unmarshal failure on non-string values.
+	Scripts     map[string]json.RawMessage `json:"scripts"`
+	Dist        NPMDist                    `json:"dist"`
+	Maintainers []NPMMaintainer            `json:"maintainers"`
 }
 
 type NPMDist struct {

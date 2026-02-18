@@ -50,6 +50,12 @@ func parsePomXML(path string) ([]models.Dependency, error) {
 			version = "unknown"
 		}
 
+		// BOM-managed versions have no <version> element; mark them unknown
+		// rather than passing an empty string which produces malformed URLs
+		if version == "" {
+			version = "unknown"
+		}
+
 		deps = append(deps, models.Dependency{
 			Name:      name,
 			Version:   version,

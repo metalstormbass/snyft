@@ -207,10 +207,11 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 
 	// Extract SCM URL
 	if pom.SCM.URL != "" {
-		pkg.RepositoryURL = pom.SCM.URL
+		pkg.RepositoryURL = normalizeSCMURL(pom.SCM.URL)
 	} else if pom.SCM.Connection != "" {
 		// Parse scm:git: prefix
-		pkg.RepositoryURL = strings.TrimPrefix(pom.SCM.Connection, "scm:git:")
+		raw := strings.TrimPrefix(pom.SCM.Connection, "scm:git:")
+		pkg.RepositoryURL = normalizeSCMURL(raw)
 	}
 
 	// Apache fallback: if no SCM URL was found and the groupId starts with
@@ -354,6 +355,38 @@ func (c *MavenClient) VerifySourceAvailability(packageName, version string, repo
 	}
 
 	return result
+}
+
+// normalizeSCMURL trims SCM URLs to the canonical repository root.
+// Some POM files contain extra path segments after the owner/repo portion
+// (e.g. "https://github.com/mapstruct/mapstruct/mapstruct/"). Keeping these
+// extra segments causes GitHub and other platform parsers to reject the URL.
+func normalizeSCMURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	// Strip trailing .git for uniform handling, restore later if needed
+	clean := strings.TrimSuffix(strings.TrimRight(rawURL, "/"), ".git")
+
+	// Detect known hosting prefixes and truncate to owner/repo
+	for _, prefix := range []string{
+		"https://github.com/",
+		"http://github.com/",
+		"https://gitlab.com/",
+		"http://gitlab.com/",
+		"https://bitbucket.org/",
+		"http://bitbucket.org/",
+	} {
+		if strings.HasPrefix(clean, prefix) {
+			rest := strings.TrimPrefix(clean, prefix)
+			parts := strings.SplitN(rest, "/", 3)
+			if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
+				return prefix + parts[0] + "/" + parts[1]
+			}
+		}
+	}
+
+	return rawURL
 }
 
 // scrapeMavenPackageInfo scrapes package information from mvnrepository.com

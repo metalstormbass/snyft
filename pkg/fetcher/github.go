@@ -7,17 +7,80 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
+// repoCache stores API responses in memory to prevent redundant network calls
+// within a single scan session.
+//
+// Without a GITHUB_TOKEN, GitHub enforces a 60 req/hour unauthenticated rate
+// limit. A single package analysis makes 40+ API calls per repository
+// (DetectCISystems alone issues ~20 HEAD requests). Caching responses
+// eliminates repeated round-trips for the same repo across multiple checks.
+type repoCache struct {
+	mu         sync.RWMutex
+	repoInfo   map[string]*models.RepositoryInfo // key: "owner/repo"
+	releases   map[string][]GitHubRelease        // key: "owner/repo"
+	fileExists map[string]bool                   // key: "owner/repo/path"
+}
+
+func newRepoCache() *repoCache {
+	return &repoCache{
+		repoInfo:   make(map[string]*models.RepositoryInfo),
+		releases:   make(map[string][]GitHubRelease),
+		fileExists: make(map[string]bool),
+	}
+}
+
+func (rc *repoCache) getRepoInfo(key string) (*models.RepositoryInfo, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.repoInfo[key]
+	return v, ok
+}
+
+func (rc *repoCache) setRepoInfo(key string, info *models.RepositoryInfo) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.repoInfo[key] = info
+}
+
+func (rc *repoCache) getCachedReleases(key string) ([]GitHubRelease, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.releases[key]
+	return v, ok
+}
+
+func (rc *repoCache) setCachedReleases(key string, releases []GitHubRelease) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.releases[key] = releases
+}
+
+func (rc *repoCache) getFileExists(key string) (bool, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.fileExists[key]
+	return v, ok
+}
+
+func (rc *repoCache) setFileExists(key string, exists bool) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.fileExists[key] = exists
+}
+
 // GitHubClient handles interactions with GitHub API
 type GitHubClient struct {
 	token      string
 	httpClient *http.Client
 	baseURL    string
+	cache      *repoCache
 }
 
 // NewGitHubClient creates a new GitHub API client
@@ -25,9 +88,14 @@ func NewGitHubClient() *GitHubClient {
 	return &GitHubClient{
 		token: os.Getenv("GITHUB_TOKEN"),
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			// 10s timeout instead of 30s: when rate-limited the API returns
+			// 403 immediately, but the scraping fallback can stall on slow
+			// responses. A 10s cap keeps failures fast without impacting
+			// normal usage where GitHub responds in <1s.
+			Timeout: 10 * time.Second,
 		},
 		baseURL: "https://api.github.com",
+		cache:   newRepoCache(),
 	}
 }
 
@@ -36,6 +104,15 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
+	}
+
+	// Return cached result if available — GetRepositoryInfo is called multiple
+	// times per package (analyzeRepository, getBranchProtection, etc.)
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getRepoInfo(cacheKey); ok {
+			return cached, nil
+		}
 	}
 
 	url := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, owner, repo)
@@ -59,7 +136,11 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		body, _ := io.ReadAll(resp.Body)
 		// Try scraping fallback on rate limit or auth errors
 		if shouldFallbackToScraping(nil, resp.StatusCode) {
-			return c.scrapeRepositoryInfo(repoURL, owner, repo)
+			info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
+			if scrapeErr == nil && c.cache != nil {
+				c.cache.setRepoInfo(cacheKey, info)
+			}
+			return info, scrapeErr
 		}
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
 	}
@@ -69,7 +150,7 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		return nil, err
 	}
 
-	return &models.RepositoryInfo{
+	info := &models.RepositoryInfo{
 		URL:           ghRepo.HTMLURL,
 		Owner:         ghRepo.Owner.Login,
 		Name:          ghRepo.Name,
@@ -85,7 +166,11 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		PushedAt:      ghRepo.PushedAt,
 		License:       getLicenseName(ghRepo.License),
 		Topics:        ghRepo.Topics,
-	}, nil
+	}
+	if c.cache != nil {
+		c.cache.setRepoInfo(cacheKey, info)
+	}
+	return info, nil
 }
 
 // scrapeRepositoryInfo scrapes repository information from the GitHub web page
@@ -316,12 +401,29 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 			return true, tagURL, nil
 		}
+
+		// Rate-limited or auth required — cannot distinguish "tag absent" from
+		// "check failed". Return an explicit error so the caller can suppress the
+		// finding rather than converting a failed check into a false negative.
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			return false, "", fmt.Errorf("GitHub API rate limited (status %d): cannot verify git tag", resp.StatusCode)
+		}
 	}
 
 	return false, "", nil
 }
 
 func (c *GitHubClient) fileExists(owner, repo, path string) bool {
+	// Cache HEAD responses — DetectCISystems issues ~20 HEAD requests per repo
+	// and provenance checks add ~10 more. Without caching, scanning 10+ packages
+	// from the same repo exhausts the unauthenticated rate limit instantly.
+	cacheKey := owner + "/" + repo + "/" + path
+	if c.cache != nil {
+		if cached, ok := c.cache.getFileExists(cacheKey); ok {
+			return cached
+		}
+	}
+
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
@@ -338,7 +440,11 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	return resp.StatusCode == http.StatusOK
+	exists := resp.StatusCode == http.StatusOK
+	if c.cache != nil {
+		c.cache.setFileExists(cacheKey, exists)
+	}
+	return exists
 }
 
 // GitHub API response structures
@@ -599,6 +705,16 @@ func (c *GitHubClient) checkReproducibleBuild(owner, repo string) bool {
 
 // getReleases fetches all releases for a repository
 func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) {
+	// Cache releases — called three times per package from provenance checks
+	// (checkSigstoreSignatures, checkSignedReleases, and the public-facing
+	// CheckSignedReleases). A cache hit eliminates two redundant network calls.
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getCachedReleases(cacheKey); ok {
+			return cached, nil
+		}
+	}
+
 	url := fmt.Sprintf("%s/repos/%s/%s/releases", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -625,6 +741,9 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		return nil, err
 	}
 
+	if c.cache != nil {
+		c.cache.setCachedReleases(cacheKey, releases)
+	}
 	return releases, nil
 }
 
