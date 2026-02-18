@@ -8,19 +8,15 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// Test: Executive explanation generation for HIGH risk package
+// Test: HIGH risk package prompt and style integration
 // Justification: High-risk packages (e.g., single maintainer + install scripts)
 //                require urgent, actionable communication to stakeholders
 // Source: Communication best practices for security findings
-// Methodology: Mock AnalysisResult with HIGH risk factors, verify tone and recommendations
-// Result: Should generate urgent explanation with BLOCK/REVIEW recommendation
+// Methodology: Verify the full prompt-building pipeline for HIGH risk produces
+//              urgent tone with attack pattern context and BLOCK/REVIEW guidance
+// Result: Should generate urgent style with attack references and blocking recommendation
 func TestExplainer_HighRiskPackage(t *testing.T) {
-	// Skip if no API key (this would be a real API call)
-	// In practice, we'd mock the client for unit tests
-	t.Skip("Integration test - requires API key")
-
 	config := &ExplainerConfig{
-		Client:         nil, // Would need real client
 		TargetAudience: "executive",
 		IncludeAttacks: true,
 		MaxTokens:      1500,
@@ -29,7 +25,6 @@ func TestExplainer_HighRiskPackage(t *testing.T) {
 
 	explainer := NewExplainer(config)
 
-	// Create HIGH risk analysis result
 	result := models.AnalysisResult{
 		RiskLevel: "HIGH",
 		RiskScore: 85,
@@ -59,34 +54,33 @@ func TestExplainer_HighRiskPackage(t *testing.T) {
 		},
 	}
 
-	explainerResult, err := explainer.ExplainRisk(context.Background(), "suspicious-package", models.EcosystemNPM, result)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	if explainerResult.Explanation == nil {
-		t.Fatal("Expected explanation, got nil")
+	// Verify style selection
+	style := explainer.determineExplanationStyle(result.RiskLevel)
+	if style != "urgent" {
+		t.Errorf("Expected style 'urgent' for HIGH risk, got '%s'", style)
 	}
 
-	// Verify explanation characteristics for HIGH risk
-	if explainerResult.Explanation.Summary == "" {
-		t.Error("Expected non-empty summary")
+	// Verify prompt building with attack context
+	prompt := explainer.buildExecutivePrompt("suspicious-package", models.EcosystemNPM, result, style)
+	if prompt == nil {
+		t.Fatal("Expected prompt, got nil")
 	}
-	if len(explainerResult.Explanation.KeyRisks) < 1 {
-		t.Error("Expected at least 1 key risk")
-	}
-	if explainerResult.Explanation.RecommendedAction == "" {
-		t.Error("Expected non-empty recommended action")
+	if !contains(prompt.UserPrompt, "URGENT") {
+		t.Error("Expected prompt to contain 'URGENT' for HIGH risk style")
 	}
 
-	// Summary should be urgent and direct
-	if !contains(explainerResult.Explanation.Summary, "HIGH") {
-		t.Error("Expected summary to contain 'HIGH'")
+	// Attack patterns for both maintainer and install script should be included
+	if !contains(prompt.UserPrompt, "eslint-scope") {
+		t.Error("Expected prompt to reference eslint-scope for single maintainer finding")
+	}
+	if !contains(prompt.UserPrompt, "event-stream") {
+		t.Error("Expected prompt to reference event-stream for install script finding")
 	}
 
-	// Should recommend blocking or careful review
-	recommendLower := explainerResult.Explanation.RecommendedAction
-	if !contains(recommendLower, "BLOCK") && !contains(recommendLower, "REVIEW") {
-		t.Error("High risk package should recommend BLOCK or REVIEW")
+	// Recommendation guidance should suggest BLOCK
+	guidance := explainer.getRecommendationGuidance(result.RiskLevel)
+	if !contains(guidance, "BLOCK") {
+		t.Error("Expected HIGH risk guidance to contain 'BLOCK'")
 	}
 }
 
@@ -511,76 +505,24 @@ func TestExplainer_TargetAudience(t *testing.T) {
 	}
 }
 
-// Test: Quick summary generation
-// Justification: Sometimes stakeholders need just a one-line assessment
-// Source: Executive briefing best practices
-// Methodology: Verify quick summary is concise (2-3 sentences)
-// Result: Should generate brief summary with clear recommendation
-func TestExplainer_QuickSummary(t *testing.T) {
-	// This would be an integration test with real API
-	t.Skip("Integration test - requires API key")
+// Test: BatchExplain input validation
+// Justification: Mismatched input lengths must be caught before API calls
+// Source: Defensive programming for batch operations
+// Methodology: Pass mismatched slice lengths and verify error
+// Result: Should return clear error for mismatched inputs
+func TestExplainer_BatchExplain_MismatchedInputs(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{})
 
-	config := &ExplainerConfig{
-		Client: nil, // Would need real client
-	}
-	explainer := NewExplainer(config)
+	packages := []string{"pkg-a", "pkg-b"}
+	ecosystems := []models.Ecosystem{models.EcosystemNPM} // Wrong length
+	results := []models.AnalysisResult{{}, {}}
 
-	result := models.AnalysisResult{
-		RiskLevel: "HIGH",
-		RiskScore: 80,
-		Findings: []models.Finding{
-			{Severity: "HIGH", Description: "Single maintainer"},
-		},
+	_, err := explainer.BatchExplain(context.Background(), packages, ecosystems, results)
+	if err == nil {
+		t.Fatal("Expected error for mismatched input lengths")
 	}
-
-	summary, err := explainer.GenerateQuickSummary(context.Background(), "test-package", result)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	if summary == "" {
-		t.Error("Expected non-empty summary")
-	}
-
-	// Quick summary should be concise
-	sentences := countSentences(summary)
-	if sentences > 4 {
-		t.Errorf("Quick summary should be 2-3 sentences, got %d", sentences)
-	}
-
-	// Should include a recommendation
-	if !contains(summary, "BLOCK") && !contains(summary, "REVIEW") && !contains(summary, "ALLOW") {
-		t.Error("Quick summary should include recommendation (BLOCK/REVIEW/ALLOW)")
-	}
-}
-
-// Test: Batch explanation processing
-// Justification: Efficient processing of multiple packages for comparison
-// Source: Bulk processing requirements
-// Methodology: Process multiple packages in batch
-// Result: Should return results for all packages, even if some fail
-func TestExplainer_BatchExplain(t *testing.T) {
-	// Integration test
-	t.Skip("Integration test - requires API key")
-
-	config := &ExplainerConfig{
-		Client: nil, // Would need real client
-	}
-	explainer := NewExplainer(config)
-
-	packages := []string{"pkg-a", "pkg-b", "pkg-c"}
-	ecosystems := []models.Ecosystem{models.EcosystemNPM, models.EcosystemPyPI, models.EcosystemMaven}
-	results := []models.AnalysisResult{
-		{RiskLevel: "LOW", RiskScore: 20},
-		{RiskLevel: "MEDIUM", RiskScore: 50},
-		{RiskLevel: "HIGH", RiskScore: 85},
-	}
-
-	batchResults, err := explainer.BatchExplain(context.Background(), packages, ecosystems, results)
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	if len(batchResults) != 3 {
-		t.Errorf("Expected 3 results, got %d", len(batchResults))
+	if !contains(err.Error(), "mismatched") {
+		t.Errorf("Expected error to mention 'mismatched', got: %v", err)
 	}
 }
 
@@ -605,6 +547,175 @@ func TestExplainer_DefaultConfig(t *testing.T) {
 	}
 	if explainer.config.TargetAudience != "general" {
 		t.Errorf("Expected default audience 'general', got '%s'", explainer.config.TargetAudience)
+	}
+}
+
+// Test: Attack pattern context for ownership transfer findings
+// Justification: Ownership transfer is a top attack vector (event-stream 2018)
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Create finding with ownership-related description, verify context
+// Result: Should include ownership transfer attack references
+func TestExplainer_AttackPatternContext_OwnershipTransfer(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{
+		IncludeAttacks: true,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "HIGH",
+		Findings: []models.Finding{
+			{
+				Description: "Recent ownership transfer detected",
+				Category:    "Ownership Changes",
+			},
+		},
+	}
+
+	ctx := explainer.getAttackPatternContext(result)
+	if !contains(ctx, "Ownership Transfer") {
+		t.Error("Expected context to reference 'Ownership Transfer' for transfer findings")
+	}
+}
+
+// Test: Attack pattern context for dormant package reactivation
+// Justification: Dormant packages suddenly releasing is a well-documented attack vector
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+// Methodology: Create finding with dormant-related description, verify context
+// Result: Should include dormant reactivation references
+func TestExplainer_AttackPatternContext_DormantReactivation(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{
+		IncludeAttacks: true,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "HIGH",
+		Findings: []models.Finding{
+			{
+				Description: "Dormant package suddenly reactivated after 2 years",
+				Category:    "Release Anomalies",
+			},
+		},
+	}
+
+	ctx := explainer.getAttackPatternContext(result)
+	if !contains(ctx, "Dormant Package Reactivation") {
+		t.Error("Expected context to reference 'Dormant Package Reactivation'")
+	}
+}
+
+// Test: Attack pattern context for provenance issues
+// Justification: Missing provenance is a key indicator of build chain compromise
+// Source: SLSA Framework - Build integrity requirements
+// Methodology: Create finding with provenance-related description, verify context
+// Result: Should include build chain compromise references
+func TestExplainer_AttackPatternContext_Provenance(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{
+		IncludeAttacks: true,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "MEDIUM",
+		Findings: []models.Finding{
+			{
+				Description: "No provenance attestation found",
+				Category:    "Provenance",
+			},
+		},
+	}
+
+	ctx := explainer.getAttackPatternContext(result)
+	if !contains(ctx, "Build Chain Compromise") {
+		t.Error("Expected context to reference 'Build Chain Compromise' for provenance findings")
+	}
+	if !contains(ctx, "SolarWinds") {
+		t.Error("Expected context to reference 'SolarWinds' as a build chain attack example")
+	}
+}
+
+// Test: Attack pattern context with no matching findings
+// Justification: When no findings match known patterns, should provide generic guidance
+// Source: Risk communication best practices
+// Methodology: Create findings that don't match any known attack pattern keywords
+// Result: Should return generic guidance for including attack comparisons
+func TestExplainer_AttackPatternContext_NoMatchingFindings(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{
+		IncludeAttacks: true,
+	})
+
+	result := models.AnalysisResult{
+		RiskLevel: "MEDIUM",
+		Findings: []models.Finding{
+			{
+				Description: "Low bus factor detected",
+				Category:    "Health",
+			},
+		},
+	}
+
+	ctx := explainer.getAttackPatternContext(result)
+	if !contains(ctx, "attack pattern comparisons") {
+		t.Error("Expected generic attack pattern guidance when no specific patterns match")
+	}
+}
+
+// Test: Style and recommendation for CRITICAL risk level
+// Justification: CRITICAL should be treated identically to HIGH for style/recommendation
+// Source: Risk level classification design
+// Methodology: Verify CRITICAL maps to urgent style and BLOCK recommendation
+// Result: CRITICAL should produce same output as HIGH
+func TestExplainer_CriticalRiskLevel(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{})
+
+	style := explainer.determineExplanationStyle("CRITICAL")
+	if style != "urgent" {
+		t.Errorf("Expected style 'urgent' for CRITICAL, got '%s'", style)
+	}
+
+	guidance := explainer.getRecommendationGuidance("CRITICAL")
+	if !contains(guidance, "BLOCK") {
+		t.Error("Expected CRITICAL guidance to contain 'BLOCK'")
+	}
+}
+
+// Test: Style and recommendation for unknown risk level
+// Justification: Unknown risk levels should default to balanced analysis
+// Source: Defensive programming for risk classification
+// Methodology: Pass an unrecognized risk level, verify defaults
+// Result: Should default to balanced style with ALLOW recommendation
+func TestExplainer_UnknownRiskLevel(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{})
+
+	style := explainer.determineExplanationStyle("UNKNOWN")
+	if style != "balanced" {
+		t.Errorf("Expected style 'balanced' for unknown risk, got '%s'", style)
+	}
+
+	guidance := explainer.getRecommendationGuidance("UNKNOWN")
+	if !contains(guidance, "ALLOW") {
+		t.Error("Expected unknown risk guidance to default to 'ALLOW'")
+	}
+}
+
+// Test: parseExecutiveResponse with JSON input
+// Justification: AI may return JSON-formatted responses; parser must handle both
+// Source: Defensive programming for AI outputs
+// Methodology: Pass valid JSON executive explanation, verify parsed fields
+// Result: Should correctly parse JSON into ExecutiveExplanation struct
+func TestExplainer_ParseExecutiveResponse_JSON(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{})
+
+	jsonResponse := `{"summary":"Package is high risk.","key_risks":["Single maintainer","No provenance"],"business_impact":"Could affect production","recommended_action":"BLOCK","technical_details":"Uses local publishing"}`
+
+	result := models.AnalysisResult{
+		RiskLevel: "HIGH",
+		RiskScore: 80,
+	}
+
+	explanation := explainer.parseExecutiveResponse(jsonResponse, result)
+	if explanation == nil {
+		t.Fatal("Expected explanation, got nil")
+	}
+	if explanation.Summary != "Package is high risk." {
+		t.Errorf("Expected JSON summary to be parsed, got: %s", explanation.Summary)
 	}
 }
 

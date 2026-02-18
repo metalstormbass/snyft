@@ -464,32 +464,46 @@ func TestConfigValidate(t *testing.T) {
 }
 
 func TestConfigString(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.APIKey = "sk-ant-api03-very-long-key-that-should-be-redacted"
+	t.Run("long API key is truncated", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.APIKey = "sk-ant-api03-very-long-key-that-should-be-redacted"
 
-	str := cfg.String()
+		str := cfg.String()
 
-	if str == "" {
-		t.Fatal("expected non-empty string representation")
-	}
-
-	// Full API key must not appear in output
-	if strings.Contains(str, cfg.APIKey) {
-		t.Error("full API key must not appear in String() output")
-	}
-
-	// First 8 characters should appear as the truncated prefix
-	prefix := cfg.APIKey[:8]
-	if !strings.Contains(str, prefix) {
-		t.Errorf("expected truncated key prefix %q to appear in String() output: %s", prefix, str)
-	}
-
-	// Key config fields should be present
-	for _, want := range []string{"BaseURL", "Timeout", "MaxRetries", "RateLimit"} {
-		if !strings.Contains(str, want) {
-			t.Errorf("expected field %q to appear in String() output", want)
+		if str == "" {
+			t.Fatal("expected non-empty string representation")
 		}
-	}
+
+		// Full API key must not appear in output
+		if strings.Contains(str, cfg.APIKey) {
+			t.Error("full API key must not appear in String() output")
+		}
+
+		// First 8 characters should appear as the truncated prefix
+		prefix := cfg.APIKey[:8]
+		if !strings.Contains(str, prefix) {
+			t.Errorf("expected truncated key prefix %q to appear in String() output: %s", prefix, str)
+		}
+
+		// Key config fields should be present
+		for _, want := range []string{"BaseURL", "Timeout", "MaxRetries", "RateLimit"} {
+			if !strings.Contains(str, want) {
+				t.Errorf("expected field %q to appear in String() output", want)
+			}
+		}
+	})
+
+	t.Run("short API key is not truncated", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.APIKey = "short"
+
+		str := cfg.String()
+
+		// Short key (<=8 chars) should appear as-is without "..."
+		if !strings.Contains(str, "short") {
+			t.Errorf("expected short key to appear in String() output: %s", str)
+		}
+	})
 }
 
 // TestConfig_RealPackageScanningWorkload validates that the default config is
@@ -498,6 +512,7 @@ func TestConfigString(t *testing.T) {
 // Package sets used (from /Users/mike/Projects/mike-libraries):
 //   - javascript/package.json: 30 npm dependencies (express, axios, lodash, ...)
 //   - python/requirements.txt: 26 PyPI packages (Flask, requests, sqlalchemy, ...)
+//   - java/pom.xml: 28 Maven dependencies (spring-boot, guava, jackson, ...)
 //
 // Source: "Small World with High Risks" (Zimmermann et al., 2019) shows npm
 // packages have average 79 transitive deps, requiring multiple API calls per
@@ -522,7 +537,20 @@ func TestConfig_RealPackageScanningWorkload(t *testing.T) {
 		"email-validator", "passlib", "python-jose", "boto3", "stripe",
 	}
 
-	totalPackages := len(jsPackages) + len(pyPackages) // 56 packages
+	// Packages mirroring java/pom.xml in mike-libraries
+	javaPackages := []string{
+		"spring-boot-starter-web", "spring-boot-starter-data-jpa",
+		"spring-boot-starter-data-redis", "spring-boot-starter-validation",
+		"spring-boot-starter-actuator", "spring-boot-starter-security",
+		"spring-boot-starter-mail", "spring-boot-starter-cache",
+		"postgresql", "h2", "lombok", "jackson-databind",
+		"jackson-datatype-jsr310", "commons-lang3", "commons-collections4",
+		"commons-io", "guava", "caffeine", "mapstruct", "modelmapper",
+		"jjwt-api", "jjwt-impl", "jjwt-jackson", "httpclient5", "okhttp",
+		"flyway-core", "hibernate-validator", "springdoc-openapi-starter-webmvc-ui",
+	}
+
+	totalPackages := len(jsPackages) + len(pyPackages) + len(javaPackages) // 84 packages
 
 	cfg := DefaultConfig()
 

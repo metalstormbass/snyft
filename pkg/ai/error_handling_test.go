@@ -11,30 +11,33 @@ import (
 )
 
 // Test: Client creation with invalid configurations
-// Justification: Robust error handling prevents runtime failures
+// Justification: Robust error handling prevents runtime failures during supply
+//                chain analysis; nil config must panic rather than silently
+//                proceed with zero-value settings
+// Source: Go API design best practices for nil pointer safety
 // Methodology: Test various invalid configuration scenarios
-// Result: Should return descriptive errors for each invalid config
+// Result: Should return descriptive errors for each invalid config; nil panics
 func TestClient_ErrorHandling_InvalidConfig(t *testing.T) {
+	t.Run("nil config panics", func(t *testing.T) {
+		// NewClient calls config.Validate() which dereferences the pointer.
+		// A nil config should panic rather than silently succeed.
+		assert.Panics(t, func() {
+			_, _ = NewClient(nil)
+		}, "NewClient(nil) should panic on nil pointer dereference")
+	})
+
 	tests := []struct {
 		name    string
 		config  *Config
-		wantErr bool
 		errMsg  string
 	}{
-		{
-			name:    "nil config",
-			config:  nil,
-			wantErr: true,
-			errMsg:  "config",
-		},
 		{
 			name: "empty API key",
 			config: &Config{
 				APIKey:  "",
 				BaseURL: "https://api.anthropic.com",
 			},
-			wantErr: true,
-			errMsg:  "API key",
+			errMsg: "API key",
 		},
 		{
 			name: "invalid base URL",
@@ -42,8 +45,7 @@ func TestClient_ErrorHandling_InvalidConfig(t *testing.T) {
 				APIKey:  "test-key",
 				BaseURL: "",
 			},
-			wantErr: true,
-			errMsg:  "base URL",
+			errMsg: "base URL",
 		},
 		{
 			name: "negative timeout",
@@ -52,33 +54,16 @@ func TestClient_ErrorHandling_InvalidConfig(t *testing.T) {
 				BaseURL: "https://api.anthropic.com",
 				Timeout: -5 * time.Second,
 			},
-			wantErr: true,
-			errMsg:  "timeout",
+			errMsg: "timeout",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var err error
-			if tt.config == nil {
-				// Test nil config directly in NewClient
-				defer func() {
-					if r := recover(); r != nil {
-						t.Logf("Expected panic for nil config: %v", r)
-					}
-				}()
-				_, err = NewClient(nil)
-			} else {
-				err = tt.config.Validate()
-			}
-
-			if tt.wantErr {
-				assert.Error(t, err, "Should return error for: "+tt.name)
-				if err != nil && tt.errMsg != "" {
-					assert.Contains(t, err.Error(), tt.errMsg, "Error should mention: "+tt.errMsg)
-				}
-			} else {
-				assert.NoError(t, err, "Should not return error for: "+tt.name)
+			err := tt.config.Validate()
+			assert.Error(t, err, "Should return error for: "+tt.name)
+			if err != nil && tt.errMsg != "" {
+				assert.Contains(t, err.Error(), tt.errMsg, "Error should mention: "+tt.errMsg)
 			}
 		})
 	}
@@ -113,8 +98,8 @@ func TestClient_ErrorHandling_ContextCancellation(t *testing.T) {
 		assert.Error(t, err, "Should return error when context cancelled and no tokens available")
 	})
 
-	// Test timeout context when blocked
-	t.Run("timeout context when blocked", func(t *testing.T) {
+	// Test already-expired context when blocked
+	t.Run("expired context when blocked", func(t *testing.T) {
 		// Create a new client with very limited rate
 		cfg2 := DefaultConfig()
 		cfg2.APIKey = "test-key"
@@ -128,14 +113,12 @@ func TestClient_ErrorHandling_ContextCancellation(t *testing.T) {
 		// Exhaust the rate limiter
 		_ = client2.rateLimiter.Wait(ctx)
 
-		// Try with very short timeout (should fail)
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
-		defer cancel()
-
-		time.Sleep(5 * time.Millisecond) // Ensure timeout occurs
+		// Use an already-expired context to avoid timing dependency
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately - no sleep needed
 
 		err = client2.rateLimiter.Wait(ctx)
-		assert.Error(t, err, "Should return error when context times out")
+		assert.Error(t, err, "Should return error when context is already expired")
 	})
 }
 
