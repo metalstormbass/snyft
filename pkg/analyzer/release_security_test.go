@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -485,14 +486,7 @@ func TestScoreReleaseSecurity_EvidenceContainsExpectedSignals(t *testing.T) {
 	}
 
 	for _, check := range evidenceChecks {
-		found := false
-		for i := 0; i <= len(score.Evidence)-len(check.contains); i++ {
-			if score.Evidence[i:i+len(check.contains)] == check.contains {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !strings.Contains(score.Evidence, check.contains) {
 			t.Errorf("Expected evidence to contain %q for %s signal, got: %q",
 				check.contains, check.signal, score.Evidence)
 		}
@@ -694,5 +688,239 @@ func TestScoreReleaseSecurity_RealWorldProfile_EnterpriseJavaLibrary(t *testing.
 
 	if !score.Verified {
 		t.Error("Expected verified score")
+	}
+}
+
+// ============================================================
+// Edge case tests
+// ============================================================
+
+// Test: BuildSystems populated but CISystems empty - regression test for index panic
+// Justification: In production, BuildSystems can be populated from workflow file parsing
+//   while CISystems (populated from a different code path) may remain empty.
+//   Previously this caused an index-out-of-range panic at CISystems[0].
+// Source: Bug discovered during code review of release_security.go:107
+// Methodology: Set BuildSystems with entries but leave CISystems empty, verify no panic
+// Result: Should not panic; evidence should still be populated correctly
+func TestScoreReleaseSecurity_BuildSystemsWithoutCISystems_NoPanic(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/edge-case/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			HasSelfHosted:       false,
+			BuildSystems: []models.BuildSystemInfo{
+				{
+					Platform:     "GitHub Actions",
+					HostedBy:     "GitHub",
+					IsSelfHosted: false,
+				},
+			},
+			CISystems: []string{}, // Empty CISystems - previously caused panic
+		},
+	}
+
+	// This should not panic
+	score := analyzer.scoreReleaseSecurity(result)
+
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for CI+branch protection, got %d", score.RiskPoints)
+	}
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+}
+
+// Test: Self-hosted penalty cannot push points below zero
+// Justification: Self-hosted penalty subtracts 1 from points total. If only self-hosted
+//   runner is detected with no other controls, points should floor at 0, not go negative.
+// Source: SLSA Build L3 - penalty logic should be bounded
+// Methodology: Set only HasSelfHosted=true with no other controls, verify score floors at 0
+// Result: 0 earned points (floored), risk points = 2 (high)
+func TestScoreReleaseSecurity_SelfHostedPenalty_FloorsAtZero(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/selfhosted-only/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   false,
+			HasBranchProtection: false,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			HasSelfHosted:       true,
+			BuildSystems: []models.BuildSystemInfo{
+				{
+					Platform:     "Jenkins",
+					HostedBy:     "Self-hosted",
+					IsSelfHosted: true,
+				},
+			},
+			CISystems: []string{"Jenkins"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Points: 0 + SelfHosted(-1) → clamped to 0 → riskPoints = 2
+	if score.Score < 0 {
+		t.Errorf("Expected score to floor at 0, got %d", score.Score)
+	}
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points, got %d", score.RiskPoints)
+	}
+}
+
+// Test: Evidence mentions self-hosted runner details
+// Justification: Audit trail must include self-hosted runner details for remediation guidance.
+// Source: OSSF Scorecard - evidence-based assessment
+// Methodology: Set self-hosted runner and verify evidence contains platform name
+// Result: Evidence string includes self-hosted platform identification
+func TestScoreReleaseSecurity_SelfHostedEvidence_ContainsPlatform(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/evidence/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			HasSelfHosted:       true,
+			BuildSystems: []models.BuildSystemInfo{
+				{
+					Platform:     "GitLab CI",
+					HostedBy:     "Self-hosted",
+					IsSelfHosted: true,
+				},
+			},
+			CISystems: []string{"GitLab CI"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	if !strings.Contains(score.Evidence, "Self-hosted CI runners") {
+		t.Errorf("Expected evidence to mention self-hosted CI runners, got: %s", score.Evidence)
+	}
+	if !strings.Contains(score.Evidence, "GitLab CI") {
+		t.Errorf("Expected evidence to include platform name 'GitLab CI', got: %s", score.Evidence)
+	}
+}
+
+// ============================================================
+// Additional real-world profiles from /Users/mike/Projects/mike-libraries
+// ============================================================
+
+// Test: npm jsonwebtoken pattern - CI but limited protections
+// Justification: Auth-related npm packages (jsonwebtoken, passport-jwt, bcryptjs from mike-libraries)
+//   typically have GitHub Actions CI but limited branch protection and no signed releases.
+//   These security-critical packages often have weaker release practices than their importance warrants.
+// Source: Analysis of auth-related npm packages in mike-libraries/javascript/package.json
+// Methodology: Simulate metadata for auth packages: CI present, no branch protection,
+//   no signing, no required reviews
+// Result: 2 risk points - CI alone is insufficient for security-critical auth packages
+func TestScoreReleaseSecurity_RealWorldProfile_NPMAuthPackage(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/auth0/node-jsonwebtoken",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,  // GitHub Actions CI
+			HasBranchProtection: false, // No branch protection
+			SignedReleases:      false, // No signed releases
+			RequiredReviewers:   0,     // No required reviews
+			CISystems:           []string{"GitHub Actions"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// 1 point (CI only) → riskPoints = 2 (high)
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for auth package with CI-only controls, got %d", score.RiskPoints)
+	}
+}
+
+// Test: npm express/socket.io pattern - well-governed with full controls
+// Justification: Major npm frameworks (express, socket.io from mike-libraries) maintained
+//   by established organizations with full CI/CD pipelines, branch protection, and reviews.
+// Source: expressjs/express, socketio/socket.io on GitHub
+// Methodology: Simulate full controls typical of major npm frameworks
+// Result: 0 risk points - comprehensive release security
+func TestScoreReleaseSecurity_RealWorldProfile_NPMFrameworkPackage(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/expressjs/express",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      true,
+			RequiredReviewers:   2,
+			CISystems:           []string{"GitHub Actions"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for major framework, got %d", score.RiskPoints)
+	}
+}
+
+// Test: Maven spring-boot-starter pattern - full enterprise controls
+// Justification: Spring Boot starters (from mike-libraries/java/pom.xml) follow
+//   Spring's rigorous release process: automated Maven Central publishing, branch protection,
+//   GPG-signed artifacts, and multiple required code reviewers.
+// Source: spring-projects/spring-boot on GitHub
+// Methodology: Simulate metadata for Spring ecosystem packages
+// Result: 0 risk points - enterprise-grade release security
+func TestScoreReleaseSecurity_RealWorldProfile_MavenSpringBoot(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/spring-projects/spring-boot",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      true,
+			RequiredReviewers:   2,
+			CISystems:           []string{"GitHub Actions"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for Spring Boot, got %d", score.RiskPoints)
+	}
+	if score.Score < 4 {
+		t.Errorf("Expected score >= 4 for Spring Boot, got %d", score.Score)
+	}
+}
+
+// Test: Python celery pattern - CI releases, branch protection, no signing
+// Justification: Task queue libraries (celery from mike-libraries/python/requirements.txt)
+//   typically have automated releases and branch protection but lack cryptographic signing.
+//   Compromise of celery could inject malicious code executed by worker processes.
+// Source: celery/celery on GitHub
+// Methodology: Simulate CI + branch protection + reviews but no signing
+// Result: 1 risk point - good CI practices but missing cryptographic verification
+func TestScoreReleaseSecurity_RealWorldProfile_PyPICelery(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/celery/celery",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   1,
+			CISystems:           []string{"GitHub Actions"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// 3 points (CI + branch + reviewers) → riskPoints = 1
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for celery pattern, got %d", score.RiskPoints)
 	}
 }
