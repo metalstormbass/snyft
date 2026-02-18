@@ -149,29 +149,20 @@ func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
 
 	var ciSystems []string
 
-	// Check for GitHub Actions
-	if c.fileExists(owner, repo, ".github/workflows") {
-		ciSystems = append(ciSystems, "GitHub Actions")
-	}
-
-	// Check for Travis CI
-	if c.fileExists(owner, repo, ".travis.yml") {
-		ciSystems = append(ciSystems, "Travis CI")
-	}
-
-	// Check for Circle CI
-	if c.fileExists(owner, repo, ".circleci/config.yml") {
-		ciSystems = append(ciSystems, "Circle CI")
-	}
-
-	// Check for Jenkins
-	if c.fileExists(owner, repo, "Jenkinsfile") {
-		ciSystems = append(ciSystems, "Jenkins")
-	}
-
-	// Check for GitLab CI
-	if c.fileExists(owner, repo, ".gitlab-ci.yml") {
-		ciSystems = append(ciSystems, "GitLab CI")
+	for _, entry := range ExtendedCIConfigFiles() {
+		if c.fileExists(owner, repo, entry.Path) {
+			// Avoid duplicates (multiple config files for the same platform)
+			alreadyAdded := false
+			for _, existing := range ciSystems {
+				if existing == entry.Name {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded {
+				ciSystems = append(ciSystems, entry.Name)
+			}
+		}
 	}
 
 	return ciSystems, nil
@@ -1498,6 +1489,52 @@ func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
 	}
 
 	return org.IsVerified
+}
+
+// CheckOrgMFARequired checks if a GitHub organization enforces mandatory MFA/2FA.
+//
+// Check: MFA/2FA enforcement at the organization level
+// Justification: Organizations without mandatory MFA allow account takeover via
+//                credential stuffing - the leading cause of supply chain compromise.
+//                Phishing and credential stuffing attacks become trivially easy without MFA.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+//         https://arxiv.org/abs/2005.09535
+// Methodology: Query GET /orgs/{owner} - two_factor_requirement_enabled field.
+//              This field is publicly visible for public organizations (no auth required).
+//              Returns (false, false) if the owner is a user (not an org) or API unavailable.
+// Result: (true, true) = MFA enforced; (false, true) = MFA not enforced; (false, false) = unknown
+func (c *GitHubClient) CheckOrgMFARequired(owner string) (required bool, available bool) {
+	apiURL := fmt.Sprintf("%s/orgs/%s", c.baseURL, owner)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return false, false
+	}
+
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// 404 = owner is a user, not an org; other non-200 = API unavailable
+	if resp.StatusCode != http.StatusOK {
+		return false, false
+	}
+
+	var org struct {
+		TwoFactorRequirementEnabled bool `json:"two_factor_requirement_enabled"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&org); err != nil {
+		return false, false
+	}
+
+	return org.TwoFactorRequirementEnabled, true
 }
 
 // GetUserAccountCreatedDate fetches the account creation date for a GitHub user

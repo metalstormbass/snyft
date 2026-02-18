@@ -143,10 +143,12 @@ type PackageMetadata struct {
 	Homepage         string    `json:"homepage"`
 
 	// Build & CI information
-	HasCI            bool     `json:"has_ci"`
-	CISystems        []string `json:"ci_systems"`
-	HasReleaseProcess bool    `json:"has_release_process"`
-	SignedReleases   bool     `json:"signed_releases"`
+	HasCI            bool              `json:"has_ci"`
+	CISystems        []string          `json:"ci_systems"`
+	BuildSystems     []BuildSystemInfo `json:"build_systems,omitempty"` // Structured build system info
+	HasSelfHosted    bool              `json:"has_self_hosted"`          // Any self-hosted runners detected
+	HasReleaseProcess bool             `json:"has_release_process"`
+	SignedReleases   bool              `json:"signed_releases"`
 
 	// Provenance information
 	HasSLSAAttestation  bool   `json:"has_slsa_attestation"`
@@ -178,6 +180,15 @@ type PackageMetadata struct {
 	// OpenSSF Scorecard
 	OSSFScore        float64  `json:"ossf_score"`
 	OSSFChecks       map[string]int `json:"ossf_checks"`
+}
+
+// BuildSystemInfo contains information about a CI/CD build system detected in a repository
+type BuildSystemInfo struct {
+	Platform     string `json:"platform"`               // "GitHub Actions", "Jenkins", "CircleCI", etc.
+	HostedBy     string `json:"hosted_by"`              // "GitHub", "GitLab", "Self-hosted", "CircleCI", etc.
+	IsSelfHosted bool   `json:"is_self_hosted"`         // Key risk signal: self-hosted = uncontrolled environment
+	RunnerDetails string `json:"runner_details,omitempty"` // e.g. "ubuntu-latest", "custom-runner"
+	ConfigFile   string `json:"config_file,omitempty"`  // Config file that detected this system
 }
 
 // DependencyMetrics contains information about dependency sprawl
@@ -233,10 +244,10 @@ type ProvenanceInfo struct {
 	BuildSystem          string   `json:"build_system,omitempty"`
 }
 
-// SupplyChainScore represents a 0-18 point supply chain security scoring rubric
+// SupplyChainScore represents a 0-20 point supply chain security scoring rubric
 type SupplyChainScore struct {
-	TotalScore    int                   `json:"total_score"`    // 0-18 points
-	RiskLevel     string                `json:"risk_level"`     // LOW (0-5), MEDIUM (6-12), HIGH (13+)
+	TotalScore    int                   `json:"total_score"`    // 0-20 points
+	RiskLevel     string                `json:"risk_level"`     // LOW (0-5), MEDIUM (6-14), HIGH (15+)
 	CategoryScores CategoryScores       `json:"category_scores"`
 }
 
@@ -251,6 +262,7 @@ type CategoryScores struct {
 	Health             CategoryScore `json:"health"`               // 0-2 pts: bus factor/review/CI
 	Governance         CategoryScore `json:"governance"`           // 0-2 pts: governance docs/responsiveness
 	ReleaseSecurity    CategoryScore `json:"release_security"`     // 0-2 pts: CI publishing/branch protection/signed tags
+	PackageMaturity    CategoryScore `json:"package_maturity"`     // 0-2 pts: package age/update frequency/staleness
 }
 
 // CategoryScore contains the score and details for a single category

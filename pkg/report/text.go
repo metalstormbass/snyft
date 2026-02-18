@@ -300,7 +300,7 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 
 	// Supply chain score if available
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %d/14 points (%s%s%s risk)\n",
+		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %d/20 points (%s%s%s risk)\n",
 			riskColor, ColorReset,
 			ColorBold, ColorReset,
 			result.SupplyChainScore.TotalScore,
@@ -327,6 +327,13 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 			riskColor, ColorReset,
 			ColorBold, ColorReset,
 			result.BuildInfrastructure)
+	}
+
+	// Show self-hosted runner warning prominently
+	if result.Metadata.HasSelfHosted {
+		_, _ = fmt.Fprintf(w, "%s│%s  %s⚠  Self-hosted runners: build environment not controlled by trusted provider%s\n",
+			riskColor, ColorReset,
+			ColorRed+ColorBold, ColorReset)
 	}
 
 	// Supply chain category scores (in verbose mode)
@@ -515,6 +522,9 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 		{"Dependency Sprawl", scores.DependencySprawl},
 		{"Provenance", scores.Provenance},
 		{"Health", scores.Health},
+		{"Governance", scores.Governance},
+		{"Release Security", scores.ReleaseSecurity},
+		{"Package Maturity", scores.PackageMaturity},
 	}
 
 	// Table header

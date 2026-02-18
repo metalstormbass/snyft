@@ -190,30 +190,19 @@ func (c *BitbucketClient) DetectCISystems(repoURL string) ([]string, error) {
 
 	var ciSystems []string
 
-	// Check for Bitbucket Pipelines
-	if c.fileExists(owner, repo, "bitbucket-pipelines.yml") {
-		ciSystems = append(ciSystems, "Bitbucket Pipelines")
-	}
-
-	// Check for other CI systems
-	if c.fileExists(owner, repo, ".github/workflows") {
-		ciSystems = append(ciSystems, "GitHub Actions")
-	}
-
-	if c.fileExists(owner, repo, ".travis.yml") {
-		ciSystems = append(ciSystems, "Travis CI")
-	}
-
-	if c.fileExists(owner, repo, ".circleci/config.yml") {
-		ciSystems = append(ciSystems, "Circle CI")
-	}
-
-	if c.fileExists(owner, repo, "Jenkinsfile") {
-		ciSystems = append(ciSystems, "Jenkins")
-	}
-
-	if c.fileExists(owner, repo, ".gitlab-ci.yml") {
-		ciSystems = append(ciSystems, "GitLab CI")
+	for _, entry := range ExtendedCIConfigFiles() {
+		if c.fileExists(owner, repo, entry.Path) {
+			alreadyAdded := false
+			for _, existing := range ciSystems {
+				if existing == entry.Name {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded {
+				ciSystems = append(ciSystems, entry.Name)
+			}
+		}
 	}
 
 	return ciSystems, nil
@@ -406,17 +395,47 @@ func (c *BitbucketClient) GetFileContent(repoURL, filePath string) (string, erro
 	return string(body), nil
 }
 
-// GetProvenanceInfo checks for provenance indicators (stub)
+// GetProvenanceInfo checks for various provenance indicators in a Bitbucket repository.
+// It inspects bitbucket-pipelines.yml for sigstore/cosign and SLSA usage, and checks
+// for a .cosign directory or cosign.pub file indicating signing infrastructure.
 func (c *BitbucketClient) GetProvenanceInfo(repoURL string) (*models.ProvenanceInfo, error) {
 	info := &models.ProvenanceInfo{}
 
 	ciSystems, _ := c.DetectCISystems(repoURL)
-	if len(ciSystems) > 0 {
-		for _, ci := range ciSystems {
-			if ci == "Bitbucket Pipelines" {
-				info.BuildSystem = "Bitbucket Pipelines"
-				break
-			}
+	for _, ci := range ciSystems {
+		if ci == "Bitbucket Pipelines" {
+			info.BuildSystem = "Bitbucket Pipelines"
+			break
+		}
+	}
+
+	// Fetch bitbucket-pipelines.yml and inspect for signing/attestation tooling.
+	// Missing file is acceptable - we degrade gracefully.
+	ciContent, err := c.GetFileContent(repoURL, "bitbucket-pipelines.yml")
+	if err == nil {
+		ciLower := strings.ToLower(ciContent)
+
+		// Sigstore/cosign usage in the pipeline indicates artifact signing.
+		// Source: Sigstore project - https://www.sigstore.dev/
+		if strings.Contains(ciLower, "cosign") || strings.Contains(ciLower, "sigstore") {
+			info.HasSigstoreSignature = true
+		}
+
+		// SLSA generator usage indicates provenance attestation.
+		// Source: SLSA specification - https://slsa.dev/spec/v1.0/
+		if strings.Contains(ciLower, "slsa") {
+			info.HasSLSAAttestation = true
+		}
+	}
+
+	// Check for a cosign public key or config directory in the repository root.
+	// Presence indicates the project has set up signing infrastructure.
+	// Source: Sigstore/cosign documentation - https://github.com/sigstore/cosign
+	cosignFiles := []string{".cosign/", "cosign.pub"}
+	for _, f := range cosignFiles {
+		if _, ferr := c.GetFileContent(repoURL, f); ferr == nil {
+			info.HasSigstoreSignature = true
+			break
 		}
 	}
 
@@ -713,4 +732,11 @@ func (c *BitbucketClient) CheckVerifiedOrganization(owner string) bool {
 // GetUserAccountCreatedDate fetches account creation date for a Bitbucket user (stub)
 func (c *BitbucketClient) GetUserAccountCreatedDate(username string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("account age check not implemented for Bitbucket")
+}
+
+// CheckOrgMFARequired checks for MFA enforcement on Bitbucket workspaces.
+// Bitbucket workspace security settings are not exposed via the public API.
+// Returns (false, false) to indicate data is not publicly available.
+func (c *BitbucketClient) CheckOrgMFARequired(owner string) (required bool, available bool) {
+	return false, false
 }

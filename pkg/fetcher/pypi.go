@@ -77,14 +77,9 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 		Homepage:      pypiResp.Info.HomePage,
 	}
 
-	// Extract repository URL from project URLs
-	if pypiResp.Info.ProjectURLs.Source != "" {
-		pkg.RepositoryURL = pypiResp.Info.ProjectURLs.Source
-	} else if pypiResp.Info.ProjectURLs.Repository != "" {
-		pkg.RepositoryURL = pypiResp.Info.ProjectURLs.Repository
-	} else if pypiResp.Info.ProjectURLs.Homepage != "" {
-		pkg.RepositoryURL = pypiResp.Info.ProjectURLs.Homepage
-	}
+	// Extract repository URL from project_urls dict, checked in priority order.
+	// Source: PyPI JSON API — project_urls is an arbitrary string→URL map.
+	pkg.RepositoryURL = extractPyPIRepoURL(pypiResp.Info)
 
 	// Get author as maintainer
 	if pypiResp.Info.Author != "" {
@@ -113,18 +108,52 @@ type PyPIURL struct {
 }
 
 type PyPIInfo struct {
-	Name        string        `json:"name"`
-	Version     string        `json:"version"`
-	Author      string        `json:"author"`
-	License     string        `json:"license"`
-	HomePage    string        `json:"home_page"`
-	ProjectURLs PyPIProjectURLs `json:"project_urls"`
+	Name        string            `json:"name"`
+	Version     string            `json:"version"`
+	Author      string            `json:"author"`
+	License     string            `json:"license"`
+	HomePage    string            `json:"home_page"`
+	ProjectURL  string            `json:"project_url"`
+	ProjectURLs map[string]string `json:"project_urls"`
 }
 
-type PyPIProjectURLs struct {
-	Homepage   string `json:"Homepage"`
-	Source     string `json:"Source"`
-	Repository string `json:"Repository"`
+// extractPyPIRepoURL extracts the best available source-code repository URL from
+// PyPI package metadata. It checks project_urls keys in priority order and then
+// falls back to project_url and home_page fields, filtering the latter two for
+// known source-hosting domains so that marketing homepages are skipped.
+//
+// Priority order for project_urls keys:
+//  1. "Source Code"
+//  2. "Source"
+//  3. "Repository"
+//  4. "Code"
+//  5. "Homepage" — only if the URL contains a known source-hosting domain
+//
+// Final fallbacks (domain-filtered): project_url, home_page
+func extractPyPIRepoURL(info PyPIInfo) string {
+	priority := []string{"Source Code", "Source", "Repository", "Code"}
+	for _, key := range priority {
+		if url, ok := info.ProjectURLs[key]; ok && url != "" {
+			return url
+		}
+	}
+
+	// "Homepage" is only accepted when it points at a source-hosting service
+	if url, ok := info.ProjectURLs["Homepage"]; ok && url != "" {
+		if isSourceRepoHost(url) {
+			return url
+		}
+	}
+
+	// Final fallbacks — also filtered for source-hosting domains
+	if info.ProjectURL != "" && isSourceRepoHost(info.ProjectURL) {
+		return info.ProjectURL
+	}
+	if info.HomePage != "" && isSourceRepoHost(info.HomePage) {
+		return info.HomePage
+	}
+
+	return ""
 }
 
 // CheckPyPISignatures checks if a package has cryptographic signatures
@@ -376,12 +405,20 @@ func (c *PyPIClient) GetOwnershipHistory(packageName string) (*PyPIOwnershipHist
 
 	releases := []releaseInfo{}
 
-	// Parse releases (PyPI provides releases as map[version][]ReleaseFile)
+	// Parse releases (PyPI provides releases as map[version][]ReleaseFile).
+	// Note: PyPI's public JSON API does not expose a per-file "uploader" field in
+	// practice - it is always "". We use file.Uploader when available (non-empty),
+	// and fall back to info.Author so that at minimum the current author is recorded
+	// for each release, enabling release timestamp tracking even when per-release
+	// uploader history is unavailable via the public API.
 	for _, releaseFiles := range pypiResp.Releases {
 		if len(releaseFiles) > 0 {
-			// Use upload time and uploader from first file
 			file := releaseFiles[0]
+			// Prefer per-file uploader when present; fall back to info-level author.
 			author := file.Uploader
+			if author == "" {
+				author = pypiResp.Info.Author
+			}
 			if author != "" {
 				allAuthors[author] = true
 				releases = append(releases, releaseInfo{

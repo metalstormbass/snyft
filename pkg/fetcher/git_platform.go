@@ -1,6 +1,7 @@
 package fetcher
 
 import (
+	"strings"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -55,6 +56,19 @@ type GitPlatformClient interface {
 	// GetPlatformName returns the name of the platform (e.g., "GitHub", "GitLab", "Bitbucket")
 	GetPlatformName() string
 
+	// CheckOrgMFARequired checks if an organization has mandatory MFA/2FA enforcement.
+	// Returns (required, available):
+	//   (true, true)   = MFA is enforced by the organization
+	//   (false, true)  = MFA is NOT enforced (high risk)
+	//   (false, false) = data unavailable (owner is a user, platform doesn't expose it, or API error)
+	//
+	// Justification: Org-level MFA enforcement is the single most impactful account
+	// security control. Without it, all maintainer accounts are vulnerable to credential
+	// stuffing attacks - the leading cause of supply chain compromise.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	// Note: Only GitHub exposes this publicly. GitLab/Bitbucket require admin auth.
+	CheckOrgMFARequired(owner string) (required bool, available bool)
+
 	// CheckIfOrganization checks if a repository owner is an organization or personal account
 	// Returns (isOrg bool, orgName string)
 	CheckIfOrganization(owner string) (bool, string)
@@ -70,12 +84,20 @@ type GitPlatformClient interface {
 type PlatformType string
 
 const (
-	PlatformGitHub    PlatformType = "github"
-	PlatformGitLab    PlatformType = "gitlab"
-	PlatformBitbucket PlatformType = "bitbucket"
-	PlatformSourcehut PlatformType = "sourcehut"
-	PlatformCodeberg  PlatformType = "codeberg"
-	PlatformUnknown   PlatformType = "unknown"
+	PlatformGitHub      PlatformType = "github"
+	PlatformGitLab      PlatformType = "gitlab"
+	PlatformBitbucket   PlatformType = "bitbucket"
+	PlatformSourcehut   PlatformType = "sourcehut"   // sr.ht
+	PlatformCodeberg    PlatformType = "codeberg"    // codeberg.org (runs Gitea)
+	PlatformGitea       PlatformType = "gitea"       // self-hosted Gitea instances
+	PlatformForgejo     PlatformType = "forgejo"     // self-hosted Forgejo instances
+	PlatformApache      PlatformType = "apache"      // gitbox.apache.org, git.apache.org
+	PlatformEclipse     PlatformType = "eclipse"     // git.eclipse.org
+	PlatformSavannah    PlatformType = "savannah"    // savannah.gnu.org, savannah.nongnu.org
+	PlatformLaunchpad   PlatformType = "launchpad"   // launchpad.net
+	PlatformSourceForge PlatformType = "sourceforge" // sourceforge.net, sourceforge.io
+	PlatformGenericGit  PlatformType = "generic_git" // any git URL we cannot identify specifically
+	PlatformUnknown     PlatformType = "unknown"
 )
 
 // DetectPlatform determines which git hosting platform a URL belongs to
@@ -103,6 +125,23 @@ func DetectPlatform(repoURL string) PlatformType {
 	if containsAny(url, []string{"codeberg.org", "codeberg"}) {
 		return PlatformCodeberg
 	}
+	if containsAny(url, []string{"gitbox.apache.org", "git.apache.org"}) {
+		return PlatformApache
+	}
+	if containsAny(url, []string{"git.eclipse.org"}) {
+		return PlatformEclipse
+	}
+	if containsAny(url, []string{"sourceforge.net", "sourceforge.io"}) {
+		return PlatformSourceForge
+	}
+	if containsAny(url, []string{"launchpad.net"}) {
+		return PlatformLaunchpad
+	}
+
+	// Generic fallback: any URL ending in .git or containing /git/
+	if strings.HasSuffix(strings.ToLower(repoURL), ".git") || strings.Contains(strings.ToLower(repoURL), "/git/") {
+		return PlatformGenericGit
+	}
 
 	return PlatformUnknown
 }
@@ -118,9 +157,14 @@ func NewGitPlatformClient(repoURL string) GitPlatformClient {
 		return NewGitLabClient()
 	case PlatformBitbucket:
 		return NewBitbucketClient()
-	case PlatformSourcehut, PlatformCodeberg, PlatformUnknown:
-		// For unsupported platforms, fall back to GitHub client
-		// This maintains backward compatibility and allows basic functionality
+	case PlatformSourcehut, PlatformCodeberg,
+		PlatformApache, PlatformEclipse, PlatformSourceForge, PlatformLaunchpad,
+		PlatformGenericGit:
+		// For these platforms use the generic Git client which performs basic
+		// HTTP-level checks without requiring a platform-specific API.
+		return NewGenericGitClient()
+	case PlatformUnknown:
+		// Unknown URLs: fall back to GitHub client for backward compatibility
 		return NewGitHubClient()
 	default:
 		return NewGitHubClient()

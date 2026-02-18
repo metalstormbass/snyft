@@ -213,6 +213,13 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 		pkg.RepositoryURL = strings.TrimPrefix(pom.SCM.Connection, "scm:git:")
 	}
 
+	// Apache fallback: if no SCM URL was found and the groupId starts with
+	// "org.apache.", construct a likely Apache Gitbox URL from the artifactId.
+	// Source: https://gitbox.apache.org/repos/asf/
+	if pkg.RepositoryURL == "" && strings.HasPrefix(pkg.GroupID, "org.apache.") {
+		pkg.RepositoryURL = "https://gitbox.apache.org/repos/asf/" + pkg.ArtifactID + ".git"
+	}
+
 	// Extract license
 	if len(pom.Licenses) > 0 {
 		pkg.License = pom.Licenses[0].Name
