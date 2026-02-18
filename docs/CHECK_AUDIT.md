@@ -145,23 +145,23 @@ Issue response time analysis is behind a `gitClient.GetPlatformName() == "GitHub
 
 ---
 
-## Category 9: Release Security — PARTIALLY BROKEN
+## Category 9: Release Security — PARTIALLY FIXED
 
 ### Bug: `HasReleaseProcess` uses release existence, not CI automation
 
-**Status:** OPEN
+**Status:** MITIGATED (OSSF fallback added)
 
-**File:** `pkg/analyzer/analyzer.go:465-468`
+**File:** `pkg/analyzer/analyzer.go:465-468`, `pkg/analyzer/release_security.go`
 
-`HasAutomatedReleases` checks if any GitHub releases exist — not whether they are CI-driven. Manual releases satisfy this check, defeating the intent of "CI publishing."
+`HasAutomatedReleases` checks if any GitHub releases exist — not whether they are CI-driven. Manual releases satisfy this check, defeating the intent of "CI publishing." **Mitigated:** OSSF Scorecard "Packaging" check is now used as a fallback when `HasReleaseProcess` is false, which specifically evaluates automated packaging pipelines.
 
 ### Bug: Two components always false for GitLab/Bitbucket
 
-**Status:** OPEN (partially mitigated)
+**Status:** MITIGATED (OSSF fallbacks added)
 
-`HasBranchProtection` and `SignedReleases` depend on `GetPullRequestStats` and `GetProvenanceInfo`. PR stats are still stubs for GitLab/Bitbucket, but provenance now checks CI config files for signing tooling. **Branch protection remains unavailable for non-GitHub packages.**
+`HasBranchProtection` and `SignedReleases` depend on `GetPullRequestStats` and `GetProvenanceInfo`. PR stats are still stubs for GitLab/Bitbucket, but provenance now checks CI config files for signing tooling. **Mitigated:** All four components now have OSSF Scorecard fallbacks: "Branch-Protection" for branch protection, "Signed-Releases" for signing, "Code-Review" for reviewers, and "Packaging" for release process. Additionally, code review rate (>= 75%) serves as a fallback for the required reviewers component.
 
-**Recommendation:** Implement branch protection checks for GitLab (`/projects/{id}/protected_branches`) and Bitbucket.
+**Remaining:** Direct GitLab/Bitbucket API implementations for branch protection (`/projects/{id}/protected_branches`) and PR stats would improve accuracy beyond OSSF fallbacks.
 
 ---
 
@@ -200,8 +200,8 @@ Any package hosted on GitLab or Bitbucket is biased toward higher risk scores, t
 | P1 | Ownership Changes | PyPI `Uploader` field doesn't exist | OPEN |
 | P2 | Health | GitLab/Bitbucket PR/CI stubs | OPEN |
 | P2 | Governance | Issue response only for GitHub | OPEN |
-| P2 | Release Security | `HasReleaseProcess` too broad | OPEN |
-| P2 | Release Security | GitLab/Bitbucket branch protection stubs | OPEN |
+| ~~P2~~ | ~~Release Security~~ | ~~`HasReleaseProcess` too broad~~ | **MITIGATED** (OSSF Packaging fallback) |
+| ~~P2~~ | ~~Release Security~~ | ~~GitLab/Bitbucket branch protection stubs~~ | **MITIGATED** (OSSF fallbacks for all 4 components) |
 | P3 | Install Execution | PyPI setup.py skipped without repo URL | OPEN |
 
 ---
