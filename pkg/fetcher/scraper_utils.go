@@ -38,11 +38,16 @@ func scrapeWithUserAgent(url string) (*goquery.Document, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		// Read a small portion of the body for the error message
+		limited := io.LimitReader(resp.Body, 512)
+		body, _ := io.ReadAll(limited)
 		return nil, fmt.Errorf("scraping returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	// Cap response body at 5 MB to prevent excessive memory usage on
+	// unexpectedly large pages.
+	const maxBodySize = 5 * 1024 * 1024
+	doc, err := goquery.NewDocumentFromReader(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse HTML: %w", err)
 	}

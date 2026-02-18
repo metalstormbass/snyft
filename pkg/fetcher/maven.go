@@ -68,12 +68,10 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 		return pkg, nil
 	}
 
-	// FALLBACK 2: Try scraping
-	if shouldFallbackToScraping(nil, 0) {
-		pkg, scrapeErr := c.scrapeMavenPackageInfo(packageName)
-		if scrapeErr == nil {
-			return pkg, nil
-		}
+	// FALLBACK 2: Try scraping mvnrepository.com
+	pkg, scrapeErr := c.scrapeMavenPackageInfo(packageName)
+	if scrapeErr == nil {
+		return pkg, nil
 	}
 
 	// All methods failed
