@@ -89,7 +89,38 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		evidence = append(evidence, "No required code reviews")
 	}
 
-	// Component 5: Build System Location (self-hosted runner detection)
+	// Component 5: CI/CD Workflow Security (parsed from config files)
+	// Insecure CI configurations create direct attack vectors: unpinned actions can be
+	// hijacked, excessive permissions widen blast radius, script injection enables RCE.
+	// Source: GitHub Actions Security Hardening; SLSA Build Level Requirements
+	ciWorkflowRiskCount := 0
+	for _, ciRisk := range result.Metadata.CIWorkflowRisks {
+		ciWorkflowRiskCount += ciRisk.RiskCount
+		if ciRisk.HasScriptInjection {
+			evidence = append(evidence, fmt.Sprintf("CI script injection risk in %s workflow", ciRisk.Platform))
+		}
+		if len(ciRisk.DangerousTriggers) > 0 {
+			evidence = append(evidence, fmt.Sprintf("Dangerous CI triggers: %s", strings.Join(ciRisk.DangerousTriggers, ", ")))
+		}
+		if len(ciRisk.UnpinnedActions) > 0 {
+			evidence = append(evidence, fmt.Sprintf("%d unpinned CI dependencies (tag hijacking risk)", len(ciRisk.UnpinnedActions)))
+		}
+		if ciRisk.HasExcessivePermissions {
+			evidence = append(evidence, fmt.Sprintf("Excessive permissions in %s workflow", ciRisk.Platform))
+		}
+		if ciRisk.MissingEnvironmentProtection {
+			evidence = append(evidence, fmt.Sprintf("No environment protection on %s publish workflow", ciRisk.Platform))
+		}
+	}
+	// Penalize for significant CI workflow risks (3+ signals = -1 point)
+	if ciWorkflowRiskCount >= 3 {
+		points--
+		if points < 0 {
+			points = 0
+		}
+	}
+
+	// Component 6: Build System Location (self-hosted runner detection)
 	// Self-hosted runners give attackers who compromise the runner full control over
 	// the build environment and published artifacts. Cloud-hosted runners are isolated.
 	// Source: SLSA Build L3 - https://slsa.dev/spec/v1.0/levels

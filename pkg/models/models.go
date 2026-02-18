@@ -148,6 +148,7 @@ type PackageMetadata struct {
 	BuildSystems     []BuildSystemInfo `json:"build_systems,omitempty"` // Structured build system info
 	HasSelfHosted    bool              `json:"has_self_hosted"`          // Any self-hosted runners detected
 	HasReleaseProcess bool             `json:"has_release_process"`
+	CIWorkflowRisks  []CIWorkflowRisk `json:"ci_workflow_risks,omitempty"` // Parsed CI/CD workflow risk signals
 	SignedReleases   bool              `json:"signed_releases"`
 
 	// Provenance information
@@ -189,6 +190,40 @@ type BuildSystemInfo struct {
 	IsSelfHosted bool   `json:"is_self_hosted"`         // Key risk signal: self-hosted = uncontrolled environment
 	RunnerDetails string `json:"runner_details,omitempty"` // e.g. "ubuntu-latest", "custom-runner"
 	ConfigFile   string `json:"config_file,omitempty"`  // Config file that detected this system
+}
+
+// CIWorkflowRisk contains risk signals parsed from CI/CD configuration files.
+//
+// Check: CI/CD workflow security analysis
+// Justification: Insecure CI/CD configurations are a direct supply chain attack vector.
+//                Unpinned actions can be hijacked via tag mutation, excessive permissions
+//                grant attackers wider blast radius, and dangerous triggers like
+//                pull_request_target enable code execution from untrusted forks.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+//         SLSA Build Level Requirements (https://slsa.dev/spec/v1.0/levels)
+//         GitHub Actions Security Hardening (https://docs.github.com/en/actions/security-guides)
+// Methodology: Parse CI config files (GitHub Actions YAML, CircleCI config, GitLab CI, etc.)
+//              and identify insecure patterns via string analysis
+// Result: Risk signals feed into Release Security scoring (Category 9)
+type CIWorkflowRisk struct {
+	// UnpinnedActions lists actions/orbs/images referenced by mutable tag instead of SHA
+	UnpinnedActions []string `json:"unpinned_actions,omitempty"`
+	// HasExcessivePermissions is true when workflows request write-all or broad permissions
+	HasExcessivePermissions bool `json:"has_excessive_permissions"`
+	// DangerousTriggers lists risky event triggers (e.g., pull_request_target, workflow_dispatch)
+	DangerousTriggers []string `json:"dangerous_triggers,omitempty"`
+	// HasScriptInjection is true when workflow uses untrusted input in run: steps without sanitization
+	HasScriptInjection bool `json:"has_script_injection"`
+	// SecretsInLogs is true when echo/print of secret variables detected
+	SecretsInLogs bool `json:"secrets_in_logs"`
+	// MissingEnvironmentProtection is true when publish/deploy steps lack environment gates
+	MissingEnvironmentProtection bool `json:"missing_environment_protection"`
+	// Platform is the CI platform these risks were parsed from
+	Platform string `json:"platform"`
+	// RiskCount is the total number of risk signals found
+	RiskCount int `json:"risk_count"`
+	// Details contains human-readable descriptions of each risk found
+	Details []string `json:"details,omitempty"`
 }
 
 // DependencyMetrics contains information about dependency sprawl
