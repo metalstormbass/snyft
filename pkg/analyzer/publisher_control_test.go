@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -415,91 +416,93 @@ func TestAccountAge_EstablishedAccount(t *testing.T) {
 	}
 }
 
-// Test: Package concentration detection
+// Test: Package concentration increases risk score
 // Justification: Maintainers with many packages = high-value targets
 // Real-world impact analysis:
 //   - Top 100 npm maintainers control 20% of packages
 //   - Compromise one account = widespread supply chain impact
 //   - left-pad maintainer had 250+ packages
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Query npm for package count per maintainer
-// Result: Flags maintainers with 50+ packages as high-concentration risk
-func TestPackageConcentration_HighValueTarget(t *testing.T) {
-	analysis := &PublisherControlAnalysis{
-		PackagesPerMaintainer: map[string]int{
-			"bigmaintainer": 75,  // High concentration
-			"normal":        5,   // Normal
-		},
+// Methodology: Set HasHighConcentration=true and verify calculateRiskScore reflects the +0.2 penalty
+// Result: High concentration pushes risk score higher than without it
+func TestPackageConcentration_IncreasesRiskScore(t *testing.T) {
+	// Baseline: 2 maintainers, personal emails, no signing = MEDIUM
+	baseline := &PublisherControlAnalysis{
+		MaintainerCount:     2,
+		HasExpirableDomains: true,
+	}
+	baseline.calculateRiskScore()
+
+	// With high concentration: same setup + high-value target flag
+	withConcentration := &PublisherControlAnalysis{
+		MaintainerCount:      2,
+		HasExpirableDomains:  true,
+		HasHighConcentration: true,
+		MaxPackagesPerUser:   75,
+	}
+	withConcentration.calculateRiskScore()
+
+	// High concentration (+0.2) should result in equal or higher risk
+	if withConcentration.RiskPoints < baseline.RiskPoints {
+		t.Errorf("Expected concentration to increase risk: baseline=%d, withConcentration=%d",
+			baseline.RiskPoints, withConcentration.RiskPoints)
 	}
 
-	// Check high concentration detection
-	analysis.HasHighConcentration = false
-	analysis.MaxPackagesPerUser = 0
-
-	for _, count := range analysis.PackagesPerMaintainer {
-		if count > 50 {
-			analysis.HasHighConcentration = true
-		}
-		if count > analysis.MaxPackagesPerUser {
-			analysis.MaxPackagesPerUser = count
-		}
-	}
-
-	if !analysis.HasHighConcentration {
-		t.Error("Expected HasHighConcentration to be true for 75 packages")
-	}
-
-	if analysis.MaxPackagesPerUser != 75 {
-		t.Errorf("Expected MaxPackagesPerUser to be 75, got %d", analysis.MaxPackagesPerUser)
+	// Evidence should mention the high-value target
+	if !strings.Contains(withConcentration.Evidence, "high-value target") {
+		t.Errorf("Expected evidence to mention high-value target, got: %s", withConcentration.Evidence)
 	}
 }
 
-// Test: Signing practices - no signing
-// Justification: Unsigned commits/releases mean:
-//   - No cryptographic proof of author identity
-//   - Easy for attackers to impersonate maintainers
-//   - Common in compromised packages
+// Test: No signing adds +0.5 to risk score
+// Justification: Unsigned commits/releases mean no cryptographic proof of author identity.
+//   Without signing, attackers who compromise accounts can publish undetected.
 // Source: Sigstore & SLSA specifications
-// Methodology: Check commit verification status via GitHub API
-// Result: Flags packages with no commit/release signing
-func TestSigningPractices_NoSigning(t *testing.T) {
-	analysis := &PublisherControlAnalysis{
-		HasSignedCommits:  false,
-		HasSignedReleases: false,
-		SignedCommitCount: 0,
+// Methodology: Compare calculateRiskScore output with and without signing enabled
+// Result: No signing adds 0.5 risk, pushing borderline cases into higher risk tiers
+func TestSigningPractices_NoSigning_IncreasesRiskScore(t *testing.T) {
+	// Single maintainer without signing: 1.0 + 0.5 = 1.5 → HIGH (2 points)
+	noSigning := &PublisherControlAnalysis{
+		MaintainerCount:  1,
+		SingleMaintainer: true,
 	}
+	noSigning.calculateRiskScore()
 
-	// No signing should contribute to risk
-	if analysis.HasSignedCommits || analysis.HasSignedReleases {
-		t.Error("Expected no signing practices detected")
+	if noSigning.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points (HIGH) without signing, got %d (evidence: %s)",
+			noSigning.RiskPoints, noSigning.Evidence)
+	}
+	if !strings.Contains(noSigning.Evidence, "no signing") {
+		t.Errorf("Expected evidence to mention 'no signing', got: %s", noSigning.Evidence)
 	}
 }
 
-// Test: Signing practices - has signing
-// Justification: Signed commits/releases provide:
-//   - Cryptographic proof of maintainer identity
-//   - Harder for attackers to impersonate
-//   - Evidence of security consciousness
+// Test: Signing reduces risk score by 0.2
+// Justification: Signed commits/releases provide cryptographic proof of maintainer identity,
+//   making impersonation harder. This reduces overall risk.
 // Source: OSSF Scorecard - "Signed-Releases" check
-// Methodology: Verify GPG signatures on commits via GitHub API
-// Result: Reduces risk points for packages with signing
-func TestSigningPractices_HasSigning(t *testing.T) {
-	analysis := &PublisherControlAnalysis{
+// Methodology: Compare calculateRiskScore with signing enabled vs disabled for same base profile
+// Result: Signing reduces risk, potentially lowering risk tier for borderline cases
+func TestSigningPractices_HasSigning_ReducesRiskScore(t *testing.T) {
+	// Single maintainer with signing: 1.0 - 0.2 = 0.8 → MEDIUM (1 point)
+	withSigning := &PublisherControlAnalysis{
+		MaintainerCount:   1,
+		SingleMaintainer:  true,
 		HasSignedCommits:  true,
 		HasSignedReleases: true,
-		SignedCommitCount: 25,
+		SignedCommitCount:  25,
 	}
+	withSigning.calculateRiskScore()
 
-	if !analysis.HasSignedCommits {
-		t.Error("Expected HasSignedCommits to be true")
+	if withSigning.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point (MEDIUM) with signing, got %d (evidence: %s)",
+			withSigning.RiskPoints, withSigning.Evidence)
 	}
-
-	if !analysis.HasSignedReleases {
-		t.Error("Expected HasSignedReleases to be true")
+	if withSigning.RiskLevel != "MEDIUM" {
+		t.Errorf("Expected MEDIUM risk with signing, got %s", withSigning.RiskLevel)
 	}
-
-	if analysis.SignedCommitCount != 25 {
-		t.Errorf("Expected 25 signed commits, got %d", analysis.SignedCommitCount)
+	if !strings.Contains(withSigning.Evidence, "signing enabled") {
+		t.Errorf("Expected evidence to mention 'signing enabled', got: %s", withSigning.Evidence)
 	}
 }
 
@@ -897,5 +900,259 @@ func TestPackageProfile_PyPI_PythonJose_FewMaintainers_MediumRisk(t *testing.T) 
 	}
 	if analysis.RiskLevel != "MEDIUM" {
 		t.Errorf("python-jose: Expected MEDIUM risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// ============================================================
+// Additional package profiles from /Users/mike/Projects/mike-libraries
+// Covering npm, PyPI, and Maven packages not already tested above
+// ============================================================
+
+// Test: jsonwebtoken (npm) - security-critical, single primary maintainer
+// Profile: auth0 org package but historically single primary publisher, personal email
+// Source: npm/jsonwebtoken - JWT implementation used in authentication flows
+// Justification: Security-critical library (JWT signing) with limited publisher redundancy
+//   represents high supply chain risk - compromise enables token forgery across all consumers
+// Result: HIGH risk (2 points) - single maintainer + personal email + no signing
+func TestPackageProfile_NPM_JsonWebToken_SingleMaintainer_HighRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+	}
+
+	analysis.calculateRiskScore()
+
+	if analysis.RiskPoints != 2 {
+		t.Errorf("jsonwebtoken: Expected 2 risk points (HIGH), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("jsonwebtoken: Expected HIGH risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: axios (npm) - popular HTTP client, multiple maintainers, org-maintained
+// Profile: axios org, 3 core maintainers, org email domains, signed commits
+// Source: axios/axios on GitHub - active org with defined maintainer team
+// Justification: Well-maintained org with multiple maintainers reduces single-point-of-failure risk
+// Result: LOW risk (0 points) - org ownership + multiple maintainers + signed commits
+func TestPackageProfile_NPM_Axios_OrgMaintained_LowRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:   3,
+		SingleMaintainer:  false,
+		IsOrganization:    true,
+		OrgName:           "axios",
+		HasOrgDomains:     true,
+		HasSignedCommits:  true,
+		HasSignedReleases: false,
+	}
+
+	analysis.calculateRiskScore()
+
+	if analysis.RiskPoints != 0 {
+		t.Errorf("axios: Expected 0 risk points (LOW), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("axios: Expected LOW risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: requests (PyPI) - PSF-maintained, multiple maintainers
+// Profile: PSF (Python Software Foundation) project, 3+ maintainers, org emails
+// Source: psf/requests on GitHub - PSF-steered project with defined team
+// Justification: Foundation-backed project with institutional governance = resilient to compromise
+// Result: LOW risk (0 points) - org ownership + multiple maintainers
+func TestPackageProfile_PyPI_Requests_OrgMaintained_LowRisk(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "requests",
+			Ecosystem: models.EcosystemPyPI,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{
+				"dev1@python.org",
+				"dev2@python.org",
+				"dev3@python.org",
+				"dev4@python.org",
+			},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.MaintainerCount != 4 {
+		t.Errorf("requests: Expected 4 maintainers, got %d", analysis.MaintainerCount)
+	}
+	if analysis.RiskPoints != 0 {
+		t.Errorf("requests: Expected 0 risk points (LOW), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("requests: Expected LOW risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: cryptography (PyPI) - security-critical, org-maintained with signing
+// Profile: pyca org, 5+ maintainers, org emails, signed commits and releases
+// Source: pyca/cryptography on GitHub - foundational crypto library
+// Justification: Core cryptography library with exemplary security practices
+//   demonstrates the gold standard for publisher control
+// Result: LOW risk (0 points) - org + multiple maintainers + signing
+func TestPackageProfile_PyPI_Cryptography_OrgMaintained_LowRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:   5,
+		SingleMaintainer:  false,
+		IsOrganization:    true,
+		OrgName:           "pyca",
+		HasOrgDomains:     true,
+		HasSignedCommits:  true,
+		HasSignedReleases: true,
+	}
+
+	analysis.calculateRiskScore()
+
+	if analysis.RiskPoints != 0 {
+		t.Errorf("cryptography: Expected 0 risk points (LOW), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+}
+
+// Test: pydantic (PyPI) - single primary author, popular validation library
+// Profile: Single primary maintainer (Samuel Colvin), personal account
+// Source: pydantic/pydantic on GitHub - widely used for data validation
+// Justification: Single-maintainer pattern common in popular Python libraries;
+//   high impact if compromised (used by FastAPI, many enterprise apps)
+// Result: HIGH risk (2 points) - single maintainer + personal email
+func TestPackageProfile_PyPI_Pydantic_SingleMaintainer_HighRisk(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "pydantic",
+			Ecosystem: models.EcosystemPyPI,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"maintainer@gmail.com"},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.SingleMaintainer {
+		t.Error("pydantic: Expected SingleMaintainer to be true")
+	}
+	if analysis.RiskPoints != 2 {
+		t.Errorf("pydantic: Expected 2 risk points (HIGH), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+}
+
+// Test: guava (Maven) - Google org, multiple maintainers, signed artifacts
+// Profile: Google org, 10+ committers, google.com email domains, signed releases
+// Source: google/guava on GitHub - Google-maintained core Java library
+// Justification: Google engineering practices provide institutional security:
+//   mandatory code review, automated release pipeline, signed Maven artifacts
+// Result: LOW risk (0 points) - org + many maintainers + signing
+func TestPackageProfile_Maven_Guava_Google_LowRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:   10,
+		SingleMaintainer:  false,
+		IsOrganization:    true,
+		OrgName:           "google",
+		HasOrgDomains:     true,
+		HasSignedCommits:  true,
+		HasSignedReleases: true,
+	}
+
+	analysis.calculateRiskScore()
+
+	if analysis.RiskPoints != 0 {
+		t.Errorf("guava: Expected 0 risk points (LOW), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+}
+
+// Test: helmet (npm) - small security middleware, few maintainers
+// Profile: 2 maintainers, personal email domains, no signing
+// Source: npm/helmet - Express.js security middleware
+// Justification: Security middleware package with limited maintainer team;
+//   compromise could disable security headers across many Express apps
+// Result: MEDIUM risk (1 point) - few maintainers + personal emails
+func TestPackageProfile_NPM_Helmet_FewMaintainers_MediumRisk(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "helmet",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{
+				"dev1@gmail.com",
+				"dev2@yahoo.com",
+			},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.MaintainerCount != 2 {
+		t.Errorf("helmet: Expected 2 maintainers, got %d", analysis.MaintainerCount)
+	}
+	// Score: 0.3 (2 maintainers ≤3) + 0.3 (expirable domains) + 0.5 (no signing) = 1.1 → 1 point
+	if analysis.RiskPoints != 1 {
+		t.Errorf("helmet: Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+}
+
+// Test: sharp (npm) - native image processing, single maintainer
+// Profile: Single primary maintainer (lovell), personal account, native binary dependency
+// Source: npm/sharp - image processing with native bindings
+// Justification: Native binary packages have expanded attack surface;
+//   single maintainer controlling native code = critical compromise vector
+// Result: HIGH risk (2 points) - single maintainer + no signing
+func TestPackageProfile_NPM_Sharp_SingleMaintainer_HighRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+	}
+
+	analysis.calculateRiskScore()
+
+	if analysis.RiskPoints != 2 {
+		t.Errorf("sharp: Expected 2 risk points (HIGH), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+}
+
+// Test: New maintainer account adds risk to otherwise safe profile
+// Justification: Even well-maintained packages become risky when a new maintainer
+//   with a fresh account is added. Real-world example: event-stream attack (2018).
+// Source: npm security incident reports (2018-2023)
+// Methodology: Set HasNewMaintainers=true on an otherwise LOW-risk profile and verify
+//   that calculateRiskScore penalizes it
+// Result: New account pushes risk from LOW to MEDIUM
+func TestNewMaintainerAccount_IncreasesRiskScore(t *testing.T) {
+	// Good profile with new maintainer added
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:    3,
+		HasOrgDomains:      true,
+		HasNewMaintainers:  true,
+		NewMaintainerCount: 1,
+		MaintainerAccountAges: []AccountAge{
+			{Username: "newdev", AccountAge: 20, IsNew: true, IsSuspicious: true},
+		},
+	}
+
+	analysis.calculateRiskScore()
+
+	// Should not be LOW risk with a suspicious new account
+	if analysis.RiskLevel == "LOW" {
+		t.Errorf("Expected non-LOW risk with new maintainer, got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
+	}
+
+	if !strings.Contains(analysis.Evidence, "SUSPICIOUS") {
+		t.Errorf("Expected evidence to flag suspicious account, got: %s", analysis.Evidence)
 	}
 }
