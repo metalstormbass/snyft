@@ -224,6 +224,12 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	result.RepositoryURL = repoURL
 	result.Metadata = metadata
 
+	// Check for typosquatting before other analysis
+	// Typosquatting Detection: Compare package name against popular packages
+	// to identify potential name confusion attacks.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	checkTyposquatting(&result, dep)
+
 	// PRIMARY CHECK: Verify source code availability for the EXACT version
 	// This MUST be the first check before any other scoring
 	a.verifySourceCode(&result, dep, repoURL)
