@@ -116,6 +116,10 @@ export GITLAB_TOKEN="glpat_..."
 export BITBUCKET_TOKEN="..."
 ```
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for our security policy and how to report vulnerabilities.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.

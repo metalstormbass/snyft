@@ -1,0 +1,13 @@
+# Default owner for everything in the repo
+* @metalstormbass
+
+# Core analysis engine
+/pkg/analyzer/ @metalstormbass
+/pkg/fetcher/ @metalstormbass
+
+# AI integration
+/pkg/ai/ @metalstormbass
+
+# CI/CD and release configuration
+/.github/ @metalstormbass
+/.goreleaser.yml @metalstormbass

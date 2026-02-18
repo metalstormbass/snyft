@@ -2,9 +2,13 @@
 
 ## Code of Conduct
 
-Be respectful, inclusive, and collaborative.
+Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## How to Contribute
+
+### Reporting Security Issues
+
+See [SECURITY.md](SECURITY.md) for responsible disclosure of security vulnerabilities. Do not open public issues for security bugs.
 
 ### Reporting Bugs
 
