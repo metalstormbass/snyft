@@ -523,6 +523,9 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 		}
 	}
 
+	// Parse CI/CD workflow content for risk signals
+	a.parseCIWorkflowRisks(result, gitClient, repoURL)
+
 	if len(ciSystems) > 0 {
 		// Build a human-readable description showing platform and host
 		descriptions := make([]string, 0, len(buildSystems))
@@ -666,6 +669,82 @@ func (a *Analyzer) checkWorkflowContentForTests(gitClient fetcher.GitPlatformCli
 		}
 	}
 	return false
+}
+
+// parseCIWorkflowRisks fetches CI/CD configuration files from the repository and
+// parses them for supply chain risk patterns.
+//
+// Check: CI/CD workflow content analysis for risk signals
+// Justification: CI/CD configurations define the release pipeline. Insecure configs
+//                (unpinned actions, excessive permissions, dangerous triggers) are
+//                direct supply chain attack vectors that can be exploited to inject
+//                malicious code into published packages.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - https://arxiv.org/abs/2005.09535
+//         GitHub Actions Security Hardening - https://docs.github.com/en/actions/security-guides
+//         SLSA Build Level Requirements - https://slsa.dev/spec/v1.0/levels
+// Methodology: Fetch CI config file content via Git platform API, dispatch to
+//              platform-specific parsers for risk pattern detection
+// Result: Populates result.Metadata.CIWorkflowRisks with parsed risk signals
+func (a *Analyzer) parseCIWorkflowRisks(result *models.AnalysisResult, gitClient fetcher.GitPlatformClient, repoURL string) {
+	if repoURL == "" || len(result.Metadata.CISystems) == 0 {
+		return
+	}
+
+	configPaths := fetcher.CIConfigPaths()
+
+	for _, ciSystem := range result.Metadata.CISystems {
+		paths, ok := configPaths[ciSystem]
+		if !ok {
+			continue
+		}
+
+		for _, path := range paths {
+			content, err := gitClient.GetFileContent(repoURL, path)
+			if err != nil || content == "" {
+				continue
+			}
+
+			risk := fetcher.ParseCIWorkflowContent(content, ciSystem)
+			if risk.RiskCount > 0 {
+				result.Metadata.CIWorkflowRisks = append(result.Metadata.CIWorkflowRisks, risk)
+
+				// Add findings for significant risks
+				if risk.HasScriptInjection {
+					result.Findings = append(result.Findings, models.Finding{
+						Severity:    "HIGH",
+						Category:    "CI Script Injection",
+						Description: fmt.Sprintf("CI workflow script injection detected in %s config", ciSystem),
+						Check:       "CI/CD Workflow Risk Analysis",
+						Evidence:    strings.Join(risk.Details, "; "),
+					})
+				}
+				if len(risk.DangerousTriggers) > 0 {
+					result.Findings = append(result.Findings, models.Finding{
+						Severity:    "HIGH",
+						Category:    "Dangerous CI Triggers",
+						Description: fmt.Sprintf("Dangerous workflow triggers in %s: %s", ciSystem, strings.Join(risk.DangerousTriggers, ", ")),
+						Check:       "CI/CD Workflow Risk Analysis",
+						Evidence:    strings.Join(risk.Details, "; "),
+					})
+				}
+				if len(risk.UnpinnedActions) > 0 {
+					result.Findings = append(result.Findings, models.Finding{
+						Severity:    "MEDIUM",
+						Category:    "Unpinned CI Dependencies",
+						Description: fmt.Sprintf("%d unpinned actions/orbs/images in %s (vulnerable to tag hijacking)", len(risk.UnpinnedActions), ciSystem),
+						Check:       "CI/CD Workflow Risk Analysis",
+						Evidence:    strings.Join(risk.UnpinnedActions, ", "),
+					})
+				}
+			}
+
+			// For GitHub Actions, only parse the first found workflow to avoid
+			// excessive API calls. Other workflows share similar patterns.
+			if ciSystem == "GitHub Actions" {
+				break
+			}
+		}
+	}
 }
 
 func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL string) {

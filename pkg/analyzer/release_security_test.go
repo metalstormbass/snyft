@@ -900,3 +900,205 @@ func TestScoreReleaseSecurity_CloudHostedCI_EvidenceIncluded(t *testing.T) {
 		t.Errorf("Expected cloud-hosted CI evidence, got: %q", score.Evidence)
 	}
 }
+
+// ===== CI Workflow Risk Integration Tests =====
+// These tests verify that parsed CI workflow risk signals correctly affect release security scoring.
+
+// Test: CI workflow risks penalty applied when 3+ risk signals found
+// Justification: Multiple insecure CI patterns indicate systemic poor security practices
+//                in the release pipeline. The penalty reduces the release security score
+//                to reflect the increased compromise risk.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+//         GitHub Actions Security Hardening guide
+// Methodology: Provide CIWorkflowRisks with 3+ risk signals and verify penalty is applied
+// Result: Score is reduced by the CI workflow risk penalty
+func TestScoreReleaseSecurity_CIWorkflowRiskPenalty(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/risky-ci/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      true,
+			RequiredReviewers:   1,
+			CISystems:           []string{"GitHub Actions"},
+			CIWorkflowRisks: []models.CIWorkflowRisk{
+				{
+					Platform:            "GitHub Actions",
+					UnpinnedActions:     []string{"actions/checkout@v4", "actions/setup-node@v3"},
+					HasExcessivePermissions: true,
+					HasScriptInjection:  false,
+					MissingEnvironmentProtection: true,
+					RiskCount:           4,
+					Details: []string{
+						"Unpinned action actions/checkout@v4",
+						"Unpinned action actions/setup-node@v3",
+						"Workflow uses 'permissions: write-all'",
+						"Release workflow lacks environment protection",
+					},
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Without CI workflow risks: 4 points (all controls) → 0 risk points
+	// With CI workflow risks (3+ signals): 4 - 1 penalty = 3 points → 1 risk point
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point (CI workflow penalty on full controls), got %d", score.RiskPoints)
+	}
+}
+
+// Test: CI workflow risks below threshold do not trigger penalty
+// Justification: Minor CI configuration issues (e.g., 1-2 unpinned actions) should not
+//                penalize the release security score. Only systemic issues (3+) matter.
+// Source: Proportional risk assessment - minor issues should not override strong controls
+// Methodology: Provide CIWorkflowRisks with <3 risk signals
+// Result: No penalty applied, score unchanged
+func TestScoreReleaseSecurity_CIWorkflowRiskBelowThreshold(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/minor-ci-risk/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      true,
+			RequiredReviewers:   1,
+			CISystems:           []string{"GitHub Actions"},
+			CIWorkflowRisks: []models.CIWorkflowRisk{
+				{
+					Platform:        "GitHub Actions",
+					UnpinnedActions: []string{"actions/checkout@v4"},
+					RiskCount:       1,
+					Details:         []string{"Unpinned action actions/checkout@v4"},
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Below threshold: no penalty → 4 points → 0 risk points
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points (CI risk below penalty threshold), got %d", score.RiskPoints)
+	}
+}
+
+// Test: CI workflow risk evidence appears in score output
+// Justification: Evidence strings must include CI workflow risk details for audit trail
+//                and to help maintainers understand what needs to be fixed.
+// Source: OSSF Scorecard methodology - evidence-based assessment
+// Methodology: Provide CIWorkflowRisks with various risk types and check evidence strings
+// Result: Evidence contains CI workflow risk details
+func TestScoreReleaseSecurity_CIWorkflowRiskEvidence(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/evidence-ci/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			CISystems:           []string{"GitHub Actions"},
+			CIWorkflowRisks: []models.CIWorkflowRisk{
+				{
+					Platform:            "GitHub Actions",
+					UnpinnedActions:     []string{"actions/checkout@v4", "actions/setup-node@v3"},
+					HasScriptInjection:  true,
+					DangerousTriggers:   []string{"pull_request_target"},
+					HasExcessivePermissions: true,
+					MissingEnvironmentProtection: true,
+					RiskCount:           6,
+					Details:             []string{"Various risks"},
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Check that evidence mentions CI workflow risks
+	evidenceChecks := []string{
+		"script injection",
+		"pull_request_target",
+		"unpinned CI dependencies",
+		"Excessive permissions",
+		"environment protection",
+	}
+
+	for _, check := range evidenceChecks {
+		if !strings.Contains(strings.ToLower(score.Evidence), strings.ToLower(check)) {
+			t.Errorf("Expected evidence to mention %q, got: %q", check, score.Evidence)
+		}
+	}
+}
+
+// Test: Multiple CI platforms' risks are aggregated correctly
+// Justification: A repo may use multiple CI systems (e.g., GitHub Actions + CircleCI).
+//                Risks from all platforms should be aggregated for scoring.
+// Source: Defense-in-depth principle - all CI configs must be secure
+// Methodology: Provide CIWorkflowRisks from multiple platforms
+// Result: Risks from all platforms are counted toward the penalty threshold
+func TestScoreReleaseSecurity_MultipleCIPlatformRisks(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/multi-ci/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      true,
+			RequiredReviewers:   1,
+			CISystems:           []string{"GitHub Actions", "CircleCI"},
+			CIWorkflowRisks: []models.CIWorkflowRisk{
+				{
+					Platform:        "GitHub Actions",
+					UnpinnedActions: []string{"actions/checkout@v4"},
+					RiskCount:       1,
+				},
+				{
+					Platform:            "CircleCI",
+					MissingEnvironmentProtection: true,
+					UnpinnedActions: []string{"circleci/node@5"},
+					RiskCount:       2,
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Combined risk count = 1 + 2 = 3 >= threshold → penalty applied
+	// 4 points - 1 penalty = 3 → riskPoints = 1
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point (multi-platform CI risks aggregate to penalty), got %d", score.RiskPoints)
+	}
+}
+
+// Test: Empty CIWorkflowRisks slice does not affect scoring
+// Justification: When no CI config content is available for parsing (API limitations,
+//                private repos, etc.), the absence of CIWorkflowRisks should not affect
+//                the existing scoring behavior.
+// Source: Graceful degradation principle
+// Methodology: Provide empty CIWorkflowRisks slice with full controls
+// Result: Original scoring unchanged (0 risk points)
+func TestScoreReleaseSecurity_EmptyCIWorkflowRisks(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/no-ci-risks/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      true,
+			RequiredReviewers:   1,
+			CISystems:           []string{"GitHub Actions"},
+			CIWorkflowRisks:    []models.CIWorkflowRisk{},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points with empty CI workflow risks, got %d", score.RiskPoints)
+	}
+}
