@@ -415,6 +415,13 @@ func (r *Reporter) printPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnal
 				borderColor, ColorReset,
 				ColorDim, confidencePct, ColorReset)
 
+			// Always show academic source for AI findings - required for traceability
+			if pattern.AcademicSource != "" {
+				_, _ = fmt.Fprintf(w, "%s│%s       %sSource: %s%s\n",
+					borderColor, ColorReset,
+					ColorDim, pattern.AcademicSource, ColorReset)
+			}
+
 			// Show evidence in verbose mode
 			if r.config.Verbose && len(pattern.Evidence) > 0 {
 				_, _ = fmt.Fprintf(w, "%s│%s       %sEvidence:%s\n",

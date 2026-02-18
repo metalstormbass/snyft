@@ -339,7 +339,7 @@ Based on academic research and documented incidents:
 
 ### Pattern 8: Subdomain Takeover / Repository Hijacking
 **Description**: Legitimate package points to repository whose domain/account was abandoned
-**Source**: Various security advisories
+**Source**: Backstabber's Knife Collection (Ohm et al., 2020) - Repository hijacking via abandoned infrastructure - https://arxiv.org/abs/2005.09535
 **Indicators**:
 - Repository URL returns 404 or different content
 - Repository owner account deleted
