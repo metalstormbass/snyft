@@ -115,8 +115,10 @@ func (a *Analyzer) getGitClient(repoURL string) fetcher.GitPlatformClient {
 	case fetcher.PlatformBitbucket:
 		return a.bitbucketClient
 	default:
-		// Fall back to GitHub client for unknown platforms
-		return a.githubClient
+		// For Apache, Eclipse, Sourcehut, Codeberg, generic git, etc.,
+		// use the platform-aware factory which returns a GenericGitClient.
+		// Only PlatformUnknown falls back to the GitHub client.
+		return fetcher.NewGitPlatformClient(repoURL)
 	}
 }
 
@@ -320,7 +322,10 @@ func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.De
 					Evidence:    sourceVerification.Details,
 				})
 				result.RiskFactors = append(result.RiskFactors, "No source package available")
-			} else if !sourceVerification.HasMatchingGitTag {
+			} else if !sourceVerification.HasMatchingGitTag && repoURL != "" {
+				// Only flag a missing git tag when a repository URL was available and
+				// a tag check was actually attempted. When repoURL is empty the check
+				// was never performed, so HasMatchingGitTag == false is not actionable.
 				result.Findings = append(result.Findings, models.Finding{
 					Severity:    "MEDIUM",
 					Category:    "Missing Git Tag",
@@ -374,19 +379,26 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 	}
 
 	// Check last commit age
-	daysSinceLastCommit := time.Since(repoInfo.PushedAt).Hours() / 24
-	if daysSinceLastCommit > 365 {
-		result.Findings = append(result.Findings, models.Finding{
-			Severity:    "MEDIUM",
-			Category:    "Stale Repository",
-			Description: fmt.Sprintf("No commits in the last %.0f days", daysSinceLastCommit),
-			Check:       "Repository Activity Check",
-		})
-		result.RiskFactors = append(result.RiskFactors, "Inactive development")
+	// Guard against zero timestamps returned by failed scraping fallbacks:
+	// a zero PushedAt would compute to ~106,752 days and trigger a false positive.
+	if !repoInfo.PushedAt.IsZero() {
+		daysSinceLastCommit := time.Since(repoInfo.PushedAt).Hours() / 24
+		if daysSinceLastCommit > 365 {
+			result.Findings = append(result.Findings, models.Finding{
+				Severity:    "MEDIUM",
+				Category:    "Stale Repository",
+				Description: fmt.Sprintf("No commits in the last %.0f days", daysSinceLastCommit),
+				Check:       "Repository Activity Check",
+			})
+			result.RiskFactors = append(result.RiskFactors, "Inactive development")
+		}
 	}
 
-	// Check for low activity indicators
-	if repoInfo.Stars < 10 && repoInfo.Forks < 5 {
+	// Check for low activity indicators.
+	// Only flag this when we have a verified star count (Stars > 0 means the API
+	// or scraper returned data; Stars == 0 could mean the count was never populated,
+	// which would produce a false positive for large, popular projects).
+	if repoInfo.Stars > 0 && repoInfo.Stars < 10 && repoInfo.Forks < 5 {
 		result.Findings = append(result.Findings, models.Finding{
 			Severity:    "MEDIUM",
 			Category:    "Low Community Engagement",

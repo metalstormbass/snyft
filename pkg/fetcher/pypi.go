@@ -122,7 +122,7 @@ type PyPIInfo struct {
 // falls back to project_url and home_page fields, filtering the latter two for
 // known source-hosting domains so that marketing homepages are skipped.
 //
-// Priority order for project_urls keys:
+// Priority order for project_urls keys (case-insensitive):
 //  1. "Source Code"
 //  2. "Source"
 //  3. "Repository"
@@ -131,15 +131,23 @@ type PyPIInfo struct {
 //
 // Final fallbacks (domain-filtered): project_url, home_page
 func extractPyPIRepoURL(info PyPIInfo) string {
-	priority := []string{"Source Code", "Source", "Repository", "Code"}
+	// Build a lowercase key → original URL map for case-insensitive lookup.
+	// PyPI project_urls keys have no enforced casing convention; packages use
+	// "Source Code", "source code", "Source code", "repository", etc.
+	lowerURLs := make(map[string]string, len(info.ProjectURLs))
+	for k, v := range info.ProjectURLs {
+		lowerURLs[strings.ToLower(k)] = v
+	}
+
+	priority := []string{"source code", "source", "repository", "code"}
 	for _, key := range priority {
-		if url, ok := info.ProjectURLs[key]; ok && url != "" {
+		if url, ok := lowerURLs[key]; ok && url != "" {
 			return url
 		}
 	}
 
 	// "Homepage" is only accepted when it points at a source-hosting service
-	if url, ok := info.ProjectURLs["Homepage"]; ok && url != "" {
+	if url, ok := lowerURLs["homepage"]; ok && url != "" {
 		if isSourceRepoHost(url) {
 			return url
 		}

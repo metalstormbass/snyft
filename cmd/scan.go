@@ -73,20 +73,38 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unsupported format: %s (must be text, markdown, json, or html)", outputFormat)
 	}
 
+	// Route status/progress messages to stderr for machine-readable formats so
+	// that stdout (or the output file) contains only the structured result.
+	statusOut := os.Stdout
+	if format == report.FormatJSON || format == report.FormatHTML || format == report.FormatMarkdown {
+		statusOut = os.Stderr
+	}
+
+	// Determine output writer: file when -o is set, otherwise stdout
+	outputWriter := os.Stdout
+	if outputFile != "" {
+		f, err := os.Create(outputFile)
+		if err != nil {
+			return fmt.Errorf("failed to open output file: %w", err)
+		}
+		defer func() { _ = f.Close() }()
+		outputWriter = f
+		// When writing to a file, status messages always go to stderr regardless of format
+		statusOut = os.Stderr
+	}
+
 	// Create reporter
 	reporter := report.NewReporter(report.Config{
 		Format:       format,
 		Verbose:      verbose,
-		Writer:       os.Stdout,
-		ShowProgress: format == report.FormatText, // Only show progress for text output
+		Writer:       outputWriter,
+		ShowProgress: format == report.FormatText && outputFile == "", // Only show progress for text on stdout
 	})
 
-	reporter.SetScanPath(scanPath)
-
-	fmt.Printf("🔍 Scanning directory: %s\n", scanPath)
+	fmt.Fprintf(statusOut, "🔍 Scanning directory: %s\n", scanPath)
 
 	// Parse manifest files
-	manifestCount, dependencies, err := parseManifests(scanPath)
+	manifestCount, dependencies, err := parseManifests(scanPath, statusOut)
 	if err != nil {
 		return fmt.Errorf("failed to parse manifests: %w", err)
 	}
@@ -94,12 +112,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 	reporter.SetManifestCount(manifestCount)
 
 	if len(dependencies) == 0 {
-		fmt.Println("⚠️  No dependencies found")
+		fmt.Fprintln(statusOut, "⚠️  No dependencies found")
 		return nil
 	}
 
-	fmt.Printf("📦 Found %d dependencies across all manifests\n", len(dependencies))
-	fmt.Println()
+	fmt.Fprintf(statusOut, "📦 Found %d dependencies across all manifests\n\n", len(dependencies))
 
 	// Configure AI if enabled
 	var aiConfig *ai.Config
@@ -130,7 +147,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			if aiDisableRetry {
 				aiConfig.EnableRetry = false
 			}
-			fmt.Printf("🤖 AI analysis enabled (timeout: %v)\n", aiConfig.Timeout)
+			fmt.Fprintf(statusOut, "🤖 AI analysis enabled (timeout: %v)\n", aiConfig.Timeout)
 		}
 	}
 
@@ -145,7 +162,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	return reporter.Generate()
 }
 
-func parseManifests(dir string) (int, []models.Dependency, error) {
+func parseManifests(dir string, statusOut *os.File) (int, []models.Dependency, error) {
 	var allDeps []models.Dependency
 	var mu sync.Mutex
 
@@ -155,17 +172,17 @@ func parseManifests(dir string) (int, []models.Dependency, error) {
 		return 0, nil, err
 	}
 
-	fmt.Printf("📄 Found %d manifest files\n", len(manifestFiles))
+	fmt.Fprintf(statusOut, "📄 Found %d manifest files\n", len(manifestFiles))
 
 	// Parse each manifest
 	for _, file := range manifestFiles {
 		if verbose {
-			fmt.Printf("  Parsing: %s\n", file)
+			fmt.Fprintf(statusOut, "  Parsing: %s\n", file)
 		}
 
 		deps, err := parser.ParseManifest(file)
 		if err != nil {
-			fmt.Printf("⚠️  Failed to parse %s: %v\n", file, err)
+			fmt.Fprintf(statusOut, "⚠️  Failed to parse %s: %v\n", file, err)
 			continue
 		}
 

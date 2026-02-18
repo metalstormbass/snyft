@@ -116,8 +116,13 @@ func (r *Reporter) generateJSON() error {
 		}
 	}
 
-	// Recommendations
-	report.Recommendations = r.generateRecommendations()
+	// Recommendations — strip ANSI escape codes so JSON consumers get plain text
+	rawRecs := r.generateRecommendations()
+	cleanRecs := make([]string, len(rawRecs))
+	for i, rec := range rawRecs {
+		cleanRecs[i] = stripANSI(rec)
+	}
+	report.Recommendations = cleanRecs
 
 	// Encode JSON
 	encoder := json.NewEncoder(r.config.Writer)
