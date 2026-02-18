@@ -1,0 +1,18 @@
+{
+  "_meta": {
+    "hash": {"sha256": "abc123"},
+    "pipfile-spec": 6,
+    "requires": {"python_version": "3.11"}
+  },
+  "default": {
+    "requests": {"version": "==2.28.0"},
+    "urllib3": {"version": "==1.26.12"},
+    "certifi": {"version": "==2022.9.24"},
+    "charset-normalizer": {"version": "==2.1.1"},
+    "idna": {"version": "==3.4"}
+  },
+  "develop": {
+    "pytest": {"version": "==7.0.0"},
+    "pluggy": {"version": "==1.0.0"}
+  }
+}
