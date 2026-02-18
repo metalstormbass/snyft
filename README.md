@@ -4,15 +4,15 @@
   <img src="assets/snyft.png" alt="Snyft Logo" width="400"/>
 </p>
 
-**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a comprehensive 9-category scoring rubric to identify potential compromise risks.
+**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a comprehensive 10-category scoring rubric to identify potential compromise risks.
 
 ## Overview
 
-Unlike traditional vulnerability scanners focused on CVEs, Snyft assesses the **likelihood of supply chain compromise** by analyzing repository metadata, build practices, source code availability, and security signals. Each dependency is scored across 9 critical security categories, providing a **0-18 point risk assessment** (lower is better).
+Unlike traditional vulnerability scanners focused on CVEs, Snyft assesses the **likelihood of supply chain compromise** by analyzing repository metadata, build practices, source code availability, and security signals. Each dependency is scored across 10 critical security categories, providing a **0-20 point risk assessment** (lower is better).
 
 ### Key Features
 
-- **9-Category Risk Scoring**: Comprehensive supply chain security rubric (0-18 points)
+- **10-Category Risk Scoring**: Comprehensive supply chain security rubric (0-20 points)
 - **Primary Source Verification**: Validates exact version source code availability before analysis
 - **AI-Enhanced Analysis** (Optional): Claude AI-powered attack pattern detection and executive summaries
 - **Executive Summaries**: Actionable key findings with specific package examples and evidence
@@ -141,7 +141,7 @@ See [docs/AI_FEATURES.md](docs/AI_FEATURES.md) for detailed AI configuration.
 
 ## Supply Chain Scoring System
 
-Snyft uses a **9-category rubric** where each category is scored 0-2 risk points:
+Snyft uses a **10-category rubric** where each category is scored 0-2 risk points:
 
 | Category | Description | Risk Indicators |
 |----------|-------------|-----------------|
@@ -154,11 +154,12 @@ Snyft uses a **9-category rubric** where each category is scored 0-2 risk points
 | **7. Health** | Bus factor, CI quality, code review | Low bus factor, no CI/reviews |
 | **8. Governance** | Governance docs, maintainer responsiveness | No SECURITY.md, slow response, abandoned |
 | **9. Release Security** | CI publishing, branch protection, signed tags | Manual publishing, no branch protection |
+| **10. Package Maturity** | Package age, update frequency, staleness | New/abandoned package, irregular updates |
 
-**Total Score**: 0-18 points
+**Total Score**: 0-20 points
 - **0-5 points**: ✅ Low risk (good supply chain security)
-- **6-12 points**: ⚠️ Medium risk (some concerns)
-- **13-18 points**: 🔴 High risk (significant issues)
+- **6-14 points**: ⚠️ Medium risk (some concerns)
+- **15-20 points**: 🔴 High risk (significant issues)
 
 ## AI-Enhanced Analysis (Optional)
 
@@ -235,7 +236,7 @@ Optional environment variables:
 │ Package: vulnerable-pkg@1.2.3 (npm)
 │
 │  Risk Level: HIGH
-│  Supply Chain Score: 15/18 points (HIGH risk)
+│  Supply Chain Score: 15/20 points (HIGH risk)
 │  Repository: https://github.com/owner/vulnerable-pkg
 │  Source Available: ✗ No
 │
@@ -277,7 +278,7 @@ Optional environment variables:
 │ Package: express@4.18.2 (npm)
 │
 │  Risk Level: LOW
-│  Supply Chain Score: 3/18 points (LOW risk)
+│  Supply Chain Score: 3/20 points (LOW risk)
 │  Repository: https://github.com/expressjs/express
 │  Source Available: ✓ Yes
 │  Build Infrastructure: CI detected: GitHub Actions, Travis CI
@@ -321,7 +322,10 @@ Optional environment variables:
           "installExecution": {"score": 2, "riskPoints": 0, "verified": true},
           "dependencySprawl": {"score": 2, "riskPoints": 0, "verified": true},
           "provenance": {"score": 1, "riskPoints": 1, "verified": true},
-          "health": {"score": 1, "riskPoints": 1, "verified": true}
+          "health": {"score": 1, "riskPoints": 1, "verified": true},
+          "governance": {"score": 2, "riskPoints": 0, "verified": true},
+          "releaseSecurity": {"score": 2, "riskPoints": 0, "verified": true},
+          "packageMaturity": {"score": 2, "riskPoints": 0, "verified": true}
         }
       },
       "sourceCodeAvailable": true,
@@ -351,7 +355,7 @@ Optional environment variables:
 snyft/
 ├── cmd/           # CLI commands (Cobra framework)
 ├── pkg/
-│   ├── analyzer/  # Core analysis engine with 9-category scoring
+│   ├── analyzer/  # Core analysis engine with 10-category scoring
 │   ├── fetcher/   # API clients + web scraping fallbacks
 │   │              # Multi-platform support (GitHub, GitLab, Bitbucket)
 │   ├── models/    # Data structures
@@ -376,7 +380,7 @@ The platform is automatically detected from repository URLs, ensuring seamless a
 3. **Deduplication**: Remove duplicate dependencies across manifests
 4. **Source Verification**: PRIMARY check - validate exact version source availability
 5. **Parallel Analysis**: Spawn worker goroutines for concurrent analysis
-6. **Scoring**: Calculate 9-category supply chain scores
+6. **Scoring**: Calculate 10-category supply chain scores
 7. **Reporting**: Generate formatted output with executive summaries (text/markdown/json/html)
 
 ## Troubleshooting

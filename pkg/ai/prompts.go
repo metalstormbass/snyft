@@ -483,7 +483,7 @@ Explain supply chain security risks in language that:
 
 ### How We Assess Risk
 
-"We evaluate 9 categories of supply chain security controls:
+"We evaluate 10 categories of supply chain security controls:
 1. Publisher Control (how easy is it to compromise the publisher?)
 2. Ownership Changes (recent suspicious transfers?)
 3. Release Anomalies (unusual activity patterns?)
@@ -492,7 +492,8 @@ Explain supply chain security risks in language that:
 6. Provenance (can we verify the build?)
 7. Health (is the project actively maintained?)
 8. Governance (clear ownership and policies?)
-9. Release Security (automated, protected releases?)"
+9. Release Security (automated, protected releases?)
+10. Package Maturity (is the package established and regularly maintained?)"
 
 ### What We Don't Do
 
@@ -540,7 +541,7 @@ func NewExecutiveExplanationPrompt(packageName string, ecosystem models.Ecosyste
 	riskSummary := fmt.Sprintf("Risk Level: %s (Score: %d/100)", analysisResult.RiskLevel, analysisResult.RiskScore)
 
 	if analysisResult.SupplyChainScore != nil {
-		riskSummary += fmt.Sprintf("\nSupply Chain Risk: %s (%d/18 points)",
+		riskSummary += fmt.Sprintf("\nSupply Chain Risk: %s (%d/20 points)",
 			analysisResult.SupplyChainScore.RiskLevel,
 			analysisResult.SupplyChainScore.TotalScore)
 	}

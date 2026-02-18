@@ -197,7 +197,7 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 	_, _ = fmt.Fprintf(w, "**Risk Level:** %s\n", result.RiskLevel)
 
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %d/14 points (%s risk)\n",
+		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %d/20 points (%s risk)\n",
 			result.SupplyChainScore.TotalScore,
 			result.SupplyChainScore.RiskLevel)
 	}

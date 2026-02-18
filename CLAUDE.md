@@ -79,7 +79,7 @@ Every risk point assigned must have:
 
 ## Scoring System
 
-**0-14 Point Risk Score** (lower is better)
+**0-20 Point Risk Score** (lower is better)
 
 Each category scores 0-2 points:
 - 0 = Good practices, low compromise risk
@@ -94,6 +94,9 @@ Each category scores 0-2 points:
 5. Dependency Sprawl
 6. Provenance
 7. Health
+8. Governance
+9. Release Security
+10. Package Maturity
 
 ## For All Contributors
 
