@@ -249,11 +249,13 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 			gitClient := a.getGitClient(repoURL)
 			if pomContent, err := gitClient.GetFileContent(repoURL, "pom.xml"); err == nil {
 				scriptAnalysis := AnalyzeJavaPOM(pomContent)
-				if scriptAnalysis.HasDangerousPatterns {
-					metadata.InstallScripts = map[string]string{"pom.xml": pomContent}
-					metadata.HasInstallScripts = true
-					metadata.InstallScriptAnalysis = convertToModelAnalysis(scriptAnalysis)
-				}
+				// Always record that a pom.xml exists so the "single benign
+				// install script" scoring path (1 risk point) is reachable.
+				// Previously HasInstallScripts was only set when dangerous
+				// patterns were found, making the benign path unreachable.
+				metadata.InstallScripts = map[string]string{"pom.xml": pomContent}
+				metadata.HasInstallScripts = true
+				metadata.InstallScriptAnalysis = convertToModelAnalysis(scriptAnalysis)
 			}
 		}
 	}

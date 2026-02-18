@@ -527,15 +527,19 @@ func (c *GitLabClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 
 // CheckSignedCommits checks if recent commits are GPG signed (stub)
 func (c *GitLabClient) CheckSignedCommits(repoURL string) (bool, int, error) {
-	// GitLab API doesn't easily expose commit signature verification
-	// This would require more complex implementation
-	return false, 0, nil
+	// GitLab API doesn't easily expose commit signature verification via the
+	// public API. Return an error so the caller treats this as "unchecked"
+	// rather than "checked and found no signing", which would incorrectly
+	// add a +0.5 risk penalty.
+	return false, 0, fmt.Errorf("commit signing verification not supported for GitLab")
 }
 
 // CheckSignedReleases checks if releases have signatures (stub)
 func (c *GitLabClient) CheckSignedReleases(repoURL string) (bool, error) {
-	// GitLab releases can have artifacts, but signature checking is complex
-	return false, nil
+	// GitLab releases can have artifacts, but signature checking is not
+	// supported via the public API. Return an error so the caller treats
+	// this as "unchecked" rather than "checked and found no signing".
+	return false, fmt.Errorf("release signing verification not supported for GitLab")
 }
 
 // GetCommitStats fetches commit distribution to calculate bus factor
