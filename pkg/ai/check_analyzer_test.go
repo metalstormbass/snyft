@@ -1183,3 +1183,38 @@ func TestContextBuilders_MinimalData(t *testing.T) {
 		})
 	}
 }
+
+// Test: buildProvenanceContext for PyPI includes PyPI-specific signature fields
+// Justification: PyPI uses cryptographic signatures rather than npm provenance;
+//                the context builder must include ecosystem-appropriate fields
+// Source: PyPI attestation vs npm provenance distinction
+// Methodology: Build provenance context with PyPI ecosystem and verify correct fields
+// Result: Should include PyPI signatures and exclude npm provenance references
+func TestBuildProvenanceContext_PyPI(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	analyzer := NewCheckAnalyzer(client)
+
+	result := &models.AnalysisResult{
+		SourceCodeAvailable: true,
+		Metadata: models.PackageMetadata{
+			HasPyPISignatures: true,
+		},
+	}
+
+	ctx := analyzer.buildProvenanceContext("requests", models.EcosystemPyPI, result)
+
+	if !strings.Contains(ctx, "Has PyPI cryptographic signatures: true") {
+		t.Error("PyPI provenance context missing PyPI signatures field")
+	}
+	// Should NOT contain npm-specific provenance fields
+	if strings.Contains(ctx, "npm provenance") {
+		t.Error("PyPI provenance context should not contain npm provenance")
+	}
+}
