@@ -458,7 +458,7 @@ func isScopeConfusion(pkg, popular string) bool {
 	}
 
 	// Same base name with different scope is suspicious
-	return pkgBase == popularBase && strings.ToLower(pkg) != strings.ToLower(popular)
+	return pkgBase == popularBase && !strings.EqualFold(pkg, popular)
 }
 
 // isRepeatedChar checks if one string is the same as the other but with a character
