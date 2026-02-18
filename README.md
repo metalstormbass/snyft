@@ -37,15 +37,14 @@ This will install the latest version of snyft to your `$GOPATH/bin` directory.
 
 ### Download Pre-built Binary
 
-Download the latest release for your platform from the [releases page](https://github.com/metalstormbass/snyft/releases):
+Download the latest release from the [releases page](https://github.com/metalstormbass/snyft/releases):
 
 - **macOS**: `snyft_[version]_Darwin_x86_64.tar.gz` or `snyft_[version]_Darwin_arm64.tar.gz`
 - **Linux**: `snyft_[version]_Linux_x86_64.tar.gz` or `snyft_[version]_Linux_arm64.tar.gz`
-- **Windows**: `snyft_[version]_Windows_x86_64.zip`
 
 Extract and run:
 ```bash
-tar -xzf snyft_*.tar.gz  # On macOS/Linux
+tar -xzf snyft_*.tar.gz
 ./snyft version
 ```
 
@@ -71,7 +70,7 @@ Or build manually:
 CGO_ENABLED=0 go build -o snyft
 ```
 
-**Note for macOS users**: Go 1.24+ is required to properly generate LC_UUID load commands. Using `make build` ensures correct flags.
+**Note**: Go 1.24+ is required for macOS compatibility. Using `make build` ensures correct flags.
 
 ## Usage
 
@@ -204,15 +203,6 @@ Optional environment variables:
 - Only runs when explicitly enabled
 - Uses rate limiting (50 req/min by default)
 - Responses cached for 24 hours
-
-### Primary Verification Checks
-
-Before scoring, Snyft performs critical source code verification:
-
-1. **Exact Version Source**: Validates that the published version matches available source code
-2. **Source Package Check**: Verifies source distribution exists (not just binaries)
-3. **Git Tag Matching**: Confirms repository tag exists for the version
-4. **Web Scraping Fallback**: Uses HTML parsing when APIs fail or rate limit
 
 ## Example Output
 
@@ -468,7 +458,4 @@ Future enhancements:
 - [ ] Historical tracking of dependency risk over time
 - [ ] Integration with CI/CD pipelines (GitHub Actions, GitLab CI)
 - [ ] Custom risk scoring profiles and policy enforcement
-- [ ] Malware detection via code analysis
 - [ ] SBOM (Software Bill of Materials) generation in CycloneDX/SPDX formats
-- [ ] Webhook notifications for new vulnerabilities
-- [ ] Dependency update recommendations with security context
