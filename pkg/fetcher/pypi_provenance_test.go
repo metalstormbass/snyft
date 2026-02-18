@@ -1,106 +1,294 @@
 package fetcher
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
-func TestPyPISignatureDetection(t *testing.T) {
-	// Test PyPI signature detection logic
-	tests := []struct {
-		name         string
-		hasSignature bool
-		pgpSignature string
-		expectSigned bool
-	}{
-		{
-			name:         "With PGP signature",
-			hasSignature: true,
-			pgpSignature: "-----BEGIN PGP SIGNATURE-----\n...",
-			expectSigned: true,
+// Test: CheckPyPISignatures with signed package files
+// Justification: Packages without cryptographic signatures cannot be verified
+//                as authentic, increasing risk of tampered distributions
+// Source: SLSA specification v1.0 — https://slsa.dev/spec/v1.0/
+// Methodology: Mock PyPI JSON API with has_sig and pgp_signature fields
+// Result: Returns correct signed/total counts and hasSignatures flag
+func TestCheckPyPISignatures_AllSigned(t *testing.T) {
+	response := PyPIResponse{
+		Info: PyPIInfo{
+			Name:    "signed-package",
+			Version: "1.0.0",
 		},
-		{
-			name:         "Has signature flag only",
-			hasSignature: true,
-			pgpSignature: "",
-			expectSigned: true,
-		},
-		{
-			name:         "No signature",
-			hasSignature: false,
-			pgpSignature: "",
-			expectSigned: false,
+		Urls: []PyPIURL{
+			{
+				Filename:     "signed-package-1.0.0.tar.gz",
+				HasSignature: true,
+				PGPSignature: "-----BEGIN PGP SIGNATURE-----\ntest\n-----END PGP SIGNATURE-----",
+				Digests:      map[string]string{"sha256": "abc123"},
+			},
+			{
+				Filename:     "signed_package-1.0.0-py3-none-any.whl",
+				HasSignature: true,
+				PGPSignature: "",
+				Digests:      map[string]string{"sha256": "def456"},
+			},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			isSigned := tt.hasSignature || tt.pgpSignature != ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
 
-			if isSigned != tt.expectSigned {
-				t.Errorf("Expected isSigned=%v, got %v", tt.expectSigned, isSigned)
-			}
-		})
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	hasSignatures, signedCount, totalCount, err := client.CheckPyPISignatures("signed-package")
+	if err != nil {
+		t.Fatalf("CheckPyPISignatures() error = %v", err)
+	}
+
+	if !hasSignatures {
+		t.Error("CheckPyPISignatures() hasSignatures = false, want true")
+	}
+
+	if signedCount != 2 {
+		t.Errorf("CheckPyPISignatures() signedCount = %d, want 2", signedCount)
+	}
+
+	if totalCount != 2 {
+		t.Errorf("CheckPyPISignatures() totalCount = %d, want 2", totalCount)
 	}
 }
 
-func TestPyPIURLStructure(t *testing.T) {
-	// Verify PyPIURL has required fields for signature checking
-	url := PyPIURL{
-		Filename:     "package-1.0.0.tar.gz",
-		URL:          "https://files.pythonhosted.org/packages/.../package-1.0.0.tar.gz",
-		HasSignature: true,
-		Digests: map[string]string{
-			"sha256": "abc123...",
+// Test: CheckPyPISignatures with no signed files
+// Justification: Most modern PyPI packages lack PGP signatures since PyPI
+//                deprecated PGP upload support in May 2023
+// Source: PyPI blog — "Removing PGP from PyPI" (2023-05-23)
+// Methodology: Mock PyPI JSON API with has_sig=false on all files
+// Result: Returns hasSignatures=false, signedCount=0
+func TestCheckPyPISignatures_NoneSigned(t *testing.T) {
+	response := PyPIResponse{
+		Info: PyPIInfo{
+			Name:    "unsigned-package",
+			Version: "2.0.0",
 		},
-		PGPSignature: "-----BEGIN PGP SIGNATURE-----\n...",
+		Urls: []PyPIURL{
+			{
+				Filename:     "unsigned-package-2.0.0.tar.gz",
+				HasSignature: false,
+				Digests:      map[string]string{"sha256": "abc123"},
+			},
+			{
+				Filename:     "unsigned_package-2.0.0-py3-none-any.whl",
+				HasSignature: false,
+				Digests:      map[string]string{"sha256": "def456"},
+			},
+		},
 	}
 
-	if !url.HasSignature {
-		t.Errorf("Expected has_signature to be true")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
 	}
 
-	if url.PGPSignature == "" {
-		t.Errorf("Expected PGP signature to be present")
+	hasSignatures, signedCount, totalCount, err := client.CheckPyPISignatures("unsigned-package")
+	if err != nil {
+		t.Fatalf("CheckPyPISignatures() error = %v", err)
 	}
 
-	if url.Digests["sha256"] == "" {
-		t.Errorf("Expected SHA256 digest to be present")
+	if hasSignatures {
+		t.Error("CheckPyPISignatures() hasSignatures = true, want false")
+	}
+
+	if signedCount != 0 {
+		t.Errorf("CheckPyPISignatures() signedCount = %d, want 0", signedCount)
+	}
+
+	if totalCount != 2 {
+		t.Errorf("CheckPyPISignatures() totalCount = %d, want 2", totalCount)
 	}
 }
 
-func TestPyPISignatureRatio(t *testing.T) {
-	// Test signature ratio calculation
-	urls := []PyPIURL{
-		{Filename: "package-1.0.0.tar.gz", HasSignature: true},
-		{Filename: "package-1.0.0-py3-none-any.whl", HasSignature: true},
-		{Filename: "package-1.0.0.zip", HasSignature: false},
+// Test: CheckPyPISignatures with partial signature coverage
+// Justification: Partial signing (e.g. only sdist signed, not wheels) leaves
+//                a gap — attackers can replace unsigned distributions
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) —
+//         https://arxiv.org/abs/2005.09535
+// Methodology: Mock PyPI API returning mix of signed and unsigned files
+// Result: Returns correct ratio of signed to total files
+func TestCheckPyPISignatures_PartiallySigned(t *testing.T) {
+	response := PyPIResponse{
+		Info: PyPIInfo{
+			Name:    "partial-package",
+			Version: "1.0.0",
+		},
+		Urls: []PyPIURL{
+			{
+				Filename:     "partial-package-1.0.0.tar.gz",
+				HasSignature: true,
+				Digests:      map[string]string{"sha256": "abc123"},
+			},
+			{
+				Filename:     "partial_package-1.0.0-py3-none-any.whl",
+				HasSignature: false,
+				Digests:      map[string]string{"sha256": "def456"},
+			},
+			{
+				Filename:     "partial_package-1.0.0-cp39-cp39-manylinux1_x86_64.whl",
+				HasSignature: false,
+				Digests:      map[string]string{"sha256": "ghi789"},
+			},
+		},
 	}
 
-	signedCount := 0
-	totalCount := len(urls)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
 
-	for _, url := range urls {
-		if url.HasSignature {
-			signedCount++
-		}
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
 	}
 
-	expectedSigned := 2
-	expectedTotal := 3
-
-	if signedCount != expectedSigned {
-		t.Errorf("Expected %d signed files, got %d", expectedSigned, signedCount)
+	hasSignatures, signedCount, totalCount, err := client.CheckPyPISignatures("partial-package")
+	if err != nil {
+		t.Fatalf("CheckPyPISignatures() error = %v", err)
 	}
 
-	if totalCount != expectedTotal {
-		t.Errorf("Expected %d total files, got %d", expectedTotal, totalCount)
+	if !hasSignatures {
+		t.Error("CheckPyPISignatures() hasSignatures = false, want true (at least one signed)")
 	}
 
-	// Check ratio
-	ratio := float64(signedCount) / float64(totalCount)
-	expectedRatio := 2.0 / 3.0
+	if signedCount != 1 {
+		t.Errorf("CheckPyPISignatures() signedCount = %d, want 1", signedCount)
+	}
 
-	if ratio != expectedRatio {
-		t.Errorf("Expected ratio %.2f, got %.2f", expectedRatio, ratio)
+	if totalCount != 3 {
+		t.Errorf("CheckPyPISignatures() totalCount = %d, want 3", totalCount)
+	}
+}
+
+// Test: CheckPyPISignatures with no release files
+// Justification: A package with no files at all is an edge case that could
+//                indicate a yanked release or registry inconsistency
+// Source: PyPI JSON API specification
+// Methodology: Mock PyPI API returning empty urls array
+// Result: Returns hasSignatures=false, counts at zero
+func TestCheckPyPISignatures_NoFiles(t *testing.T) {
+	response := PyPIResponse{
+		Info: PyPIInfo{
+			Name:    "empty-package",
+			Version: "0.1.0",
+		},
+		Urls: []PyPIURL{},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	hasSignatures, signedCount, totalCount, err := client.CheckPyPISignatures("empty-package")
+	if err != nil {
+		t.Fatalf("CheckPyPISignatures() error = %v", err)
+	}
+
+	if hasSignatures {
+		t.Error("CheckPyPISignatures() hasSignatures = true, want false")
+	}
+
+	if signedCount != 0 {
+		t.Errorf("CheckPyPISignatures() signedCount = %d, want 0", signedCount)
+	}
+
+	if totalCount != 0 {
+		t.Errorf("CheckPyPISignatures() totalCount = %d, want 0", totalCount)
+	}
+}
+
+// Test: CheckPyPISignatures error handling for API failure
+// Justification: Graceful degradation when PyPI API is unavailable
+// Source: SLSA v1.0 — build integrity checks must fail safely
+// Methodology: Mock server returns 500 Internal Server Error
+// Result: Returns error, does not panic or return misleading data
+func TestCheckPyPISignatures_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	_, _, _, err := client.CheckPyPISignatures("any-package")
+	if err == nil {
+		t.Error("CheckPyPISignatures() expected error for 500 response, got nil")
+	}
+}
+
+// Test: CheckPyPISignatures with PGP signature field (no has_sig flag)
+// Justification: Some older packages have pgp_signature field set without
+//                has_sig=true; both should be detected
+// Source: PyPI JSON API — has_sig and pgp_signature are independent fields
+// Methodology: Mock file with pgp_signature but has_sig=false
+// Result: File is counted as signed based on pgp_signature presence
+func TestCheckPyPISignatures_PGPSignatureFieldOnly(t *testing.T) {
+	response := PyPIResponse{
+		Info: PyPIInfo{
+			Name:    "pgp-only-package",
+			Version: "1.0.0",
+		},
+		Urls: []PyPIURL{
+			{
+				Filename:     "pgp-only-package-1.0.0.tar.gz",
+				HasSignature: false,
+				PGPSignature: "-----BEGIN PGP SIGNATURE-----\ndata\n-----END PGP SIGNATURE-----",
+				Digests:      map[string]string{"sha256": "abc"},
+			},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	hasSignatures, signedCount, _, err := client.CheckPyPISignatures("pgp-only-package")
+	if err != nil {
+		t.Fatalf("CheckPyPISignatures() error = %v", err)
+	}
+
+	if !hasSignatures {
+		t.Error("CheckPyPISignatures() hasSignatures = false, want true (pgp_signature field set)")
+	}
+
+	if signedCount != 1 {
+		t.Errorf("CheckPyPISignatures() signedCount = %d, want 1", signedCount)
 	}
 }
