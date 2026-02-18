@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -435,7 +436,7 @@ func TestCheckAnalyzer_AnalyzeAllCategories_NilScore(t *testing.T) {
 
 	// Should not panic
 	assert.NotPanics(t, func() {
-		ca.AnalyzeAllCategories(nil, "test-pkg", models.EcosystemNPM, result)
+		ca.AnalyzeAllCategories(context.Background(), "test-pkg", models.EcosystemNPM, result)
 	})
 }
 
