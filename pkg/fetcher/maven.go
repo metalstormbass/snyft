@@ -97,7 +97,7 @@ func (c *MavenClient) getPackageInfoDirect(groupID, artifactID string) (*MavenPa
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("package not found in Maven Central")
+		return nil, fmt.Errorf("%w in Maven Central", ErrPackageNotFound)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -162,7 +162,7 @@ func (c *MavenClient) getPackageInfoViaSearch(groupID, artifactID string) (*Mave
 	}
 
 	if len(searchResp.Response.Docs) == 0 {
-		return nil, fmt.Errorf("package not found")
+		return nil, ErrPackageNotFound
 	}
 
 	doc := searchResp.Response.Docs[0]

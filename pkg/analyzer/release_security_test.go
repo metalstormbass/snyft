@@ -134,8 +134,8 @@ func TestScoreReleaseSecurity_HighRisk_NoRepository(t *testing.T) {
 
 	score := analyzer.scoreReleaseSecurity(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for missing repository, got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for missing repository (needs investigation), got %d", score.RiskPoints)
 	}
 
 	if score.Verified {

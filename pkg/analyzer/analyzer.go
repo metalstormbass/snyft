@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -141,14 +142,26 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	case models.EcosystemNPM:
 		npmPkg, err := a.npmClient.GetPackageInfo(dep.Name)
 		if err != nil {
-			result.Findings = append(result.Findings, models.Finding{
-				Severity:    "HIGH",
-				Category:    "Package Not Found",
-				Description: fmt.Sprintf("Failed to fetch package from npm: %v", err),
-				Check:       "Package Registry Validation",
-			})
-			result.RiskLevel = "HIGH"
-			result.RiskScore = 100
+			if errors.Is(err, fetcher.ErrPackageNotFound) {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "HIGH",
+					Category:    "Package Not Found",
+					Description: fmt.Sprintf("Package does not exist in npm registry: %v", err),
+					Check:       "Package Registry Validation",
+				})
+				result.RiskLevel = "HIGH"
+				result.RiskScore = 100
+			} else {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "MEDIUM",
+					Category:    "Registry API Failure",
+					Description: fmt.Sprintf("Failed to fetch package from npm (API error, not confirmed missing): %v", err),
+					Check:       "Package Registry Validation",
+					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
+				})
+				result.RiskLevel = "UNKNOWN"
+				result.RiskScore = 0
+			}
 			return result
 		}
 		repoURL = npmPkg.RepositoryURL
@@ -167,14 +180,26 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	case models.EcosystemPyPI:
 		pypiPkg, err := a.pypiClient.GetPackageInfo(dep.Name)
 		if err != nil {
-			result.Findings = append(result.Findings, models.Finding{
-				Severity:    "HIGH",
-				Category:    "Package Not Found",
-				Description: fmt.Sprintf("Failed to fetch package from PyPI: %v", err),
-				Check:       "Package Registry Validation",
-			})
-			result.RiskLevel = "HIGH"
-			result.RiskScore = 100
+			if errors.Is(err, fetcher.ErrPackageNotFound) {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "HIGH",
+					Category:    "Package Not Found",
+					Description: fmt.Sprintf("Package does not exist in PyPI registry: %v", err),
+					Check:       "Package Registry Validation",
+				})
+				result.RiskLevel = "HIGH"
+				result.RiskScore = 100
+			} else {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "MEDIUM",
+					Category:    "Registry API Failure",
+					Description: fmt.Sprintf("Failed to fetch package from PyPI (API error, not confirmed missing): %v", err),
+					Check:       "Package Registry Validation",
+					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
+				})
+				result.RiskLevel = "UNKNOWN"
+				result.RiskScore = 0
+			}
 			return result
 		}
 		repoURL = pypiPkg.RepositoryURL
@@ -194,14 +219,26 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	case models.EcosystemMaven:
 		mavenPkg, err := a.mavenClient.GetPackageInfo(dep.Name)
 		if err != nil {
-			result.Findings = append(result.Findings, models.Finding{
-				Severity:    "HIGH",
-				Category:    "Package Not Found",
-				Description: fmt.Sprintf("Failed to fetch package from Maven Central: %v", err),
-				Check:       "Package Registry Validation",
-			})
-			result.RiskLevel = "HIGH"
-			result.RiskScore = 100
+			if errors.Is(err, fetcher.ErrPackageNotFound) {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "HIGH",
+					Category:    "Package Not Found",
+					Description: fmt.Sprintf("Package does not exist in Maven Central: %v", err),
+					Check:       "Package Registry Validation",
+				})
+				result.RiskLevel = "HIGH"
+				result.RiskScore = 100
+			} else {
+				result.Findings = append(result.Findings, models.Finding{
+					Severity:    "MEDIUM",
+					Category:    "Registry API Failure",
+					Description: fmt.Sprintf("Failed to fetch package from Maven Central (API error, not confirmed missing): %v", err),
+					Check:       "Package Registry Validation",
+					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
+				})
+				result.RiskLevel = "UNKNOWN"
+				result.RiskScore = 0
+			}
 			return result
 		}
 		repoURL = mavenPkg.RepositoryURL

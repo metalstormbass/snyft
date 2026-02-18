@@ -35,12 +35,15 @@ import (
 func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.CategoryScore {
 	const releaseSecSource = " [Source: SLSA v1.0 Build Level Requirements; Backstabber's Knife Collection (Ohm et al., 2020)]"
 
+	// When no repository URL is available, assign moderate risk (1 point) rather
+	// than maximum (2 points). The absence of a URL may be due to an API failure
+	// rather than genuinely missing release security. This requires investigation.
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
-			Score:       0,
-			RiskPoints:  2,
-			Description: "Unable to verify release security controls",
-			Evidence:    "No repository URL available" + releaseSecSource,
+			Score:       1,
+			RiskPoints:  1,
+			Description: "Unable to verify release security controls: no repository URL",
+			Evidence:    "No repository URL available; further investigation recommended" + releaseSecSource,
 			Verified:    false,
 		}
 	}

@@ -55,7 +55,7 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("package not found: %s", packageName)
+		return nil, fmt.Errorf("%w: %s", ErrPackageNotFound, packageName)
 	}
 
 	if resp.StatusCode != http.StatusOK {
