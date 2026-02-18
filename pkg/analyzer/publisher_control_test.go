@@ -1460,6 +1460,7 @@ func TestPartialSigning_OnlyCommitsSigned_ReducesRisk(t *testing.T) {
 		MaintainerCount:     3,
 		SingleMaintainer:    false,
 		HasExpirableDomains: true,
+		SigningChecked:      true,
 		HasSignedCommits:    true,
 		HasSignedReleases:   false,
 		SignedCommitCount:   10,
@@ -1493,6 +1494,7 @@ func TestPartialSigning_OnlyReleasesSigned_ReducesRisk(t *testing.T) {
 		MaintainerCount:     3,
 		SingleMaintainer:    false,
 		HasExpirableDomains: true,
+		SigningChecked:      true,
 		HasSignedCommits:    false,
 		HasSignedReleases:   true,
 	}
