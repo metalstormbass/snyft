@@ -316,6 +316,13 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 			return true, tagURL, nil
 		}
+
+		// Rate-limited or auth required — cannot distinguish "tag absent" from
+		// "check failed". Return an explicit error so the caller can suppress the
+		// finding rather than converting a failed check into a false negative.
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			return false, "", fmt.Errorf("GitHub API rate limited (status %d): cannot verify git tag", resp.StatusCode)
+		}
 	}
 
 	return false, "", nil

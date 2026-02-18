@@ -196,6 +196,7 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+
 // CriticalIssue represents a critical finding with package details
 type CriticalIssue struct {
 	PackageName    string
