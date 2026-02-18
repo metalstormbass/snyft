@@ -19,7 +19,7 @@ snyft/
 │   ├── parser/             # Manifest parsers (JS, Python, Java)
 │   ├── fetcher/            # API clients + web scraping fallbacks
 │   │                       # (GitHub, GitLab, Bitbucket, npm, PyPI, Maven, OSSF)
-│   ├── analyzer/           # 9-category scoring engine
+│   ├── analyzer/           # 10-category scoring engine
 │   ├── ai/                 # Claude AI integration (attack patterns, executive summaries)
 │   └── report/             # Multi-format output (text, markdown, JSON, HTML)
 ├── examples/               # Example projects for testing
@@ -50,7 +50,7 @@ API clients for external services with retry logic and rate limiting awareness. 
 
 ### Analyzer Layer (pkg/analyzer/)
 
-Core scoring engine with 9 categories (0-2 points each, 0-18 total):
+Core scoring engine with 10 categories (0-2 points each, 0-20 total):
 
 1. Publisher Control
 2. Ownership Changes
@@ -61,6 +61,7 @@ Core scoring engine with 9 categories (0-2 points each, 0-18 total):
 7. Health
 8. Governance
 9. Release Security
+10. Package Maturity
 
 Source code verification runs first (checks tarball/sdist/sources.jar + git tags), then each category is scored independently.
 
