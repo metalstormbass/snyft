@@ -122,14 +122,6 @@ func (a *Analyzer) AnalyzePublisherControl(result *models.AnalysisResult, repoUR
 		gitClient = a.getGitClient(repoURL)
 	}
 
-	// 1. CRITICAL: Check maintainer count (30% weight)
-	// Justification: Single maintainer = single point of failure
-	// One phished account = complete package compromise
-	if analysis.SingleMaintainer {
-		analysis.RiskLevel = "HIGH"
-		analysis.RiskPoints = 2
-	}
-
 	// 2. Check organization vs personal account (20% weight)
 	if repoURL != "" && gitClient != nil {
 		analysis.checkOrganizationOwnership(gitClient, repoURL)
@@ -194,15 +186,26 @@ func (analysis *PublisherControlAnalysis) checkOrganizationOwnership(gitClient f
 
 	// Check if owner is an organization (via GitHub API)
 	// GitHub API: GET /users/{username} returns "type": "Organization" or "User"
+	//
+	// API failure detection: when the call fails (unauthenticated/rate-limited),
+	// CheckIfOrganization returns (false, ""). We distinguish this from a confirmed
+	// personal account by checking whether orgName is empty - a successful "User"
+	// response always returns (false, login), while a failed call returns (false, "").
 	isOrg, orgName := gitClient.CheckIfOrganization(owner)
-	analysis.IsOrganization = isOrg
-	analysis.IsPersonalAccount = !isOrg
-	analysis.OrgName = orgName
-
-	// If organization, check for verified org status
 	if isOrg {
+		// Confirmed organization
+		analysis.IsOrganization = true
+		analysis.IsPersonalAccount = false
+		analysis.OrgName = orgName
 		analysis.VerifiedOrgMembership = gitClient.CheckVerifiedOrganization(owner)
+	} else if orgName != "" {
+		// Confirmed personal account (API returned "User" with a valid login)
+		analysis.IsOrganization = false
+		analysis.IsPersonalAccount = true
+		analysis.OrgName = ""
 	}
+	// If orgName == "" and isOrg == false, the API call failed (rate limit / no token)
+	// Leave both IsOrganization and IsPersonalAccount as false = "unknown"
 }
 
 // checkMaintainerAccountAges fetches the account creation dates for all maintainers
@@ -299,6 +302,15 @@ func (analysis *PublisherControlAnalysis) analyzeEmailDomains(maintainers []stri
 	}
 
 	for _, email := range maintainers {
+		// Extract actual email address from "name <email@domain>" format
+		if strings.Contains(email, "<") && strings.Contains(email, ">") {
+			start := strings.Index(email, "<")
+			end := strings.Index(email, ">")
+			if start < end {
+				email = email[start+1 : end]
+			}
+		}
+
 		parts := strings.Split(email, "@")
 		if len(parts) != 2 {
 			continue
@@ -433,7 +445,17 @@ func (analysis *PublisherControlAnalysis) checkMFAEnforcement(gitClient fetcher.
 	// MFA enforcement is only meaningful at the organization level.
 	// GitHub does not expose individual user 2FA status (privacy policy).
 	// npm/PyPI do not expose per-maintainer 2FA without authentication.
-	isOrg, _ := gitClient.CheckIfOrganization(owner)
+	//
+	// Reuse org status from checkOrganizationOwnership if already determined
+	// (both IsOrganization and IsPersonalAccount are set by that call).
+	// Only make an API call if we haven't already checked.
+	var isOrg bool
+	if analysis.IsOrganization || analysis.IsPersonalAccount {
+		// Already determined in checkOrganizationOwnership - reuse cached result
+		isOrg = analysis.IsOrganization
+	} else {
+		isOrg, _ = gitClient.CheckIfOrganization(owner)
+	}
 	if !isOrg {
 		// Personal account: cannot determine MFA status publicly
 		analysis.MFAStatus = "unknown"
@@ -479,7 +501,12 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 
 	// Factor 1: Maintainer count (CRITICAL - highest weight)
 	// Single maintainer is an automatic HIGH concern
-	if analysis.SingleMaintainer {
+	if analysis.MaintainerCount == 0 {
+		// No maintainer data available - cannot assess control
+		// Justification: Unknown ownership = unverifiable risk, treated as concerning
+		riskScore += 0.5
+		evidenceParts = append(evidenceParts, "no maintainer data (unverifiable)")
+	} else if analysis.SingleMaintainer {
 		riskScore += 1.0
 		evidenceParts = append(evidenceParts, "single maintainer (CRITICAL)")
 	} else if analysis.MaintainerCount <= 3 {
@@ -492,6 +519,8 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 
 	// Factor 2: Account type & Email domain (combined for simplicity)
 	// Personal account OR personal email = risk
+	// Note: only penalize when confirmed personal (API returned "User" type);
+	//       leave neutral when API check failed (no token / rate-limited).
 	if analysis.IsPersonalAccount {
 		riskScore += 0.3
 		evidenceParts = append(evidenceParts, "personal account")
@@ -501,6 +530,8 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 			evidenceParts = append(evidenceParts, "verified org")
 		}
 	}
+	// If neither IsOrganization nor IsPersonalAccount is set, account type is unknown
+	// (API unavailable or no repo URL). Do not penalize - insufficient data.
 
 	if analysis.HasExpirableDomains {
 		riskScore += 0.3
@@ -565,9 +596,13 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 
 	// Convert to 0-2 risk points scale
 	// Single maintainer + personal email/no signing = 1.0 + 0.3 + 0.5 = 1.8 → 2 points
+	// Single maintainer + no signing (no email data) = 1.0 + 0.5 = 1.5 → 2 points (HIGH)
 	// Single maintainer + signing = 1.0 + 0.3 - 0.2 = 1.1 → 1 point
 	// Multiple maintainers + org + signing = 0 + 0 - 0.2 = 0 → 0 points
-	if riskScore >= 1.7 {
+	//
+	// Threshold lowered from 1.7 to 1.4 so that single maintainer + no signing
+	// correctly scores as HIGH without requiring personal email as an additional factor.
+	if riskScore >= 1.4 {
 		analysis.RiskPoints = 2
 	} else if riskScore >= 0.7 {
 		analysis.RiskPoints = 1
@@ -590,24 +625,37 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	analysis.Verified = len(evidenceParts) > 0
 }
 
-// extractUsernameFromEmail extracts a username from an email address
-// Supports formats: "username@domain.com", "Name <email@domain.com>", "username"
+// extractUsernameFromEmail extracts a username from an email or maintainer string.
+// Supports formats:
+//   - "username"                          → "username"
+//   - "username@domain.com"               → "username"
+//   - "npmuser <npmuser@domain.com>"      → "npmuser"  (name before < is the npm username)
+//
+// For the "Name <email>" format, the part before < is the package manager username
+// (e.g. npm extracts maintainers as "{name} <{email}>"). Returning the name avoids
+// the incorrect fallback of using the email local-part as a username, which breaks
+// account-age lookups when the username differs from the email prefix.
 func extractUsernameFromEmail(email string) string {
-	// Handle "Name <email@domain.com>" format
+	// Handle "name <email@domain.com>" format - the name before < is the username
 	if strings.Contains(email, "<") && strings.Contains(email, ">") {
 		start := strings.Index(email, "<")
+		name := strings.TrimSpace(email[:start])
+		if name != "" {
+			return name
+		}
+		// Fallback: extract local part of the email inside <>
 		end := strings.Index(email, ">")
 		if start < end {
 			email = email[start+1 : end]
 		}
 	}
 
-	// Extract username from email
+	// Extract local part from "user@domain.com"
 	if strings.Contains(email, "@") {
 		parts := strings.Split(email, "@")
 		return parts[0]
 	}
 
-	// Already a username
+	// Already a bare username
 	return email
 }

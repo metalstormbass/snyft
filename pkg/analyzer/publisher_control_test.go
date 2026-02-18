@@ -227,19 +227,21 @@ func TestEmailDomainAnalysis_MixedDomains(t *testing.T) {
 }
 
 // Test: Extract username from various email formats
-// Justification: Maintainer emails come in various formats:
-//   - "username@domain.com"
-//   - "Full Name <email@domain.com>"
-//   - "username" (bare username)
-// Methodology: Parse email strings to extract username component
-// Result: Correctly extracts "username" from all common formats
+// Justification: Maintainer entries come in various formats from package registries.
+//   For npm: "npmuser <email@domain.com>" - the part before < IS the npm username.
+//   Using the name (not email local-part) ensures correct GitHub account-age lookups
+//   when the username differs from the email prefix (e.g. "john-smith <j.smith@co.com>").
+// Methodology: Parse maintainer strings to extract username component
+// Result: Returns name part for "Name <email>" format; email local-part for bare emails
 func TestExtractUsernameFromEmail(t *testing.T) {
 	tests := []struct {
 		input    string
 		expected string
 	}{
 		{"user@example.com", "user"},
-		{"John Doe <john@example.com>", "john"},
+		// npm format: name before < is the package manager username
+		{"npmuser <npmuser@gmail.com>", "npmuser"},
+		{"john-smith <j.smith@company.com>", "john-smith"},
 		{"username", "username"},
 		{"complex.name+tag@example.com", "complex.name+tag"},
 		{"", ""},
@@ -256,11 +258,9 @@ func TestExtractUsernameFromEmail(t *testing.T) {
 // Test: Risk score calculation - worst case
 // Justification: Cumulative risk factors multiply compromise likelihood
 // Worst case scenario:
-//   - Single maintainer (0.6 risk)
-//   - Personal account (0.4 risk)
-//   - New account <6mo (0.4 risk)
+//   - Single maintainer (1.0 risk)
 //   - Personal email (0.3 risk)
-//   - No signing (0.1 risk)
+//   - No signing (0.5 risk)
 //   = 1.8 risk → 2 risk points (HIGH)
 // Source: Risk model based on observed npm attack patterns
 // Methodology: Weight factors by real-world attack frequency
@@ -554,5 +554,85 @@ func TestCompleteRiskAssessment_RealWorldPackage(t *testing.T) {
 
 	if !analysis.Verified {
 		t.Error("Expected Verified to be true")
+	}
+}
+
+// Test: Zero maintainers - no maintainer data available
+// Justification: When no maintainer info is available, we cannot assess ownership control.
+//   This is itself a moderate risk signal - legitimate packages should have identifiable maintainers.
+//   An inability to verify who controls the package means we cannot assess account-takeover risk.
+// Source: OSSF Scorecard - maintainer identity is a key security health metric
+// Methodology: Count maintainers from registry metadata
+// Result: Assigns moderate risk (not zero, not maximum) for unverifiable ownership
+func TestPublisherControl_ZeroMaintainers(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "mystery-package",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{}, // No maintainer data
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.MaintainerCount != 0 {
+		t.Errorf("Expected 0 maintainers, got %d", analysis.MaintainerCount)
+	}
+
+	if analysis.SingleMaintainer {
+		t.Error("Expected SingleMaintainer to be false for 0 maintainers")
+	}
+
+	// 0 maintainers should score as MEDIUM risk (not LOW - ownership is unverifiable)
+	if analysis.RiskPoints == 0 {
+		t.Errorf("Expected non-zero risk points for 0 maintainers, got %d", analysis.RiskPoints)
+	}
+
+	// Should have evidence indicating unknown ownership
+	if analysis.Evidence == "" {
+		t.Error("Expected evidence string to be populated")
+	}
+}
+
+// Test: Single maintainer with no signing = HIGH risk
+// Justification: Single maintainer is the #1 compromise vector. Without commit signing,
+//   there is no cryptographic verification of the maintainer's identity. This combination
+//   represents the baseline attack profile for account takeover attacks.
+//   A single phished account with no signing = instant, undetectable package compromise.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+//         OSSF Scorecard - "Signed-Releases" check
+// Methodology: Count maintainers, check commit/release signing status
+// Result: Assigns 2 risk points (HIGH) for single maintainer + no signing
+func TestPublisherControl_SingleMaintainerNoSigning_IsHigh(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "test-package",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"npmuser"}, // Single maintainer, bare username (no email)
+		},
+	}
+
+	// No repo URL means no signing check - will get +0.5 for no signing
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.SingleMaintainer {
+		t.Error("Expected SingleMaintainer to be true")
+	}
+
+	// Single maintainer + no signing (1.0 + 0.5 = 1.5) should be HIGH (>= 1.4 threshold)
+	if analysis.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for single maintainer + no signing, got %d", analysis.RiskPoints)
+	}
+
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("Expected HIGH risk level, got %s", analysis.RiskLevel)
 	}
 }
