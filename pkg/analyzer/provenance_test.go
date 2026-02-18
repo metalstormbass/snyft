@@ -6,6 +6,14 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
+// Test: scoreProvenance assigns maximum risk when no provenance signals exist
+// Justification: Packages without any provenance evidence cannot be verified as
+//                originating from their stated source, making them susceptible
+//                to supply chain substitution attacks
+// Source: SLSA specification v1.0 — https://slsa.dev/spec/v1.0/
+//         "Backstabber's Knife Collection" (Ohm et al., 2020) — https://arxiv.org/abs/2005.09535
+// Methodology: Call scoreProvenance with empty PackageMetadata (no provenance fields set)
+// Result: 2 risk points, score 0, description "No provenance evidence"
 func TestScoreProvenance_NoProvenance(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -27,6 +35,13 @@ func TestScoreProvenance_NoProvenance(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance gives full credit for SLSA attestation
+// Justification: SLSA attestations provide the strongest supply chain integrity
+//                guarantee — cryptographic proof linking a package to its source
+//                commit and build environment
+// Source: SLSA specification v1.0 — https://slsa.dev/spec/v1.0/
+// Methodology: Set HasSLSAAttestation=true with SLSA_LEVEL_3; call scoreProvenance
+// Result: 0 risk points (full provenance), score 2
 func TestScoreProvenance_SLSAAttestation(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -51,6 +66,13 @@ func TestScoreProvenance_SLSAAttestation(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance gives full credit for Sigstore signatures
+// Justification: Sigstore/Cosign provides keyless signing tied to OIDC
+//                identities, enabling verification that releases were created
+//                by authorized maintainers without managing long-lived keys
+// Source: Sigstore documentation — https://www.sigstore.dev/
+// Methodology: Set HasSigstoreSignature=true; call scoreProvenance
+// Result: 0 risk points (full provenance), score 2
 func TestScoreProvenance_SigstoreSignatures(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -70,6 +92,13 @@ func TestScoreProvenance_SigstoreSignatures(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance gives full credit for npm provenance attestations
+// Justification: npm provenance links published packages to specific GitHub
+//                Actions workflow runs, proving the package was built from
+//                a specific commit in a trusted CI environment
+// Source: npm provenance documentation — https://docs.npmjs.com/generating-provenance-statements
+// Methodology: Set HasNPMProvenance=true; call scoreProvenance
+// Result: 0 risk points (full provenance), score 2
 func TestScoreProvenance_NPMProvenance(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -89,6 +118,13 @@ func TestScoreProvenance_NPMProvenance(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance gives full credit for PyPI cryptographic signatures
+// Justification: PGP signatures on PyPI distributions allow verification that
+//                the published files were created by the key holder, though
+//                PyPI deprecated PGP upload support in May 2023
+// Source: PyPI blog — "Removing PGP from PyPI" (2023-05-23)
+// Methodology: Set HasPyPISignatures=true; call scoreProvenance
+// Result: 0 risk points (full provenance), score 2
 func TestScoreProvenance_PyPISignatures(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -108,6 +144,14 @@ func TestScoreProvenance_PyPISignatures(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance assigns partial credit for signed releases alone
+// Justification: Signed GitHub releases (GPG-signed tags) are a weaker
+//                provenance signal than SLSA/Sigstore — they prove a maintainer
+//                signed the release but don't verify the build process
+// Source: OSSF Scorecard — Signed-Releases check
+//         https://github.com/ossf/scorecard
+// Methodology: Set only SignedReleases=true (weak indicator, 1 point)
+// Result: 1 risk point (partial provenance), score 1
 func TestScoreProvenance_PartialProvenance_SignedReleases(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -131,6 +175,13 @@ func TestScoreProvenance_PartialProvenance_SignedReleases(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance assigns partial credit for reproducible build alone
+// Justification: Reproducible build configuration (e.g. Dockerfiles, Nix)
+//                is a weaker signal — it indicates the build *could* be
+//                reproduced but doesn't prove the published artifact matches
+// Source: SLSA specification v1.0 — reproducible builds at SLSA Level 4
+// Methodology: Set only ReproducibleBuild=true (weak indicator, 1 point)
+// Result: 1 risk point (partial provenance), score 1
 func TestScoreProvenance_PartialProvenance_ReproducibleBuild(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -150,6 +201,13 @@ func TestScoreProvenance_PartialProvenance_ReproducibleBuild(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance promotes two weak indicators to full provenance
+// Justification: Multiple independent weak signals (signed releases +
+//                reproducible build) collectively provide stronger assurance
+//                than either alone — defense in depth principle
+// Source: SLSA specification v1.0 — layered security controls
+// Methodology: Set SignedReleases=true AND ReproducibleBuild=true (1+1=2 points)
+// Result: 0 risk points (full provenance), score 2
 func TestScoreProvenance_PartialProvenance_Combined(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -171,6 +229,13 @@ func TestScoreProvenance_PartialProvenance_Combined(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance gives full credit with multiple strong indicators
+// Justification: Packages with overlapping provenance signals (SLSA + Sigstore
+//                + signed releases + reproducible builds) represent best-in-class
+//                supply chain hygiene; score should not exceed maximum
+// Source: SLSA specification v1.0 — defense in depth
+// Methodology: Set all strong and weak provenance indicators simultaneously
+// Result: 0 risk points (capped at full provenance), score 2
 func TestScoreProvenance_FullProvenance_Multiple(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -198,6 +263,14 @@ func TestScoreProvenance_FullProvenance_Multiple(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance counts high OSSF Signed-Releases score as weak indicator
+// Justification: OSSF Scorecard's Signed-Releases check (score >= 7/10)
+//                indicates consistent release signing practices, which is
+//                a positive supply chain signal from an independent evaluator
+// Source: OSSF Scorecard — Signed-Releases check
+//         https://github.com/ossf/scorecard
+// Methodology: Set OSSFChecks["Signed-Releases"]=8 (above 7 threshold)
+// Result: 1 risk point (partial provenance — OSSF alone is a weak indicator)
 func TestScoreProvenance_OSSFScorecard(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -220,6 +293,13 @@ func TestScoreProvenance_OSSFScorecard(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance ignores low OSSF Signed-Releases score
+// Justification: OSSF Signed-Releases scores below 7 indicate inconsistent
+//                or absent release signing — not sufficient to serve as a
+//                provenance indicator
+// Source: OSSF Scorecard — Signed-Releases check threshold
+// Methodology: Set OSSFChecks["Signed-Releases"]=3 (below 7 threshold)
+// Result: 2 risk points (no provenance — low score is not counted)
 func TestScoreProvenance_LowOSSFScorecard(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -242,6 +322,14 @@ func TestScoreProvenance_LowOSSFScorecard(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance handles npm provenance combined with SLSA
+// Justification: npm packages built via GitHub Actions can have both npm
+//                provenance attestations and SLSA attestations — both should
+//                be recognized without double-counting risk reduction
+// Source: npm provenance documentation — https://docs.npmjs.com/generating-provenance-statements
+//         SLSA specification v1.0 — https://slsa.dev/spec/v1.0/
+// Methodology: Set HasNPMProvenance=true and HasSLSAAttestation=true together
+// Result: 0 risk points (full provenance from either strong indicator)
 func TestScoreProvenance_NPMWithSLSA(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -264,6 +352,14 @@ func TestScoreProvenance_NPMWithSLSA(t *testing.T) {
 	}
 }
 
+// Test: scoreProvenance includes ProvenanceDetails in evidence output
+// Justification: When provenance details are available (e.g. provenance URL),
+//                they must appear in the evidence field so that analysts can
+//                verify the provenance chain manually
+// Source: SLSA specification v1.0 — transparency and auditability
+// Methodology: Set HasNPMProvenance=true with a ProvenanceDetails string;
+//              check that evidence field contains the details
+// Result: Evidence string includes the provenance details content
 func TestScoreProvenance_ProvenanceDetails(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -277,6 +373,60 @@ func TestScoreProvenance_ProvenanceDetails(t *testing.T) {
 
 	if !contains(score.Evidence, "npm provenance: https://registry.npmjs.org/") {
 		t.Errorf("Expected provenance details in evidence, got '%s'", score.Evidence)
+	}
+}
+
+// Test: scoreProvenance assigns 2 risk points when OSSF score is at boundary
+// Justification: The threshold for OSSF Signed-Releases is >= 7; a score of
+//                exactly 6 must not be counted as a provenance indicator
+// Source: OSSF Scorecard — Signed-Releases check threshold
+// Methodology: Set OSSFChecks["Signed-Releases"]=6 (just below 7 threshold)
+// Result: 2 risk points (no provenance — score below threshold)
+func TestScoreProvenance_OSSFBelowThreshold(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			OSSFChecks: map[string]int{
+				"Signed-Releases": 6,
+			},
+		},
+	}
+
+	score := a.scoreProvenance(result)
+
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points with OSSF score 6 (below threshold), got %d", score.RiskPoints)
+	}
+
+	if score.Score != 0 {
+		t.Errorf("Expected score 0 with OSSF score below threshold, got %d", score.Score)
+	}
+}
+
+// Test: scoreProvenance assigns partial credit at exactly OSSF threshold of 7
+// Justification: The threshold for OSSF Signed-Releases is >= 7; a score of
+//                exactly 7 must be counted as a weak provenance indicator
+// Source: OSSF Scorecard — Signed-Releases check threshold
+// Methodology: Set OSSFChecks["Signed-Releases"]=7 (exactly at threshold)
+// Result: 1 risk point (partial provenance — OSSF at boundary is counted)
+func TestScoreProvenance_OSSFAtThreshold(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			OSSFChecks: map[string]int{
+				"Signed-Releases": 7,
+			},
+		},
+	}
+
+	score := a.scoreProvenance(result)
+
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with OSSF score exactly at threshold 7, got %d", score.RiskPoints)
+	}
+
+	if score.Score != 1 {
+		t.Errorf("Expected score 1 with OSSF score at threshold, got %d", score.Score)
 	}
 }
 
