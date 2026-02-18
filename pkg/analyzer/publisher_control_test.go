@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -1133,5 +1134,170 @@ func TestPackageProfile_NPM_Dotenv_SingleMaintainer_HighRisk(t *testing.T) {
 	}
 	if analysis.RiskLevel != "HIGH" {
 		t.Errorf("dotenv: Expected HIGH risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// ============================================================
+// Edge case and branch coverage tests
+// These tests target specific code paths in calculateRiskScore
+// that are not exercised by the profile tests above.
+// ============================================================
+
+// Test: Partial signing - only commits signed, not releases
+// Justification: Some projects sign commits (via GPG/SSH) but don't sign releases or tags.
+//   The -0.2 signing credit should still apply when either HasSignedCommits OR HasSignedReleases
+//   is true (publisher_control.go line 568: `else if analysis.HasSignedCommits || analysis.HasSignedReleases`).
+//   This tests the OR branch rather than both-true or both-false.
+// Source: Sigstore & OSSF Scorecard - partial signing is better than no signing
+// Methodology: Set HasSignedCommits=true, HasSignedReleases=false, verify -0.2 credit applies
+// Result: Signing credit reduces risk from what it would be without signing
+func TestPartialSigning_OnlyCommitsSigned_ReducesRisk(t *testing.T) {
+	// Profile: 3 maintainers, personal emails, commits signed but releases unsigned
+	// Without signing: 0.3 (<=3 maint) + 0.3 (personal emails) + 0.5 (no signing) = 1.1 → MEDIUM
+	// With commit signing only: 0.3 + 0.3 - 0.2 = 0.4 → LOW
+	withPartialSigning := &PublisherControlAnalysis{
+		MaintainerCount:     3,
+		SingleMaintainer:    false,
+		HasExpirableDomains: true,
+		HasSignedCommits:    true,
+		HasSignedReleases:   false,
+		SignedCommitCount:   10,
+	}
+	withPartialSigning.calculateRiskScore()
+
+	if withPartialSigning.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points (LOW) with partial signing, got %d (evidence: %s)",
+			withPartialSigning.RiskPoints, withPartialSigning.Evidence)
+	}
+	if withPartialSigning.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk with commit signing, got %s", withPartialSigning.RiskLevel)
+	}
+
+	// Verify evidence mentions signing
+	if !strings.Contains(withPartialSigning.Evidence, "signing enabled") {
+		t.Errorf("Expected signing evidence, got: %q", withPartialSigning.Evidence)
+	}
+}
+
+// Test: Partial signing - only releases signed, not commits
+// Justification: Some ecosystems (Maven Central, npm provenance) sign releases but individual
+//   commits may not be GPG-signed. This tests the other branch of the OR condition.
+// Source: Maven Central requires GPG-signed artifacts; many Java projects don't sign commits
+// Methodology: Set HasSignedCommits=false, HasSignedReleases=true, verify -0.2 credit applies
+// Result: Release signing alone reduces risk score
+func TestPartialSigning_OnlyReleasesSigned_ReducesRisk(t *testing.T) {
+	// Profile: 3 maintainers, personal emails, releases signed but commits unsigned
+	// Score: 0.3 + 0.3 - 0.2 = 0.4 → LOW
+	withReleaseSigning := &PublisherControlAnalysis{
+		MaintainerCount:     3,
+		SingleMaintainer:    false,
+		HasExpirableDomains: true,
+		HasSignedCommits:    false,
+		HasSignedReleases:   true,
+	}
+	withReleaseSigning.calculateRiskScore()
+
+	if withReleaseSigning.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points (LOW) with release signing, got %d (evidence: %s)",
+			withReleaseSigning.RiskPoints, withReleaseSigning.Evidence)
+	}
+	if withReleaseSigning.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk with release signing, got %s", withReleaseSigning.RiskLevel)
+	}
+}
+
+// Test: MFA unchecked (personal account) does not penalize or reward via calculateRiskScore
+// Justification: When MFA status cannot be determined (personal GitHub account, or platform
+//   limitation), the scoring should be neutral - no penalty for unknown. The MFAChecked=false
+//   path in calculateRiskScore should only append an informational evidence line without
+//   modifying the risk score. Penalizing unknown MFA would unfairly increase risk for all
+//   personal-account projects.
+// Source: GitHub privacy policy - individual 2FA status is not publicly exposed
+// Methodology: Set MFAChecked=false, MFAStatus="unknown"; compare risk score to baseline
+//   without any MFA fields set
+// Result: Same risk score as baseline (MFA unknown is neutral)
+func TestMFAUnchecked_PersonalAccount_NeutralImpact(t *testing.T) {
+	// Baseline: 3 maintainers, org emails, no signing
+	// Score: 0.3 + 0.5 = 0.8 → MEDIUM (1 point)
+	baseline := &PublisherControlAnalysis{
+		MaintainerCount:  3,
+		SingleMaintainer: false,
+		HasOrgDomains:    true,
+	}
+	baseline.calculateRiskScore()
+
+	// Same profile with MFA unchecked (personal account)
+	withUnknownMFA := &PublisherControlAnalysis{
+		MaintainerCount:  3,
+		SingleMaintainer: false,
+		HasOrgDomains:    true,
+		MFAChecked:       false,
+		MFAStatus:        "unknown",
+	}
+	withUnknownMFA.calculateRiskScore()
+
+	if baseline.RiskPoints != withUnknownMFA.RiskPoints {
+		t.Errorf("MFA unknown should not change risk: baseline=%d, withUnknownMFA=%d",
+			baseline.RiskPoints, withUnknownMFA.RiskPoints)
+	}
+
+	// Evidence should mention MFA status is unknown
+	if !strings.Contains(withUnknownMFA.Evidence, "MFA status unknown") {
+		t.Errorf("Expected MFA unknown evidence, got: %q", withUnknownMFA.Evidence)
+	}
+}
+
+// Test: Zero maintainers path through calculateRiskScore
+// Justification: When MaintainerCount=0, calculateRiskScore adds +0.5 risk (not the +1.0
+//   for single maintainer). This is a distinct code path from single-maintainer scoring.
+//   Zero maintainers means we have no data to assess ownership control, which is concerning
+//   but different from confirmed single-maintainer risk.
+// Source: OSSF Scorecard - maintainer identity is required for assessment
+// Methodology: Set MaintainerCount=0, SingleMaintainer=false, verify +0.5 risk contribution
+// Result: 0.5 (no maintainer data) + 0.5 (no signing) = 1.0 → MEDIUM (1 point)
+func TestZeroMaintainers_CalculateRiskScore_ModerateRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:  0,
+		SingleMaintainer: false,
+	}
+	analysis.calculateRiskScore()
+
+	// 0.5 (no maintainer data) + 0.5 (no signing) = 1.0 → MEDIUM
+	if analysis.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point (MEDIUM) for zero maintainers, got %d (evidence: %s)",
+			analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("Expected MEDIUM risk for zero maintainers, got %s", analysis.RiskLevel)
+	}
+
+	// Evidence should mention unverifiable
+	if !strings.Contains(analysis.Evidence, "unverifiable") {
+		t.Errorf("Expected 'unverifiable' in evidence, got: %q", analysis.Evidence)
+	}
+}
+
+// Test: extractUsernameFromEmail with empty name in angle bracket format
+// Justification: The format "<email@domain.com>" (no name before <) should fall back to
+//   extracting the local part of the email inside the angle brackets. This edge case occurs
+//   when npm registry returns maintainer entries with empty display names.
+// Source: npm registry API - some packages have maintainers with empty names
+// Methodology: Call extractUsernameFromEmail with "<user@domain.com>" format
+// Result: Returns "user" (email local-part fallback)
+func TestExtractUsernameFromEmail_EmptyNameAngleBrackets(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"<user@domain.com>", "user"},         // Empty name, falls back to email local-part
+		{" <user@domain.com>", "user"},        // Whitespace-only name, falls back
+		{"<bare-username>", "bare-username"},   // No @ in angle brackets
+	}
+
+	for _, tc := range tests {
+		result := extractUsernameFromEmail(tc.input)
+		if result != tc.expected {
+			t.Errorf("extractUsernameFromEmail(%q) = %q, expected %q", tc.input, result, tc.expected)
+		}
 	}
 }

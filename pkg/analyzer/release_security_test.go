@@ -764,3 +764,139 @@ func TestScoreReleaseSecurity_RealWorldProfile_NPMSingleMaintainerUtility(t *tes
 		t.Error("Expected verified score (repository URL present)")
 	}
 }
+
+// Test: Regression - BuildSystems populated but CISystems empty must not panic
+// Justification: Prior to the fix on release_security.go:106, accessing CISystems[0] when
+//                BuildSystems was non-empty but CISystems was empty caused an index-out-of-range
+//                panic. This regression test ensures the guard `len(result.Metadata.CISystems) > 0`
+//                prevents the crash. Packages can have build system metadata (e.g. from workflow
+//                file analysis) without a populated CISystems slice.
+// Source: Internal bug fix - panic in production when scanning packages with build metadata
+//         but no CI system string labels
+// Methodology: Set BuildSystems with a cloud-hosted entry but leave CISystems empty; verify
+//              scoreReleaseSecurity returns without panic and produces valid output
+// Result: No panic; evidence does NOT include "Cloud-hosted CI:" since CISystems is empty
+func TestScoreReleaseSecurity_Regression_BuildSystemsNonEmpty_CISystemsEmpty_NoPanic(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/regression/ci-empty",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			HasSelfHosted:       false,
+			BuildSystems: []models.BuildSystemInfo{
+				{
+					Platform: "GitHub Actions",
+					HostedBy: "GitHub",
+				},
+			},
+			CISystems: []string{}, // Empty - this previously caused panic
+		},
+	}
+
+	// This call must not panic
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Should still score based on other controls (CI + branch protection = 2 points → moderate)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for CI+branch protection, got %d", score.RiskPoints)
+	}
+
+	// Evidence must NOT contain "Cloud-hosted CI:" since CISystems is empty
+	if strings.Contains(score.Evidence, "Cloud-hosted CI:") {
+		t.Errorf("Expected no cloud-hosted CI evidence when CISystems is empty, got: %q", score.Evidence)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+}
+
+// Test: Self-hosted penalty floor - points cannot go below 0
+// Justification: The self-hosted runner penalty subtracts 1 from points, but a floor of 0
+//                is enforced (line 95-96 in release_security.go). Without the floor, a package
+//                with self-hosted runners and no other controls would get points=-1, which would
+//                produce incorrect risk point mapping. This test verifies the floor clamp works
+//                when the only earned point comes from the penalty itself.
+// Source: SLSA Build L3 - self-hosted runners are untrusted build environments
+// Methodology: Set HasSelfHosted=true with no other controls (0 earned points before penalty)
+//              Verify points are clamped to 0 (not negative)
+// Result: Score=0, riskPoints=2 (not incorrectly lower from negative points)
+func TestScoreReleaseSecurity_SelfHostedPenaltyFloor_CannotGoNegative(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/floor-test/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   false, // 0 points
+			HasBranchProtection: false, // 0 points
+			SignedReleases:      false, // 0 points
+			RequiredReviewers:   0,     // 0 points
+			HasSelfHosted:       true,  // -1 penalty, clamped to 0
+			BuildSystems: []models.BuildSystemInfo{
+				{
+					Platform:     "Jenkins",
+					HostedBy:     "Self-hosted",
+					IsSelfHosted: true,
+				},
+			},
+			CISystems: []string{"Jenkins"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Score must be 0 (floor), not negative
+	if score.Score < 0 {
+		t.Errorf("Score went negative (%d) - penalty floor not enforced", score.Score)
+	}
+	if score.Score != 0 {
+		t.Errorf("Expected score 0 (penalty floor), got %d", score.Score)
+	}
+
+	// 0 points → high risk (2 risk points)
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for self-hosted with no controls, got %d", score.RiskPoints)
+	}
+
+	// Evidence must mention self-hosted runner
+	if !strings.Contains(score.Evidence, "Self-hosted CI runners detected") {
+		t.Errorf("Expected self-hosted evidence, got: %q", score.Evidence)
+	}
+}
+
+// Test: Cloud-hosted CI evidence path - BuildSystems and CISystems both populated, not self-hosted
+// Justification: When BuildSystems contains entries and CISystems is non-empty but HasSelfHosted
+//                is false, the evidence should include "Cloud-hosted CI: {CISystems[0]}". This
+//                path (release_security.go:106-108) provides positive evidence that the build
+//                environment is controlled by a trusted provider.
+// Source: SLSA Build L2-L3 - cloud-hosted CI from trusted providers is a security positive
+// Methodology: Set BuildSystems and CISystems with cloud-hosted entries, HasSelfHosted=false
+// Result: Evidence contains "Cloud-hosted CI: GitHub Actions"
+func TestScoreReleaseSecurity_CloudHostedCI_EvidenceIncluded(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/cloud-ci/package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			HasSelfHosted:       false,
+			BuildSystems: []models.BuildSystemInfo{
+				{
+					Platform: "GitHub Actions",
+					HostedBy: "GitHub",
+				},
+			},
+			CISystems: []string{"GitHub Actions"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	if !strings.Contains(score.Evidence, "Cloud-hosted CI: GitHub Actions") {
+		t.Errorf("Expected cloud-hosted CI evidence, got: %q", score.Evidence)
+	}
+}
