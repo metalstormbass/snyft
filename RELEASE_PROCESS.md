@@ -1,11 +1,6 @@
 # Release Process
 
-Snyft uses [GoReleaser](https://goreleaser.com/) and GitHub Actions to automate releases. When a version tag is pushed, the system automatically builds binaries, creates archives, generates checksums, and publishes a GitHub release.
-
-## Supported Platforms
-
-- **macOS**: x86_64 (Intel) and arm64 (Apple Silicon)
-- **Linux**: x86_64 and arm64
+Snyft uses GitHub Actions to automate releases. When a version tag is pushed, a GitHub release is created automatically.
 
 ## Creating a Release
 
@@ -25,7 +20,7 @@ git tag -a v1.1.0 -m "Release v1.1.0"
 git push origin v1.1.0
 ```
 
-GitHub Actions triggers `.github/workflows/release.yml`, which runs GoReleaser to build, archive, checksum, and publish.
+GitHub Actions triggers `.github/workflows/release.yml` to create the release.
 
 ## Installation After Release
 
@@ -33,15 +28,6 @@ GitHub Actions triggers `.github/workflows/release.yml`, which runs GoReleaser t
 
 ```bash
 go install github.com/metalstormbass/snyft@latest
-```
-
-### Download Pre-built Binary
-
-Download from the [releases page](https://github.com/metalstormbass/snyft/releases):
-
-```bash
-tar -xzf snyft_*.tar.gz
-./snyft version
 ```
 
 ## Changelog
