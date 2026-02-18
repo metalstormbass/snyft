@@ -134,6 +134,141 @@ func TestGetOwnershipHistory_NPM(t *testing.T) {
 	}
 }
 
+// Test: GetPackageInfo handles polymorphic JSON field types without crashing
+// Justification: npm registry returns "license" as string, object, or array, and
+//                "repository" as object or string. Packages with non-standard types
+//                (e.g. formidable with string repository, old packages with array
+//                license) previously caused json.Decode to fail, returning a
+//                misleading "Package Not Found" HIGH-risk result.
+// Source: npm registry API documentation; observed in formidable, joi@1.x, etc.
+// Methodology: Mock server returns JSON with polymorphic field types; verify decode succeeds.
+// Result: GetPackageInfo returns valid package info regardless of field type variants.
+func TestGetPackageInfo_PolymorphicFields(t *testing.T) {
+	tests := []struct {
+		name           string
+		rawJSON        string
+		wantLicense    string
+		wantRepoURL    string
+		wantErr        bool
+	}{
+		{
+			name: "license as string, repository as object (standard)",
+			rawJSON: `{
+				"name":"test-pkg",
+				"license":"MIT",
+				"dist-tags":{"latest":"1.0.0"},
+				"repository":{"type":"git","url":"git+https://github.com/test/test.git"},
+				"maintainers":[{"name":"alice"}],
+				"versions":{"1.0.0":{"version":"1.0.0"}},
+				"time":{"1.0.0":"2024-01-01T00:00:00Z"}
+			}`,
+			wantLicense: "MIT",
+			wantRepoURL: "https://github.com/test/test",
+		},
+		{
+			name: "license as array of objects (old format, e.g. joi@1.x)",
+			rawJSON: `{
+				"name":"old-pkg",
+				"license":[{"type":"BSD","url":"http://example.com/LICENSE"}],
+				"dist-tags":{"latest":"1.0.0"},
+				"repository":{"type":"git","url":"git://github.com/old/pkg.git"},
+				"maintainers":[{"name":"bob"}],
+				"versions":{"1.0.0":{"version":"1.0.0"}},
+				"time":{"1.0.0":"2013-01-01T00:00:00Z"}
+			}`,
+			wantLicense: "BSD",
+			wantRepoURL: "https://github.com/old/pkg",
+		},
+		{
+			name: "license as object (rare format)",
+			rawJSON: `{
+				"name":"obj-lic-pkg",
+				"license":{"type":"Apache-2.0","url":"http://example.com/LICENSE"},
+				"dist-tags":{"latest":"2.0.0"},
+				"repository":{"type":"git","url":"https://github.com/obj/lic.git"},
+				"maintainers":[{"name":"carol"}],
+				"versions":{"2.0.0":{"version":"2.0.0"}},
+				"time":{"2.0.0":"2024-06-01T00:00:00Z"}
+			}`,
+			wantLicense: "Apache-2.0",
+			wantRepoURL: "https://github.com/obj/lic",
+		},
+		{
+			name: "repository as plain string (e.g. formidable)",
+			rawJSON: `{
+				"name":"formidable-like",
+				"license":"MIT",
+				"dist-tags":{"latest":"3.0.0"},
+				"repository":"github:node-formidable/formidable",
+				"maintainers":[{"name":"dave"}],
+				"versions":{"3.0.0":{"version":"3.0.0"}},
+				"time":{"3.0.0":"2024-03-01T00:00:00Z"}
+			}`,
+			wantLicense: "MIT",
+			wantRepoURL: "", // string repo is stored in TypeString, normalised separately
+		},
+		{
+			name: "license missing (null)",
+			rawJSON: `{
+				"name":"no-lic-pkg",
+				"dist-tags":{"latest":"1.0.0"},
+				"repository":{"type":"git","url":"https://github.com/no/lic.git"},
+				"maintainers":[{"name":"eve"}],
+				"versions":{"1.0.0":{"version":"1.0.0"}},
+				"time":{"1.0.0":"2024-01-01T00:00:00Z"}
+			}`,
+			wantLicense: "",
+			wantRepoURL: "https://github.com/no/lic",
+		},
+		{
+			name: "scripts with nested objects (old joi)",
+			rawJSON: `{
+				"name":"joi-like",
+				"license":"BSD-3-Clause",
+				"dist-tags":{"latest":"1.0.0"},
+				"repository":{"type":"git","url":"git://github.com/spumko/joi.git"},
+				"maintainers":[{"name":"eran"}],
+				"versions":{"1.0.0":{"version":"1.0.0","scripts":{"test":{"nested":"object"}}}},
+				"time":{"1.0.0":"2013-01-01T00:00:00Z"}
+			}`,
+			wantLicense: "BSD-3-Clause",
+			wantRepoURL: "https://github.com/spumko/joi",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.rawJSON))
+			}))
+			defer server.Close()
+
+			client := &NPMClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+			}
+
+			pkg, err := client.GetPackageInfo("test")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetPackageInfo() unexpected error: %v", err)
+			}
+			if pkg.License != tt.wantLicense {
+				t.Errorf("License = %q, want %q", pkg.License, tt.wantLicense)
+			}
+			if tt.wantRepoURL != "" && pkg.RepositoryURL != tt.wantRepoURL {
+				t.Errorf("RepositoryURL = %q, want %q", pkg.RepositoryURL, tt.wantRepoURL)
+			}
+		})
+	}
+}
+
 func TestGetOwnershipHistory_NPM_NotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

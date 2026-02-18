@@ -79,7 +79,7 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 	pkg := &NPMPackage{
 		Name:          npmResp.Name,
 		LatestVersion: npmResp.DistTags.Latest,
-		License:       npmResp.License,
+		License:       npmResp.License(),
 		Homepage:      npmResp.Homepage,
 		Maintainers:   extractMaintainers(npmResp.Maintainers),
 		Scripts:       make(map[string]string),
@@ -157,7 +157,7 @@ type NPMRegistryResponse struct {
 	Name        string                       `json:"name"`
 	Version     string                       `json:"version"`
 	Description string                       `json:"description"`
-	License     string                       `json:"license"`
+	RawLicense  json.RawMessage              `json:"license"`  // polymorphic: string, object, or array
 	Homepage    string                       `json:"homepage"`
 	Repository  NPMRepository                `json:"repository"`
 	Maintainers []NPMMaintainer              `json:"maintainers"`
@@ -166,10 +166,71 @@ type NPMRegistryResponse struct {
 	Time        map[string]string            `json:"time"`
 }
 
+// License returns the license as a best-effort string. npm's "license" field
+// can be a string ("MIT"), an object ({"type":"MIT","url":"..."}), or an array
+// of such objects. This accessor normalises all forms to a human-readable string.
+func (r *NPMRegistryResponse) License() string {
+	if len(r.RawLicense) == 0 {
+		return ""
+	}
+	// Try plain string first (most common).
+	var s string
+	if err := json.Unmarshal(r.RawLicense, &s); err == nil {
+		return s
+	}
+	// Try single object {"type":"MIT","url":"..."}.
+	var obj struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(r.RawLicense, &obj); err == nil && obj.Type != "" {
+		return obj.Type
+	}
+	// Try array of objects [{"type":"MIT"}, ...].
+	var arr []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(r.RawLicense, &arr); err == nil && len(arr) > 0 {
+		types := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if item.Type != "" {
+				types = append(types, item.Type)
+			}
+		}
+		if len(types) > 0 {
+			return strings.Join(types, ", ")
+		}
+	}
+	// Fallback: return raw JSON for inspection.
+	return string(r.RawLicense)
+}
+
+// NPMRepository handles npm's polymorphic "repository" field which can be
+// either a JSON object {"type":"git","url":"..."} or a plain string "github:user/repo".
+// A plain-string value is stored in TypeString for downstream normalisation.
 type NPMRepository struct {
 	Type       string `json:"type"`
 	URL        string `json:"url"`
-	TypeString string `json:"repository"` // Sometimes it's just a string
+	TypeString string `json:"-"` // populated when the field is a bare string
+}
+
+// UnmarshalJSON implements json.Unmarshaler so that NPMRepository can decode
+// both object and string forms of the npm "repository" field.
+func (r *NPMRepository) UnmarshalJSON(data []byte) error {
+	// Try string first (bare "github:user/repo" form).
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		r.TypeString = s
+		return nil
+	}
+	// Fall back to object form.
+	type plain NPMRepository // avoid recursion
+	var obj plain
+	if err := json.Unmarshal(data, &obj); err != nil {
+		// Unrecognised format – silently ignore rather than crashing the whole decode.
+		return nil
+	}
+	*r = NPMRepository(obj)
+	return nil
 }
 
 type NPMMaintainer struct {
