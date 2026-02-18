@@ -50,6 +50,7 @@ type PublisherControlAnalysis struct {
 	HasSignedCommits      bool   `json:"has_signed_commits"`
 	HasSignedReleases     bool   `json:"has_signed_releases"`
 	SignedCommitCount     int    `json:"signed_commit_count"`
+	SigningChecked        bool   `json:"signing_checked"` // true if we actually checked signing status
 
 	// MFA detection (if available from API)
 	// Check: MFA/2FA enforcement for package maintainers
@@ -289,16 +290,34 @@ func (analysis *PublisherControlAnalysis) checkMaintainerAccountAges(gitClient f
 // 4. No security team monitoring
 func (analysis *PublisherControlAnalysis) analyzeEmailDomains(maintainers []string) {
 	personalDomains := map[string]bool{
-		"gmail.com":      true,
-		"yahoo.com":      true,
-		"hotmail.com":    true,
-		"outlook.com":    true,
+		// Google
+		"gmail.com": true,
+		// Yahoo
+		"yahoo.com": true,
+		// Microsoft (current + legacy)
+		"hotmail.com": true,
+		"outlook.com": true,
+		"live.com":    true,
+		"msn.com":     true,
+		// Protonmail (all domain variants)
 		"protonmail.com": true,
-		"icloud.com":     true,
-		"mail.com":       true,
-		"aol.com":        true,
-		"zoho.com":       true,
-		"yandex.com":     true,
+		"proton.me":      true,
+		"pm.me":          true,
+		// Apple (current + legacy)
+		"icloud.com": true,
+		"me.com":     true,
+		// Chinese providers (large user bases)
+		"qq.com":  true,
+		"163.com": true,
+		"126.com": true,
+		// Other free providers
+		"mail.com":    true,
+		"aol.com":     true,
+		"zoho.com":    true,
+		"yandex.com":  true,
+		"tutanota.com": true,
+		"tuta.com":     true,
+		"fastmail.com": true,
 	}
 
 	for _, email := range maintainers {
@@ -402,6 +421,7 @@ func (analysis *PublisherControlAnalysis) checkSigningPractices(gitClient fetche
 	// Check signed commits
 	hasSigned, count, err := gitClient.CheckSignedCommits(repoURL)
 	if err == nil {
+		analysis.SigningChecked = true
 		analysis.HasSignedCommits = hasSigned
 		analysis.SignedCommitCount = count
 	}
@@ -409,6 +429,7 @@ func (analysis *PublisherControlAnalysis) checkSigningPractices(gitClient fetche
 	// Check signed releases
 	hasSignedReleases, err := gitClient.CheckSignedReleases(repoURL)
 	if err == nil {
+		analysis.SigningChecked = true
 		analysis.HasSignedReleases = hasSignedReleases
 	}
 }
@@ -491,10 +512,11 @@ func (analysis *PublisherControlAnalysis) checkMFAEnforcement(gitClient fetcher.
 //
 // Simplified weighting for clear boundaries:
 // - Single maintainer alone = 1.0 risk
-// - Personal email/account = +0.5 risk
-// - No signing = +0.5 risk
-// - New accounts = +0.3 risk (can push to 2.0)
+// - Personal email/account = +0.3 each
+// - No signing (when checked) = +0.5 risk
+// - New accounts = +0.3 risk, suspicious = additional +0.2
 // - Package concentration = +0.2 risk
+// - Signing NOT checked (no repo) = no penalty (insufficient data)
 func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	riskScore := 0.0
 	evidenceParts := []string{}
@@ -504,7 +526,8 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	if analysis.MaintainerCount == 0 {
 		// No maintainer data available - cannot assess control
 		// Justification: Unknown ownership = unverifiable risk, treated as concerning
-		riskScore += 0.5
+		// Raised to 0.8 so that zero-maintainer packages score at least MEDIUM
+		riskScore += 0.8
 		evidenceParts = append(evidenceParts, "no maintainer data (unverifiable)")
 	} else if analysis.SingleMaintainer {
 		riskScore += 1.0
@@ -530,8 +553,9 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 			evidenceParts = append(evidenceParts, "verified org")
 		}
 	}
-	// If neither IsOrganization nor IsPersonalAccount is set, account type is unknown
-	// (API unavailable or no repo URL). Do not penalize - insufficient data.
+	if !analysis.IsOrganization && !analysis.IsPersonalAccount {
+		evidenceParts = append(evidenceParts, "account type unknown (no repo URL or API unavailable)")
+	}
 
 	if analysis.HasExpirableDomains {
 		riskScore += 0.3
@@ -561,16 +585,21 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	}
 
 	// Factor 5: Signing practices
-	// No signing adds to risk, especially for single maintainer
-	if !analysis.HasSignedCommits && !analysis.HasSignedReleases {
-		riskScore += 0.5
-		evidenceParts = append(evidenceParts, "no signing")
-	} else if analysis.HasSignedCommits || analysis.HasSignedReleases {
-		evidenceParts = append(evidenceParts, fmt.Sprintf("signing enabled (%d commits)", analysis.SignedCommitCount))
-		// Signing reduces risk slightly
-		if riskScore > 0.2 {
-			riskScore -= 0.2
+	// Only penalize when we actually checked and found no signing.
+	// When signing wasn't checked (no repo URL / API failure), don't assume the worst.
+	if analysis.SigningChecked {
+		if !analysis.HasSignedCommits && !analysis.HasSignedReleases {
+			riskScore += 0.5
+			evidenceParts = append(evidenceParts, "no signing detected")
+		} else {
+			evidenceParts = append(evidenceParts, fmt.Sprintf("signing enabled (%d commits)", analysis.SignedCommitCount))
+			// Signing reduces risk slightly
+			if riskScore > 0.2 {
+				riskScore -= 0.2
+			}
 		}
+	} else {
+		evidenceParts = append(evidenceParts, "signing not checked (no repo URL)")
 	}
 
 	// Factor 6: MFA enforcement (when data is available)
@@ -595,16 +624,21 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	}
 
 	// Convert to 0-2 risk points scale
-	// Single maintainer + personal email/no signing = 1.0 + 0.3 + 0.5 = 1.8 → 2 points
-	// Single maintainer + no signing (no email data) = 1.0 + 0.5 = 1.5 → 2 points (HIGH)
-	// Single maintainer + signing = 1.0 + 0.3 - 0.2 = 1.1 → 1 point
-	// Multiple maintainers + org + signing = 0 + 0 - 0.2 = 0 → 0 points
+	// Thresholds calibrated so that signing being unchecked (no repo URL) doesn't
+	// artificially inflate risk, while still catching real problems:
 	//
-	// Threshold lowered from 1.7 to 1.4 so that single maintainer + no signing
-	// correctly scores as HIGH without requiring personal email as an additional factor.
-	if riskScore >= 1.4 {
+	// Single maintainer + personal email + no signing (checked) = 1.0 + 0.3 + 0.5 = 1.8 → HIGH
+	// Single maintainer + personal email (signing not checked) = 1.0 + 0.3 = 1.3 → HIGH
+	// Single maintainer + no signing (checked, no email data) = 1.0 + 0.5 = 1.5 → HIGH
+	// Single maintainer alone (bare username, no repo) = 1.0 → MEDIUM
+	// Single maintainer + signing = 1.0 - 0.2 = 0.8 → MEDIUM
+	// 2-3 maintainers + personal email = 0.3 + 0.3 = 0.6 → MEDIUM
+	// 0 maintainers = 0.8 → MEDIUM
+	// 4+ maintainers + org email = 0.0 → LOW
+	// 4+ maintainers + org email + signing = 0.0 - 0.2 = 0 → LOW
+	if riskScore >= 1.3 {
 		analysis.RiskPoints = 2
-	} else if riskScore >= 0.7 {
+	} else if riskScore >= 0.6 {
 		analysis.RiskPoints = 1
 	} else {
 		analysis.RiskPoints = 0
