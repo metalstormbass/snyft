@@ -191,25 +191,29 @@ func TestScorePublisherControl_UnverifiedNoMaintainers(t *testing.T) {
 // Source: "Backstabber's Knife Collection" (2020) - study of malicious npm packages (https://arxiv.org/abs/2005.09535)
 
 func TestScoreOwnershipChanges_HighRisk_RecentTransfer(t *testing.T) {
-	// Test: Recent ownership transfer detected (<6 months ago)
+	// Test: Recent ownership transfer detected via repo-created-after-publish signal
 	// Justification: Recent transfers to unknown parties are common in typosquatting and account takeover attacks
 	// Source: "Backstabber's Knife Collection: A Review of Open Source Software Supply Chain Attacks" (Ohm et al., 2020)
 	//         https://arxiv.org/abs/2005.09535 - identified 339 malicious npm packages via ownership transfer
-	// Methodology: Analyzed npm registry and GitHub commit author changes to detect ownership transfers
+	// Methodology: Pure unit test — trigger step 2 (repo created after publish) without external API calls.
+	//              Uses Maven ecosystem to avoid npm/PyPI ownership history API calls (steps 3/4).
 	analyzer := NewAnalyzer()
+	packagePublished := time.Now().AddDate(-2, 0, 0)            // Published 2 years ago
+	repoCreated := packagePublished.Add(150 * 24 * time.Hour)   // Repo "created" 150 days after publish
+
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
-			Name:      "test-package",
-			Ecosystem: models.EcosystemNPM,
+			Name:      "com.example:test-package",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm (step 3) and PyPI (step 4) API calls
 		},
 		Metadata: models.PackageMetadata{
-			RepoCreatedAt: time.Now().AddDate(-2, 0, 0), // 2 years old
+			PublishedAt:   packagePublished,
+			RepoCreatedAt: repoCreated,
 			Maintainers:   []string{"new-owner"},
 		},
-		RepositoryURL: "https://github.com/test/repo",
+		RepositoryURL: "", // No repo URL = skips GitHub API (step 1)
 	}
 
-	// Note: This is a simplified test - real implementation would detect transfer via GitHub API
 	score := analyzer.scoreOwnershipChanges(result)
 
 	// Should have evidence
@@ -217,33 +221,40 @@ func TestScoreOwnershipChanges_HighRisk_RecentTransfer(t *testing.T) {
 		t.Error("Expected evidence for ownership analysis")
 	}
 
-	// Risk points should be 0-2
-	if score.RiskPoints < 0 || score.RiskPoints > 2 {
-		t.Errorf("Risk points out of range: %d", score.RiskPoints)
+	// Repo created 150 days after publish (>90 day threshold) → risk=2
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for repo created after publish, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score when transfer signal detected")
 	}
 }
 
-func TestScoreOwnershipChanges_ModerateRisk_OldTransfer(t *testing.T) {
-	// Test: Old ownership transfer (> 1 year ago)
-	// Justification: Transfer is old enough to have established track record, lower risk than recent transfer
+func TestScoreOwnershipChanges_LowRisk_OldEstablishedPackage(t *testing.T) {
+	// Test: Established package with no transfer signals (repo predates publish)
+	// Justification: Established package with multiple maintainers, no transfer signals = low risk
 	// Source: npm security best practices - monitor package ownership changes
+	// Methodology: Pure unit test — no RepositoryURL, Maven ecosystem avoids npm/PyPI API calls,
+	//              falls to age heuristic (3 years = established)
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
-			Name:      "test-package",
-			Ecosystem: models.EcosystemNPM,
+			Name:      "com.example:test-package",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
 		},
 		Metadata: models.PackageMetadata{
-			RepoCreatedAt: time.Now().AddDate(-3, 0, 0), // 3 years old
+			RepoCreatedAt: time.Now().AddDate(-3, 0, 0), // 3 years old → established
 			Maintainers:   []string{"alice", "bob"},
 		},
-		RepositoryURL: "https://github.com/test/repo",
+		RepositoryURL: "", // No repo URL = no real API calls, pure unit test
 	}
 
 	score := analyzer.scoreOwnershipChanges(result)
 
-	if score.RiskPoints < 0 || score.RiskPoints > 2 {
-		t.Errorf("Risk points out of range: %d", score.RiskPoints)
+	// 3 years old → falls to age heuristic → "established" → 0 risk points
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for established 3-year-old package, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 }
 
@@ -251,23 +262,26 @@ func TestScoreOwnershipChanges_LowRisk_StableLongTermOwnership(t *testing.T) {
 	// Test: Stable ownership, no transfers, established package
 	// Justification: Long-term stable ownership indicates trustworthy maintenance
 	// Source: OSSF Scorecard "Maintained" check criteria (https://github.com/ossf/scorecard/blob/main/docs/checks.md)
+	// Methodology: Pure unit test — no RepositoryURL, Maven ecosystem avoids npm/PyPI API calls,
+	//              falls to age heuristic (5 years = established)
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
-			Name:      "test-package",
-			Ecosystem: models.EcosystemNPM,
+			Name:      "com.example:stable-package",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
 		},
 		Metadata: models.PackageMetadata{
 			RepoCreatedAt: time.Now().AddDate(-5, 0, 0), // 5 years old
 			Maintainers:   []string{"alice", "bob", "charlie"},
 		},
-		RepositoryURL: "https://github.com/test/repo",
+		RepositoryURL: "", // No repo URL = no real API calls, pure unit test
 	}
 
 	score := analyzer.scoreOwnershipChanges(result)
 
-	if score.RiskPoints < 0 || score.RiskPoints > 2 {
-		t.Errorf("Risk points out of range: %d", score.RiskPoints)
+	// 5 years old → age heuristic → "established" → 0 risk points
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for stable 5-year-old package, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 
 	if score.Evidence == "" {
@@ -279,48 +293,53 @@ func TestScoreOwnershipChanges_HighRisk_NewPackageSingleMaintainer(t *testing.T)
 	// Test: Very new package (< 6 months) with single maintainer
 	// Justification: New packages with single maintainer have higher risk of abandonment or malicious intent
 	// Source: Snyk State of Open Source Security 2023 - new packages 3x more likely to contain malware
+	// Methodology: Pure unit test — no RepositoryURL, Maven ecosystem avoids npm/PyPI API calls,
+	//              falls to age heuristic (<0.5y, 1 maintainer → risk=2)
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
-			Name:      "brand-new-package",
-			Ecosystem: models.EcosystemNPM,
+			Name:      "com.example:brand-new-package",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
 		},
 		Metadata: models.PackageMetadata{
 			RepoCreatedAt: time.Now().AddDate(0, -3, 0), // 3 months old
 			Maintainers:   []string{"unknown-dev"},
 		},
-		RepositoryURL: "https://github.com/unknown/brand-new-package",
+		RepositoryURL: "", // No repo URL = no real API calls, pure unit test
 	}
 
 	score := analyzer.scoreOwnershipChanges(result)
 
-	// Very new package with single maintainer should be high risk
+	// Very new package (<0.5y) with single maintainer → age heuristic → risk=2
 	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for new package single maintainer, got %d", score.RiskPoints)
+		t.Errorf("Expected 2 risk points for new package single maintainer, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 }
 
-func TestScoreOwnershipChanges_ModerateRisk_MultipleHistoricalChanges(t *testing.T) {
-	// Test: Multiple ownership changes over time
-	// Justification: Frequent ownership changes indicate instability and potential abandonment risk
-	// Source: Sonatype State of Software Supply Chain 2023 - abandoned packages are prime targets for takeover
+func TestScoreOwnershipChanges_ModerateRisk_RelativelyNewPackage(t *testing.T) {
+	// Test: Relatively new package (6-12 months old) — moderate risk due to limited history
+	// Justification: Packages less than 1 year old have limited ownership history to verify
+	// Source: Sonatype State of Software Supply Chain 2023 - new packages have elevated risk
+	// Methodology: Pure unit test — no RepositoryURL, Maven ecosystem avoids npm/PyPI API calls,
+	//              falls to age heuristic (0.5-1.0y → risk=1)
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
-			Name:      "frequently-transferred",
-			Ecosystem: models.EcosystemPyPI,
+			Name:      "com.example:relatively-new-pkg",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
 		},
 		Metadata: models.PackageMetadata{
-			RepoCreatedAt: time.Now().AddDate(-3, 0, 0), // 3 years old
+			RepoCreatedAt: time.Now().AddDate(0, -8, 0), // 8 months old
 			Maintainers:   []string{"alice", "bob"},
 		},
-		RepositoryURL: "https://github.com/test/frequently-transferred",
+		RepositoryURL: "", // No repo URL = no real API calls, pure unit test
 	}
 
 	score := analyzer.scoreOwnershipChanges(result)
 
-	if score.RiskPoints < 0 || score.RiskPoints > 2 {
-		t.Errorf("Risk points out of range: %d", score.RiskPoints)
+	// 8 months old → age heuristic case repoAge < 1.0 → risk=1
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for relatively new package (8 months), got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 }
 
@@ -516,12 +535,13 @@ func TestClassifyOwnershipFromCommitStats_EmptyStats(t *testing.T) {
 }
 
 func TestScoreOwnershipChanges_RepoCreatedAfterPublish_FlaggedAsTransfer(t *testing.T) {
-	// Test: Repository created 200 days after the package was first published to npm
+	// Test: Repository created 200 days after the package was first published
 	// Justification: A package cannot be published from a repository that doesn't yet exist.
 	//                When the current repository was created long after first publish, the package
 	//                was moved — a strong indicator of a repository transfer to a new owner.
 	// Source: GitHub documentation on repository transfers (creation date resets on transfer)
-	// Methodology: Compare result.Metadata.RepoCreatedAt with result.Metadata.PublishedAt
+	// Methodology: Compare result.Metadata.RepoCreatedAt with result.Metadata.PublishedAt.
+	//              Maven ecosystem avoids npm/PyPI API calls (steps 3/4).
 	// Result: Assigns 2 risk points (highest risk) when gap > 90 days
 	analyzer := NewAnalyzer()
 	packagePublished := time.Now().AddDate(-3, 0, 0)      // Published 3 years ago
@@ -529,8 +549,8 @@ func TestScoreOwnershipChanges_RepoCreatedAfterPublish_FlaggedAsTransfer(t *test
 
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
-			Name:      "some-package",
-			Ecosystem: models.EcosystemNPM,
+			Name:      "com.example:some-package",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
 		},
 		Metadata: models.PackageMetadata{
 			PublishedAt:   packagePublished,
@@ -556,16 +576,17 @@ func TestScoreOwnershipChanges_RepoCreatedBeforePublish_NotFlagged(t *testing.T)
 	// Justification: When the repo predates the first publish, the code existed before it was
 	//                distributed — this is the normal, healthy pattern. No transfer signal.
 	// Source: GitHub repository creation workflow best practices
-	// Methodology: Compare result.Metadata.RepoCreatedAt with result.Metadata.PublishedAt
-	// Result: No transfer flag raised; other signals determine final risk score
+	// Methodology: Compare result.Metadata.RepoCreatedAt with result.Metadata.PublishedAt.
+	//              Maven ecosystem avoids npm/PyPI API calls (steps 3/4).
+	// Result: No transfer flag raised; age heuristic determines final risk score (5 years → 0)
 	analyzer := NewAnalyzer()
 	repoCreated := time.Now().AddDate(-5, 0, 0)  // Repo created 5 years ago
 	packagePublished := repoCreated.Add(30 * 24 * time.Hour) // Published 30 days after repo creation
 
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
-			Name:      "some-package",
-			Ecosystem: models.EcosystemNPM,
+			Name:      "com.example:some-package",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
 		},
 		Metadata: models.PackageMetadata{
 			PublishedAt:   packagePublished,
@@ -592,22 +613,25 @@ func TestScoreOwnershipChanges_RepoCreatedBeforePublish_NotFlagged(t *testing.T)
 // "Small World with High Risks" - npm ecosystem study (2019)
 
 func TestScoreReleaseAnomalies_HighRisk_Dormant3Years(t *testing.T) {
-	// Test: Package dormant for 3+ years
+	// Test: Package dormant for 3+ years (>365 days since last commit)
 	// Justification: Extremely inactive packages are prime targets for account takeover attacks
 	// Source: Sonatype 2023 report - 245,000+ malicious packages found, many via abandoned package takeover
+	// Methodology: Pure unit test — RepositoryURL is set (avoids early return) but the dormancy
+	//              check (daysSinceLastCommit > 365) fires before any GitHub API calls.
 	analyzer := NewAnalyzer()
 	result := models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			RepoLastCommit: time.Now().AddDate(-3, 0, 0), // 3 years ago
+			RepoLastCommit: time.Now().AddDate(-3, 0, 0), // 3 years ago → >365 days
 			RepoCreatedAt:  time.Now().AddDate(-5, 0, 0), // 5 years old
 		},
-		RepositoryURL: "https://github.com/example/dormant-package",
+		RepositoryURL: "https://example.com/dormant", // Non-empty to pass early check, but dormancy fires first
 	}
 
 	score := analyzer.scoreReleaseAnomalies(&result)
 
+	// 3 years since last commit → dormancy check fires → risk=1, "Package appears dormant"
 	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for 3-year dormancy, got %d", score.RiskPoints)
+		t.Errorf("Expected 1 risk point for 3-year dormancy, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 
 	if !score.Verified {
@@ -615,47 +639,52 @@ func TestScoreReleaseAnomalies_HighRisk_Dormant3Years(t *testing.T) {
 	}
 }
 
-func TestScoreReleaseAnomalies_HighRisk_SuspiciousReactivation(t *testing.T) {
-	// Test: Dormant package suddenly reactivates after 2+ years
-	// Justification: Sudden reactivation after long dormancy is a key indicator of supply chain attacks
-	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - identified dormancy-then-reactivation as primary attack vector
-	//         https://arxiv.org/abs/2005.09535
-	//         "Small World with High Risks" (Zimmerman et al., 2019) - npm ecosystem analysis
-	// Methodology: Analyzed release history and commit frequency to detect suspicious reactivation patterns
+func TestScoreReleaseAnomalies_ActiveOldPackage_NoRepoURL(t *testing.T) {
+	// Test: Old package with recent activity but no repo URL — falls to "unable to verify" path
+	// Justification: Without a repository URL, release patterns cannot be analyzed from commit/release history
+	// Source: OSSF Scorecard methodology — requires commit history for risk assessment
+	// Methodology: Pure unit test — RepoLastCommit is recent but RepositoryURL is empty, so
+	//              the early return fires for "no commit history available"
 	analyzer := NewAnalyzer()
 	result := models.AnalysisResult{
 		Metadata: models.PackageMetadata{
 			RepoLastCommit: time.Now().AddDate(0, -1, 0), // Recent activity
 			RepoCreatedAt:  time.Now().AddDate(-5, 0, 0), // Old package
 		},
-		RepositoryURL: "https://github.com/example/reactivated",
+		RepositoryURL: "", // No repo URL = triggers early return (no API calls)
 	}
 
 	score := analyzer.scoreReleaseAnomalies(&result)
 
-	// Should detect this via release history analysis (detectReleaseAnomaly)
-	if score.RiskPoints < 0 || score.RiskPoints > 2 {
-		t.Errorf("Risk points out of range: %d", score.RiskPoints)
+	// No repo URL → early return with RiskPoints=1, Verified=false
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for missing repo URL, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	}
+	if score.Verified {
+		t.Error("Expected unverified score when no repo URL available")
 	}
 }
 
 func TestScoreReleaseAnomalies_LowRisk_ConsistentActivity(t *testing.T) {
-	// Test: Regular, consistent commit/release activity
+	// Test: Regular, consistent commit/release activity (young package, <1 year old)
 	// Justification: Active maintenance indicates legitimate ongoing development
 	// Source: OSSF Scorecard "Maintained" check - looks for recent commits as health indicator
+	// Methodology: Pure unit test — package is <1 year old, so the "daysSinceCreated > 365"
+	//              branch that fetches releases/commits is skipped, and the function returns
+	//              "consistent activity" based on daysSinceLastCommit alone.
 	analyzer := NewAnalyzer()
 	result := models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			RepoLastCommit: time.Now().AddDate(0, -1, 0), // 1 month ago
-			RepoCreatedAt:  time.Now().AddDate(-2, 0, 0), // 2 years old
+			RepoLastCommit: time.Now().AddDate(0, -1, 0),  // 1 month ago
+			RepoCreatedAt:  time.Now().AddDate(0, -10, 0), // 10 months old (< 1 year)
 		},
-		RepositoryURL: "https://github.com/example/active-package",
+		RepositoryURL: "https://github.com/example/active-package", // Needed for non-early-return path
 	}
 
 	score := analyzer.scoreReleaseAnomalies(&result)
 
 	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points for consistent activity, got %d", score.RiskPoints)
+		t.Errorf("Expected 0 risk points for consistent activity, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 
 	if score.Score != 2 {
@@ -723,10 +752,10 @@ func TestScoreReleaseAnomalies(t *testing.T) {
 			name: "Regular consistent activity",
 			result: models.AnalysisResult{
 				Metadata: models.PackageMetadata{
-					RepoLastCommit: time.Now().AddDate(0, -2, 0), // 2 months ago
-					RepoCreatedAt:  time.Now().AddDate(-2, 0, 0), // 2 years ago
+					RepoLastCommit: time.Now().AddDate(0, -2, 0),  // 2 months ago
+					RepoCreatedAt:  time.Now().AddDate(0, -10, 0), // 10 months old (< 1 year, skips API calls)
 				},
-				RepositoryURL: "https://github.com/example/active-repo",
+				RepositoryURL: "https://example.com/active-repo",
 			},
 			expectedRisk:   0,
 			expectedDesc:   "Regular, consistent releases",
@@ -1019,10 +1048,10 @@ func TestScoreReleaseAnomalies_ScoreFieldConsistency(t *testing.T) {
 		{
 			name: "Active package - Score should be 2 (= 2 - RiskPoints=0)",
 			result: models.AnalysisResult{
-				RepositoryURL: "https://github.com/example/active",
+				RepositoryURL: "https://example.com/active",
 				Metadata: models.PackageMetadata{
 					RepoLastCommit: time.Now().AddDate(0, -1, 0),
-					RepoCreatedAt:  time.Now().AddDate(-2, 0, 0),
+					RepoCreatedAt:  time.Now().AddDate(0, -10, 0), // < 1 year to skip API calls
 				},
 			},
 			expectedScore: 2,
@@ -1766,6 +1795,179 @@ func TestScoreProvenance_LowRisk_ReproducibleBuildWithSigning(t *testing.T) {
 	}
 }
 
+// ===== Install Execution Edge Case Tests =====
+
+func TestScoreInstallExecution_HasInstallScriptsFlag_NoMatchingHooks(t *testing.T) {
+	// Test: HasInstallScripts=true but the scripts map contains non-install-time entries
+	// Justification: Exercises the fallback path where HasInstallScripts is set but no
+	//                install-time script names (preinstall/install/postinstall/setup.py/pom.xml) match
+	// Source: npm documentation — "scripts" field can contain test/start/build but not install hooks
+	// Methodology: Pure unit test with custom script name that doesn't match install-time hooks
+	// Result: 0 risk points — package has scripts but they aren't install-time hooks
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			HasInstallScripts: true,
+			InstallScripts: map[string]string{
+				"build": "tsc && rollup -c", // Not an install-time hook
+				"test":  "jest",              // Not an install-time hook
+			},
+		},
+	}
+
+	score := analyzer.scoreInstallExecution(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for non-install scripts, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	}
+	if score.Description != "No install-time scripts" {
+		t.Errorf("Expected 'No install-time scripts' description, got %q", score.Description)
+	}
+}
+
+// ===== Ownership Changes Edge Case Tests =====
+
+func TestScoreOwnershipChanges_NoDataAvailable(t *testing.T) {
+	// Test: No ownership data available — no repo URL, no RepoCreatedAt, no PublishedAt
+	// Justification: When no ownership data is available at all, the function should return
+	//                a default moderate risk score rather than crashing
+	// Source: OSSF Scorecard methodology — unverifiable checks receive conservative scores
+	// Methodology: Pure unit test — all fields empty/zero, Maven ecosystem avoids npm/PyPI API calls
+	// Result: Default 1 risk point (moderate), "No ownership data available" evidence
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "com.example:mystery-package",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
+		},
+		Metadata: models.PackageMetadata{}, // All zero values
+	}
+
+	score := analyzer.scoreOwnershipChanges(result)
+
+	// Default moderate risk when no data
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for no ownership data, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	}
+}
+
+func TestScoreOwnershipChanges_ScoreFieldConsistency(t *testing.T) {
+	// Test: Score field should equal 2 - RiskPoints for all ownership change results
+	// Justification: Consistent Score values required for display and comparison logic
+	// Source: Internal scoring rubric — Score = 2 - RiskPoints convention
+	// Methodology: Verify Score field across all risk levels
+	analyzer := NewAnalyzer()
+
+	tests := []struct {
+		name          string
+		result        *models.AnalysisResult
+		expectedRisk  int
+		expectedScore int
+	}{
+		{
+			name: "Established package - risk 0, score 2",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					RepoCreatedAt: time.Now().AddDate(-5, 0, 0),
+					Maintainers:   []string{"alice", "bob"},
+				},
+			},
+			expectedRisk:  0,
+			expectedScore: 2,
+		},
+		{
+			name: "New package - risk 1, score 1",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					RepoCreatedAt: time.Now().AddDate(0, -9, 0), // 9 months
+					Maintainers:   []string{"alice", "bob"},
+				},
+			},
+			expectedRisk:  1,
+			expectedScore: 1,
+		},
+		{
+			name: "Very new single maintainer - risk 2, score 0",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					RepoCreatedAt: time.Now().AddDate(0, -2, 0), // 2 months
+					Maintainers:   []string{"solo-dev"},
+				},
+			},
+			expectedRisk:  2,
+			expectedScore: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := analyzer.scoreOwnershipChanges(tt.result)
+			if score.RiskPoints != tt.expectedRisk {
+				t.Errorf("Expected RiskPoints=%d, got %d (evidence: %s)", tt.expectedRisk, score.RiskPoints, score.Evidence)
+			}
+			if score.Score != tt.expectedScore {
+				t.Errorf("Expected Score=%d (= 2 - %d), got %d", tt.expectedScore, tt.expectedRisk, score.Score)
+			}
+		})
+	}
+}
+
+// ===== Release Anomalies Additional Coverage Tests =====
+
+func TestScoreReleaseAnomalies_RecentActivity_YoungPackage(t *testing.T) {
+	// Test: Package with recent activity and less than 1 year old — skips release/commit fetch
+	// Justification: Young packages (<1 year) don't have enough history to detect anomalies,
+	//                so the function should return "consistent activity" without making API calls
+	// Source: OSSF Scorecard methodology — new packages are scored based on available data
+	// Methodology: Pure unit test — daysSinceCreated < 365 skips GitHub API calls
+	// Result: 0 risk points, "Regular, consistent releases"
+	analyzer := NewAnalyzer()
+	result := models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			RepoLastCommit: time.Now().AddDate(0, -2, 0), // 2 months ago
+			RepoCreatedAt:  time.Now().AddDate(0, -6, 0), // 6 months old
+		},
+		RepositoryURL: "https://example.com/young-active-pkg",
+	}
+
+	score := analyzer.scoreReleaseAnomalies(&result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for young active package, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	}
+	if score.Score != 2 {
+		t.Errorf("Expected score 2, got %d", score.Score)
+	}
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+}
+
+func TestScoreReleaseAnomalies_OnlyRepoLastCommitZero(t *testing.T) {
+	// Test: RepoLastCommit is zero but RepositoryURL is set
+	// Justification: Missing commit timestamp triggers the "unable to verify" early return
+	// Source: OSSF Scorecard methodology — requires commit history for assessment
+	// Methodology: Pure unit test — zero RepoLastCommit triggers the early return
+	analyzer := NewAnalyzer()
+	result := models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			RepoLastCommit: time.Time{}, // Zero — no commit data
+			RepoCreatedAt:  time.Now().AddDate(-2, 0, 0),
+		},
+		RepositoryURL: "https://example.com/some-repo",
+	}
+
+	score := analyzer.scoreReleaseAnomalies(&result)
+
+	// Zero RepoLastCommit → early return with "Unable to verify"
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for zero RepoLastCommit, got %d", score.RiskPoints)
+	}
+	if score.Verified {
+		t.Error("Expected unverified score when RepoLastCommit is zero")
+	}
+}
+
 // Helper function to create a pointer to an int
 func intPtr(i int) *int {
 	return &i
@@ -1979,21 +2181,21 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 }
 
 func TestScoreOwnershipChanges_FallbackBehavior(t *testing.T) {
-	analyzer := &Analyzer{
-		githubClient: fetcher.NewGitHubClient(),
-		npmClient:    fetcher.NewNPMClient(),
-		pypiClient:   fetcher.NewPyPIClient(),
-	}
+	// Test: Fallback to repository age heuristic when no repo URL or registry data available
+	// Justification: When external APIs are unavailable, age-based heuristic provides a reasonable estimate
+	// Source: OSSF Scorecard methodology — unverifiable checks receive conservative scores
+	// Methodology: Pure unit test — no RepositoryURL, Maven ecosystem avoids npm/PyPI API calls,
+	//              falls to age heuristic (2 years = established)
+	analyzer := NewAnalyzer()
 
-	// Test fallback to repository age when APIs fail
 	result := models.AnalysisResult{
-		RepositoryURL: "",
+		RepositoryURL: "", // No repo URL = no API calls
 		Dependency: models.Dependency{
-			Name:      "nonexistent-package-xyz-123456789",
-			Ecosystem: models.EcosystemNPM,
+			Name:      "com.example:nonexistent-pkg",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
 		},
 		Metadata: models.PackageMetadata{
-			RepoCreatedAt: time.Now().AddDate(-2, 0, 0),
+			RepoCreatedAt: time.Now().AddDate(-2, 0, 0), // 2 years old → "established"
 			Maintainers:   []string{"alice", "bob", "charlie"},
 		},
 	}
@@ -2005,26 +2207,24 @@ func TestScoreOwnershipChanges_FallbackBehavior(t *testing.T) {
 		t.Error("scoreOwnershipChanges() evidence should not be empty")
 	}
 
-	// Should have a valid risk score
-	if score.RiskPoints < 0 || score.RiskPoints > 2 {
-		t.Errorf("scoreOwnershipChanges() risk points = %v, want 0-2", score.RiskPoints)
+	// 2 years old, 3 maintainers, no transfer signals → risk=0 (established)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for established package fallback, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 }
 
 func TestCalculateSupplyChainScore_OwnershipChangesIntegration(t *testing.T) {
-	analyzer := &Analyzer{
-		githubClient: fetcher.NewGitHubClient(),
-		npmClient:    fetcher.NewNPMClient(),
-		pypiClient:   fetcher.NewPyPIClient(),
-		mavenClient:  fetcher.NewMavenClient(),
-		ossfClient:   fetcher.NewOSSFClient(),
-	}
+	// Test: Full supply chain score calculation with all categories
+	// Justification: Integration test that verifies all scoring categories work together
+	// Source: Internal scoring rubric — 7 categories, each 0-2 risk points, total 0-14
+	// Methodology: Pure unit test — no RepositoryURL, uses default/fallback behavior for all categories
+	analyzer := NewAnalyzer()
 
 	result := models.AnalysisResult{
-		RepositoryURL: "",
+		RepositoryURL: "", // No repo URL = no API calls
 		Dependency: models.Dependency{
-			Name:      "nonexistent-package-xyz-123456789",
-			Ecosystem: models.EcosystemNPM,
+			Name:      "com.example:nonexistent-pkg",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
 		},
 		Metadata: models.PackageMetadata{
 			RepoCreatedAt: time.Now().AddDate(-3, 0, 0),
@@ -2048,12 +2248,12 @@ func TestCalculateSupplyChainScore_OwnershipChangesIntegration(t *testing.T) {
 		t.Error("OwnershipChanges evidence should not be empty")
 	}
 
-	// Should have a valid risk score
-	if ownershipScore.RiskPoints < 0 || ownershipScore.RiskPoints > 2 {
-		t.Errorf("OwnershipChanges risk points = %v, want 0-2", ownershipScore.RiskPoints)
+	// 3 years old, 4 maintainers → age heuristic → risk=0
+	if ownershipScore.RiskPoints != 0 {
+		t.Errorf("OwnershipChanges risk points = %d, want 0 (evidence: %s)", ownershipScore.RiskPoints, ownershipScore.Evidence)
 	}
 
-	// Total score should be in valid range
+	// Total score should be in valid range (10 categories × 0-2 points = 0-20)
 	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 20 {
 		t.Errorf("TotalScore = %v, want 0-20", result.SupplyChainScore.TotalScore)
 	}
@@ -2316,18 +2516,22 @@ func TestScoreHealth_EdgeCases(t *testing.T) {
 }
 
 func TestSourceVerificationIntegrationInAnalyzer(t *testing.T) {
-	t.Run("Source verification is the first check", func(t *testing.T) {
+	// Test: Source verification populates the SourceVerification field
+	// Justification: verifySourceCode should always set SourceVerification regardless of repo URL
+	// Source: SLSA v1.0 — source code availability is a supply chain integrity requirement
+	// Methodology: Pure unit test — empty repo URL triggers "no source" path without API calls
+	t.Run("Source verification is populated for missing source", func(t *testing.T) {
 		result := models.AnalysisResult{
 			Dependency: models.Dependency{
-				Name:      "express",
-				Version:   "4.18.0",
+				Name:      "test-package",
+				Version:   "1.0.0",
 				Ecosystem: models.EcosystemNPM,
 			},
 			Findings: []models.Finding{},
 		}
 
 		analyzer := NewAnalyzer()
-		analyzer.verifySourceCode(&result, result.Dependency, "https://github.com/expressjs/express")
+		analyzer.verifySourceCode(&result, result.Dependency, "") // No repo URL = no API calls
 
 		if result.SourceVerification == nil {
 			t.Error("Expected SourceVerification to be populated")
