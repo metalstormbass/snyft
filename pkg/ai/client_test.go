@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
-	"os"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +123,27 @@ func TestClientClose(t *testing.T) {
 	err = client.Close()
 	if err != nil {
 		t.Errorf("unexpected error on close: %v", err)
+	}
+}
+
+// Test: Close is safe to call with nil cache
+// Justification: Client with cache disabled must still close cleanly
+// Source: Go resource management - nil-safe close patterns
+// Methodology: Create client with cache disabled, call Close
+// Result: No panic, no error
+func TestClientClose_NilCache(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key-123"
+	cfg.EnableCache = false
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	err = client.Close()
+	if err != nil {
+		t.Errorf("unexpected error on close with nil cache: %v", err)
 	}
 }
 
@@ -493,25 +516,12 @@ func TestIsRetryable(t *testing.T) {
 // Justification: Production Kubernetes deployments commonly set boolean flags as
 //                "0"/"1"; a parsing miss would silently enable disabled features
 // Source: 12-Factor App methodology for environment-based configuration
-// Methodology: Set CLAUDE_ENABLE_CACHE=0, CLAUDE_ENABLE_RATE_LIMIT=1, call
+// Methodology: Set env vars using t.Setenv (auto-restored after test), call
 //              LoadFromEnv, verify parsed values match intent
 // Result: "0" disables feature; "1" enables feature; "false" disables feature
 func TestLoadFromEnv_FeatureFlags(t *testing.T) {
-	// Save and restore env state
-	restore := func(k, v string) func() {
-		return func() {
-			if v == "" {
-				os.Unsetenv(k)
-			} else {
-				os.Setenv(k, v)
-			}
-		}
-	}
-
 	t.Run("numeric 0 disables cache", func(t *testing.T) {
-		prev := os.Getenv("CLAUDE_ENABLE_CACHE")
-		defer restore("CLAUDE_ENABLE_CACHE", prev)()
-		os.Setenv("CLAUDE_ENABLE_CACHE", "0")
+		t.Setenv("CLAUDE_ENABLE_CACHE", "0")
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -523,9 +533,7 @@ func TestLoadFromEnv_FeatureFlags(t *testing.T) {
 	})
 
 	t.Run("numeric 1 enables rate limit", func(t *testing.T) {
-		prev := os.Getenv("CLAUDE_ENABLE_RATE_LIMIT")
-		defer restore("CLAUDE_ENABLE_RATE_LIMIT", prev)()
-		os.Setenv("CLAUDE_ENABLE_RATE_LIMIT", "1")
+		t.Setenv("CLAUDE_ENABLE_RATE_LIMIT", "1")
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -537,9 +545,7 @@ func TestLoadFromEnv_FeatureFlags(t *testing.T) {
 	})
 
 	t.Run("string false disables circuit breaker", func(t *testing.T) {
-		prev := os.Getenv("CLAUDE_ENABLE_CIRCUIT_BREAKER")
-		defer restore("CLAUDE_ENABLE_CIRCUIT_BREAKER", prev)()
-		os.Setenv("CLAUDE_ENABLE_CIRCUIT_BREAKER", "false")
+		t.Setenv("CLAUDE_ENABLE_CIRCUIT_BREAKER", "false")
 
 		cfg, err := LoadFromEnv()
 		if err != nil {
@@ -599,7 +605,8 @@ func TestRateLimiter_TokenRefill(t *testing.T) {
 func TestDefaultConfig_RealWorldWorkload(t *testing.T) {
 	cfg := DefaultConfig()
 
-	// npm packages from mike-libraries/javascript (30 direct dependencies)
+	// npm packages from mike-libraries/javascript/package.json (30 direct dependencies)
+	// Verified against: /Users/mike/Projects/mike-libraries/javascript/package.json
 	npmPackages := []string{
 		"express", "axios", "dotenv", "pg", "redis", "mongoose", "cors",
 		"morgan", "helmet", "joi", "jsonwebtoken", "bcryptjs", "winston",
@@ -608,7 +615,8 @@ func TestDefaultConfig_RealWorldWorkload(t *testing.T) {
 		"socket.io", "bull", "stripe", "aws-sdk", "nodemailer", "agenda", "pino",
 	}
 
-	// pypi packages from mike-libraries/python (26 direct dependencies)
+	// pypi packages from mike-libraries/python/requirements.txt (26 direct dependencies)
+	// Verified against: /Users/mike/Projects/mike-libraries/python/requirements.txt
 	pypiPackages := []string{
 		"Flask", "aiohttp", "gunicorn", "requests", "sqlalchemy", "psycopg2-binary",
 		"redis", "celery", "python-dotenv", "pytest", "pandas", "pydantic",
@@ -671,6 +679,10 @@ func TestCacheKey_RealPackageNames(t *testing.T) {
 
 	// Representative packages from mike-libraries across ecosystems
 	// Note: some packages share names across ecosystems (e.g. "stripe", "redis")
+	// Verified against:
+	//   - mike-libraries/javascript/package.json
+	//   - mike-libraries/python/requirements.txt
+	//   - mike-libraries/java/pom.xml
 	packageScenarios := []struct {
 		ecosystem string
 		name      string
@@ -712,4 +724,190 @@ func TestCacheKey_RealPackageNames(t *testing.T) {
 		}
 		seen[key] = label
 	}
+}
+
+// Test: CreateMessage with mocked API returns correct response
+// Justification: The CreateMessage path is the core API interaction for all
+//                AI-powered supply chain analysis; must work correctly with
+//                caching, rate limiting, and circuit breaker
+// Source: Anthropic API Messages endpoint specification
+// Methodology: Mock the API with httptest, verify response parsing, caching,
+//              and circuit breaker integration
+// Result: Successful responses parsed; errors propagated; circuit breaker updated
+func TestCreateMessage(t *testing.T) {
+	t.Run("successful request returns parsed message", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{
+				"id": "msg_test_123",
+				"type": "message",
+				"role": "assistant",
+				"model": "claude-sonnet-4-5-20250929",
+				"content": [{"type": "text", "text": "Analysis complete: low risk"}],
+				"stop_reason": "end_turn",
+				"usage": {"input_tokens": 100, "output_tokens": 20}
+			}`)
+		}))
+		defer server.Close()
+
+		cfg := DefaultConfig()
+		cfg.APIKey = "test-key"
+		cfg.BaseURL = server.URL
+		cfg.EnableCache = false
+		cfg.EnableRateLimit = false
+		cfg.EnableCircuitBreaker = false
+		client, err := NewClient(cfg)
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		defer func() { _ = client.Close() }()
+
+		params := anthropic.MessageNewParams{
+			Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+			MaxTokens: 100,
+			Messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock("test")),
+			},
+		}
+
+		msg, err := client.CreateMessage(context.Background(), params)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if msg.ID != "msg_test_123" {
+			t.Errorf("expected message ID 'msg_test_123', got %s", msg.ID)
+		}
+		if len(msg.Content) != 1 {
+			t.Fatalf("expected 1 content block, got %d", len(msg.Content))
+		}
+		if msg.Content[0].Text != "Analysis complete: low risk" {
+			t.Errorf("unexpected content: %s", msg.Content[0].Text)
+		}
+	})
+
+	t.Run("circuit breaker opens on errors", func(t *testing.T) {
+		// Use 400 to avoid SDK-level retries (which slow the test)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
+		}))
+		defer server.Close()
+
+		cfg := DefaultConfig()
+		cfg.APIKey = "test-key"
+		cfg.BaseURL = server.URL
+		cfg.EnableCache = false
+		cfg.EnableRateLimit = false
+		cfg.EnableCircuitBreaker = true
+		cfg.CircuitBreakerThreshold = 2
+		cfg.EnableRetry = false // Disable client-level retries
+		client, err := NewClient(cfg)
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		defer func() { _ = client.Close() }()
+
+		params := anthropic.MessageNewParams{
+			Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+			MaxTokens: 100,
+			Messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock("test")),
+			},
+		}
+
+		// First two calls should fail and record circuit breaker failures
+		for i := 0; i < 2; i++ {
+			_, err := client.CreateMessage(context.Background(), params)
+			if err == nil {
+				t.Fatal("expected error from server")
+			}
+		}
+
+		// Circuit breaker should now be open
+		stats := client.GetStats()
+		if !stats.CircuitBreakerOpen {
+			t.Error("expected circuit breaker to be open after failures")
+		}
+
+		// Next call should fail fast with circuit breaker error
+		_, err = client.CreateMessage(context.Background(), params)
+		if err == nil {
+			t.Fatal("expected circuit breaker error")
+		}
+		if !strings.Contains(err.Error(), "circuit breaker open") {
+			t.Errorf("expected circuit breaker error, got: %v", err)
+		}
+	})
+
+	t.Run("circuit breaker resets on success after failure", func(t *testing.T) {
+		callCount := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			// First call fails, second succeeds
+			if callCount == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{
+				"id": "msg_test_456",
+				"type": "message",
+				"role": "assistant",
+				"model": "claude-sonnet-4-5-20250929",
+				"content": [{"type": "text", "text": "ok"}],
+				"stop_reason": "end_turn",
+				"usage": {"input_tokens": 10, "output_tokens": 5}
+			}`)
+		}))
+		defer server.Close()
+
+		cfg := DefaultConfig()
+		cfg.APIKey = "test-key"
+		cfg.BaseURL = server.URL
+		cfg.EnableCache = false
+		cfg.EnableRateLimit = false
+		cfg.EnableCircuitBreaker = true
+		cfg.CircuitBreakerThreshold = 3 // Won't trip on 1 failure
+		cfg.EnableRetry = false
+		client, err := NewClient(cfg)
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		defer func() { _ = client.Close() }()
+
+		params := anthropic.MessageNewParams{
+			Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+			MaxTokens: 100,
+			Messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock("test")),
+			},
+		}
+
+		// First call fails
+		_, err = client.CreateMessage(context.Background(), params)
+		if err == nil {
+			t.Fatal("expected first call to fail")
+		}
+
+		stats := client.GetStats()
+		if stats.CircuitBreakerFailures != 1 {
+			t.Errorf("expected 1 failure, got %d", stats.CircuitBreakerFailures)
+		}
+
+		// Second call succeeds - should reset failures
+		msg, err := client.CreateMessage(context.Background(), params)
+		if err != nil {
+			t.Fatalf("expected second call to succeed: %v", err)
+		}
+		if msg.ID != "msg_test_456" {
+			t.Errorf("expected message ID 'msg_test_456', got %s", msg.ID)
+		}
+
+		stats = client.GetStats()
+		if stats.CircuitBreakerFailures != 0 {
+			t.Errorf("expected failures reset to 0 after success, got %d", stats.CircuitBreakerFailures)
+		}
+	})
 }
