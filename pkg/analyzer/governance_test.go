@@ -1,9 +1,13 @@
 package analyzer
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/metalstormbass/snyft/pkg/fetcher"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
@@ -991,5 +995,299 @@ func TestScoreGovernance_RealPackages_PyPI_Integration(t *testing.T) {
 				t.Errorf("[%s] active package should not be flagged as abandoned", tc.name)
 			}
 		})
+	}
+}
+
+// ===== Mock HTTP server tests (no external network, exercises full scoring path) =====
+
+// newMockGitHubServer creates an httptest.Server that simulates GitHub API responses
+// for governance file checks. The governanceFiles map specifies which files "exist"
+// (file path → true/false).
+func newMockGitHubServer(governanceFiles map[string]bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// Handle HEAD requests for file existence (used by FileExistsInRepo)
+		if r.Method == "HEAD" {
+			for filePath, exists := range governanceFiles {
+				if strings.Contains(path, "/contents/"+filePath) {
+					if exists {
+						w.WriteHeader(http.StatusOK)
+					} else {
+						w.WriteHeader(http.StatusNotFound)
+					}
+					return
+				}
+			}
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		// Handle GET requests for file content (fallback path)
+		if r.Method == "GET" {
+			for filePath, exists := range governanceFiles {
+				if strings.Contains(path, "/contents/"+filePath) {
+					if exists {
+						w.Header().Set("Content-Type", "text/plain")
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte("# Governance file content"))
+					} else {
+						w.WriteHeader(http.StatusNotFound)
+					}
+					return
+				}
+			}
+			// Issue response time endpoint — return empty to avoid nil
+			if strings.Contains(path, "/issues") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+}
+
+// newAnalyzerWithMockGitHub creates an Analyzer whose githubClient points at the
+// given mock server URL. This exercises the real checkGovernanceFile → FileExistsInRepo
+// path without hitting the real GitHub API.
+func newAnalyzerWithMockGitHub(mockBaseURL string) *Analyzer {
+	a := NewAnalyzer()
+	a.githubClient = fetcher.NewGitHubClientWithBaseURL(mockBaseURL)
+	return a
+}
+
+// Test: Governance scoring detects SECURITY.md and CONTRIBUTING.md via HEAD requests
+// Justification: When the GitHub API is accessible, governance file checks must use
+//                efficient HEAD requests (via FileExistsInRepo) and correctly identify
+//                governance documentation. Two governance docs → 2 docs points, which
+//                combined with no process points → 1 risk (moderate governance).
+// Source: OSSF Scorecard Specification (Security-Policy, Contributing checks)
+// Methodology: Mock GitHub Contents API HEAD endpoint returning 200 for governance files
+// Result: Two governance docs → 1 risk point (moderate governance)
+func TestScoreGovernance_MockServer_TwoGovernanceDocs(t *testing.T) {
+	server := newMockGitHubServer(map[string]bool{
+		"SECURITY.md":          true,
+		"CONTRIBUTING.md":      true,
+		"CODEOWNERS":           false,
+		"CODE_OF_CONDUCT.md":   false,
+		".github/SECURITY.md":  false,
+		".github/CODEOWNERS":   false,
+	})
+	defer server.Close()
+
+	analyzer := newAnalyzerWithMockGitHub(server.URL)
+
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/governance-repo",
+		Metadata: models.PackageMetadata{
+			RepoLastCommit: time.Now().AddDate(0, 0, -7), // Active: 1 week ago
+			RepoCreatedAt:  time.Now().AddDate(-2, 0, 0),
+		},
+		Dependency: models.Dependency{
+			Name:      "well-governed-pkg",
+			Version:   "1.0.0",
+			Ecosystem: models.EcosystemNPM,
+		},
+	}
+
+	score := analyzer.scoreGovernance(result)
+
+	// Two governance docs (SECURITY.md + CONTRIBUTING.md) → docsPoints=2
+	// No process points (no branch protection, no issue response) → processPoints=0
+	// Total=2 → 1 risk (moderate governance)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for 2 governance docs, got %d (evidence: %s)",
+			score.RiskPoints, score.Evidence)
+	}
+	if !score.Verified {
+		t.Error("Expected Verified=true when mock API is accessible")
+	}
+	if !containsSubstring(score.Evidence, "SECURITY.md") {
+		t.Errorf("Expected evidence to mention SECURITY.md, got: %s", score.Evidence)
+	}
+	if !containsSubstring(score.Evidence, "CONTRIBUTING.md") {
+		t.Errorf("Expected evidence to mention CONTRIBUTING.md, got: %s", score.Evidence)
+	}
+}
+
+// Test: Governance scoring with all docs + branch protection → 0 risk
+// Justification: Maximum governance signals (docs + process) should result in 0 risk.
+//                Two+ governance docs = 2 docsPoints, branch protection = 1 processPoint,
+//                total = 3 → 0 risk (strong governance).
+// Source: OSSF Scorecard Specification (Branch-Protection + Security-Policy checks)
+// Methodology: Mock API with governance files + branch protection metadata
+// Result: Strong governance → 0 risk points
+func TestScoreGovernance_MockServer_StrongGovernance(t *testing.T) {
+	server := newMockGitHubServer(map[string]bool{
+		"SECURITY.md":          true,
+		"CONTRIBUTING.md":      true,
+		"CODEOWNERS":           false,
+		"CODE_OF_CONDUCT.md":   false,
+		".github/SECURITY.md":  false,
+		".github/CODEOWNERS":   false,
+	})
+	defer server.Close()
+
+	analyzer := newAnalyzerWithMockGitHub(server.URL)
+
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/governance-repo",
+		Metadata: models.PackageMetadata{
+			RepoLastCommit:      time.Now().AddDate(0, 0, -3),
+			RepoCreatedAt:       time.Now().AddDate(-3, 0, 0),
+			HasBranchProtection: true,
+			RequiredReviewers:   1,
+		},
+		Dependency: models.Dependency{
+			Name:      "strong-governance-pkg",
+			Version:   "3.0.0",
+			Ecosystem: models.EcosystemNPM,
+		},
+	}
+
+	score := analyzer.scoreGovernance(result)
+
+	// 2 docs → docsPoints=2, branch protection → processPoints=1, total=3 → risk=0
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for strong governance (2 docs + branch protection), got %d (evidence: %s)",
+			score.RiskPoints, score.Evidence)
+	}
+	if !score.Verified {
+		t.Error("Expected Verified=true")
+	}
+	if !containsSubstring(score.Description, "Strong governance") {
+		t.Errorf("Expected 'Strong governance' description, got: %s", score.Description)
+	}
+}
+
+// Test: Governance scoring with no governance files → 2 risk points
+// Justification: No governance documentation indicates poor supply chain governance.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Mock API returning 404 for all governance files
+// Result: No governance docs → 2 risk points (poor governance)
+func TestScoreGovernance_MockServer_NoGovernanceDocs(t *testing.T) {
+	server := newMockGitHubServer(map[string]bool{
+		"SECURITY.md":          false,
+		"CONTRIBUTING.md":      false,
+		"CODEOWNERS":           false,
+		"CODE_OF_CONDUCT.md":   false,
+		".github/SECURITY.md":  false,
+		".github/CODEOWNERS":   false,
+	})
+	defer server.Close()
+
+	analyzer := newAnalyzerWithMockGitHub(server.URL)
+
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/no-governance-repo",
+		Metadata: models.PackageMetadata{
+			RepoLastCommit: time.Now().AddDate(0, 0, -7),
+			RepoCreatedAt:  time.Now().AddDate(-1, 0, 0),
+		},
+		Dependency: models.Dependency{
+			Name:      "no-governance-pkg",
+			Version:   "0.1.0",
+			Ecosystem: models.EcosystemNPM,
+		},
+	}
+
+	score := analyzer.scoreGovernance(result)
+
+	// No docs → docsPoints=0, no process → total=0 → risk=2
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for no governance docs, got %d (evidence: %s)",
+			score.RiskPoints, score.Evidence)
+	}
+	if !containsSubstring(score.Description, "Poor governance") {
+		t.Errorf("Expected 'Poor governance' description, got: %s", score.Description)
+	}
+}
+
+// Test: Governance scoring with single governance doc → 1 risk point
+// Justification: A single governance doc (e.g., SECURITY.md only) earns 1 docs point.
+//                This is moderate governance — present but incomplete.
+// Source: OSSF Scorecard Specification
+// Methodology: Mock API with only SECURITY.md existing
+// Result: 1 doc → docsPoints=1, total=1 → 1 risk
+func TestScoreGovernance_MockServer_SingleGovernanceDoc(t *testing.T) {
+	server := newMockGitHubServer(map[string]bool{
+		"SECURITY.md":          true,
+		"CONTRIBUTING.md":      false,
+		"CODEOWNERS":           false,
+		"CODE_OF_CONDUCT.md":   false,
+		".github/SECURITY.md":  false,
+		".github/CODEOWNERS":   false,
+	})
+	defer server.Close()
+
+	analyzer := newAnalyzerWithMockGitHub(server.URL)
+
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/single-doc-repo",
+		Metadata: models.PackageMetadata{
+			RepoLastCommit: time.Now().AddDate(0, 0, -14),
+			RepoCreatedAt:  time.Now().AddDate(-1, 0, 0),
+		},
+		Dependency: models.Dependency{
+			Name:      "single-doc-pkg",
+			Version:   "1.0.0",
+			Ecosystem: models.EcosystemNPM,
+		},
+	}
+
+	score := analyzer.scoreGovernance(result)
+
+	// 1 doc → docsPoints=1, no process → total=1 → risk=1
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for single governance doc, got %d (evidence: %s)",
+			score.RiskPoints, score.Evidence)
+	}
+	if !containsSubstring(score.Evidence, "Single governance doc") {
+		t.Errorf("Expected evidence to mention 'Single governance doc', got: %s", score.Evidence)
+	}
+}
+
+// Test: .github/SECURITY.md fallback location is checked
+// Justification: Many repos place SECURITY.md in .github/ instead of root.
+//                The governance check must check both locations.
+// Source: GitHub documentation on community health files
+// Methodology: Mock API with SECURITY.md only in .github/ directory
+// Result: .github/SECURITY.md counts as governance documentation
+func TestScoreGovernance_MockServer_DotGithubSecurityMd(t *testing.T) {
+	server := newMockGitHubServer(map[string]bool{
+		"SECURITY.md":          false,
+		"CONTRIBUTING.md":      true,
+		"CODEOWNERS":           false,
+		"CODE_OF_CONDUCT.md":   false,
+		".github/SECURITY.md":  true,
+		".github/CODEOWNERS":   false,
+	})
+	defer server.Close()
+
+	analyzer := newAnalyzerWithMockGitHub(server.URL)
+
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/dotgithub-repo",
+		Metadata: models.PackageMetadata{
+			RepoLastCommit: time.Now().AddDate(0, 0, -5),
+			RepoCreatedAt:  time.Now().AddDate(-2, 0, 0),
+		},
+		Dependency: models.Dependency{
+			Name:      "dotgithub-pkg",
+			Version:   "1.0.0",
+			Ecosystem: models.EcosystemNPM,
+		},
+	}
+
+	score := analyzer.scoreGovernance(result)
+
+	// .github/SECURITY.md + CONTRIBUTING.md → docsPoints=2, total=2 → risk=1
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point (2 governance docs via .github/ fallback), got %d (evidence: %s)",
+			score.RiskPoints, score.Evidence)
 	}
 }

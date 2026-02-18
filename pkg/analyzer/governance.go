@@ -81,13 +81,22 @@ func (a *Analyzer) analyzeGovernance(result *models.AnalysisResult, repoURL stri
 	return metrics
 }
 
-// checkGovernanceFile checks if a governance file exists in the repository
+// checkGovernanceFile checks if a governance file exists in the repository.
+// For GitHub repositories, this uses cached HEAD requests with a
+// raw.githubusercontent.com fallback when rate-limited — much more efficient
+// than fetching full file contents via the API. Other platforms fall back to
+// GetFileContent.
 func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repoURL, filePath string) bool {
+	// For GitHub, use the efficient cached HEAD-based check with rate-limit fallback.
+	// This avoids consuming API quota with full GET requests for each governance file.
+	if ghClient, ok := gitClient.(*fetcher.GitHubClient); ok {
+		return ghClient.FileExistsInRepo(repoURL, filePath)
+	}
+	// For other platforms, fall back to GetFileContent (content-based check).
 	content, err := gitClient.GetFileContent(repoURL, filePath)
 	if err != nil {
 		return false
 	}
-	// File exists and has content
 	return len(strings.TrimSpace(content)) > 0
 }
 
