@@ -108,9 +108,10 @@ type PyPIResponse struct {
 type PyPIURL struct {
 	Filename      string            `json:"filename"`
 	URL           string            `json:"url"`
-	HasSignature  bool              `json:"has_sig"`
+	HasSignature  bool              `json:"has_sig"`          // Deprecated: always false since May 2023
 	Digests       map[string]string `json:"digests"`
-	PGPSignature  string            `json:"pgp_signature,omitempty"`
+	PGPSignature  string            `json:"pgp_signature,omitempty"` // Deprecated: always empty since May 2023
+	Provenance    string            `json:"provenance,omitempty"`    // PEP 740 attestation provenance URL
 }
 
 type PyPIInfo struct {
@@ -184,7 +185,15 @@ func countRequiresDist(requiresDist []string) int {
 	return count
 }
 
-// CheckPyPISignatures checks if a package has cryptographic signatures
+// CheckPyPISignatures checks if a package has cryptographic signatures or attestations.
+//
+// PyPI deprecated PGP signature uploads in May 2023, so the has_sig field now
+// always returns false for new uploads. This function also checks for PEP 740
+// Trusted Publisher attestations (the replacement mechanism) by looking for the
+// provenance field on release URLs.
+//
+// Source: PyPI blog — "Removing PGP from PyPI" (2023-05-23)
+// Source: PEP 740 — "Index support for digital attestations"
 func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool, signedCount, totalCount int, err error) {
 	url := fmt.Sprintf("%s/%s/json", c.baseURL, packageName)
 
@@ -203,13 +212,18 @@ func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool
 		return false, 0, 0, fmt.Errorf("failed to decode PyPI response: %w", err)
 	}
 
-	// Check the latest release URLs for signatures
+	// Check the latest release URLs for signatures and attestations
 	totalCount = len(pypiResp.Urls)
 	signedCount = 0
 
 	for _, url := range pypiResp.Urls {
-		// PyPI packages can have PGP signatures or use has_sig field
+		// Legacy: PGP signatures (deprecated May 2023, always false for new uploads)
 		if url.HasSignature || url.PGPSignature != "" {
+			signedCount++
+			continue
+		}
+		// Modern: PEP 740 Trusted Publisher attestations
+		if url.Provenance != "" {
 			signedCount++
 		}
 	}

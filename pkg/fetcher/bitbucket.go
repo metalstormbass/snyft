@@ -496,14 +496,18 @@ func (c *BitbucketClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, 
 	return stats, nil
 }
 
-// CheckSignedCommits stub implementation
+// CheckSignedCommits checks if recent commits are GPG signed (stub).
+// Returns an error so the caller treats this as "unchecked" rather than
+// "checked and found no signing", which would incorrectly add a +0.5 risk penalty.
 func (c *BitbucketClient) CheckSignedCommits(repoURL string) (bool, int, error) {
-	return false, 0, nil
+	return false, 0, fmt.Errorf("commit signing verification not supported for Bitbucket")
 }
 
-// CheckSignedReleases stub implementation
+// CheckSignedReleases checks if releases have signatures (stub).
+// Returns an error so the caller treats this as "unchecked" rather than
+// "checked and found no signing", which would incorrectly add a +0.5 risk penalty.
 func (c *BitbucketClient) CheckSignedReleases(repoURL string) (bool, error) {
-	return false, nil
+	return false, fmt.Errorf("release signing verification not supported for Bitbucket")
 }
 
 // GetCommitStats fetches commit distribution

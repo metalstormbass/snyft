@@ -1,26 +1,26 @@
 # Snyft Check Audit Report
 
-Generated: 2026-02-17
+Generated: 2026-02-18 (updated from 2026-02-17)
 
-This document audits all scoring categories for checks that consistently return zero findings. Each issue is classified as **Broken** (data never flows correctly), **Stub** (not yet implemented), or **Working**.
+This document audits all scoring categories for checks that consistently return zero findings. Each issue is classified as **Broken** (data never flows correctly), **Stub** (not yet implemented), **Fixed** (resolved), or **Working**.
 
 ---
 
-## Category 1: Publisher Control — PARTIALLY BROKEN
+## Category 1: Publisher Control — WORKING (with caveats)
 
-### Bug: Email domain check silent for npm packages
+### Fixed: Email domain check now includes email when available
 
-**File:** `pkg/fetcher/npm.go:170-178`, `pkg/analyzer/publisher_control.go:287`
+**Status:** FIXED
 
-`extractMaintainers` returns `m.Name` (the npm username, e.g. `"sindresorhus"`), never `m.Email`. The email domain analysis in `publisher_control.go` splits on `@` and skips any string without `@`. **The email domain risk check produces no findings for any npm package.**
+`extractMaintainers` (npm.go:277-292) now formats maintainers as `"username <email@domain.com>"` when email is available, which the email domain analyzer can parse. However, npm's public API often returns empty emails due to privacy changes (~2022), so this check works when email data is present but may not produce findings for all packages. This is an API limitation, not a code bug.
 
-### Bug: GitLab/Bitbucket always over-penalized for signing
+### Fixed: GitLab/Bitbucket no longer over-penalized for signing
 
-**File:** `pkg/fetcher/gitlab.go:508-518`, `pkg/fetcher/bitbucket.go:481-488`
+**Status:** FIXED
 
-`CheckSignedCommits` is a stub returning `(false, 0, nil)` for both platforms. This adds +0.5 (no signing) to every GitLab/Bitbucket package without checking actual practices.
+`CheckSignedCommits` and `CheckSignedReleases` for GitLab and Bitbucket now return errors instead of `(false, 0, nil)`. This causes `SigningChecked` to remain `false` in the publisher control analysis, which means no +0.5 signing penalty is applied. The scoring correctly treats these platforms as "unchecked" rather than "checked and found no signing."
 
-**Recommendation:** Fix npm maintainer data to include email when available. Add NOOP signing stubs that return `(false, 0, fmt.Errorf("not supported"))` so the scoring treats it as unknown rather than penalizing.
+**Files changed:** `pkg/fetcher/gitlab.go`, `pkg/fetcher/bitbucket.go`
 
 ---
 
@@ -42,61 +42,72 @@ Logic is structurally sound. Defaults to 1 risk point (`Verified: false`) when n
 
 ---
 
-## Category 4: Install Execution — PARTIALLY BROKEN
+## Category 4: Install Execution — PARTIALLY FIXED
 
 ### Bug: PyPI `setup.py` analysis skipped for packages without repo URL
 
-**File:** `pkg/analyzer/analyzer.go:181-189`
+**Status:** OPEN
+
+**File:** `pkg/analyzer/analyzer.go:208-217`
 
 The `setup.py` analysis is gated behind `if repoURL != ""`. Packages without a repo URL — common for small packages — never have `setup.py` analyzed.
 
-### Bug: Maven "single benign script" path unreachable
+### Fixed: Maven "single benign script" path now reachable
 
-**File:** `pkg/analyzer/analyzer.go:212-218`
+**Status:** FIXED
 
-`metadata.HasInstallScripts = true` is only set when dangerous patterns are already found in `pom.xml`. The 1-risk-point path for a single benign install script is **structurally unreachable for Maven packages**.
+`metadata.HasInstallScripts = true` is now set whenever a `pom.xml` is found, regardless of whether dangerous patterns are detected. This makes the 1-risk-point path for "single benign install script" reachable for Maven packages.
 
-**Recommendation:** Set `HasInstallScripts = true` whenever a `pom.xml` is found, before the dangerous pattern check.
+**File changed:** `pkg/analyzer/analyzer.go`
 
 ---
 
-## Category 5: Dependency Sprawl — BROKEN
+## Category 5: Dependency Sprawl — PARTIALLY BROKEN
 
 ### Bug: Lock file analysis always skipped for direct scans
+
+**Status:** OPEN
 
 **File:** `pkg/analyzer/analyzer.go:401-403`
 
 `analyzeDependencySprawl` returns immediately when `dep.Source == ""`. When scanning a package by name (the typical CLI usage), `dep.Source` is always empty. **Lock file analysis is effectively always skipped.**
 
-### Bug: npm download count always 0
+**Recommendation:** Attempt to locate a lock file relative to the working directory when `dep.Source` is empty.
 
-**File:** `pkg/fetcher/npm.go:109`
+### Fixed: npm download count now fetched from API
 
-`NPMPackage.Downloads` is hardcoded to `0`. The fallback check `DownloadCount > 1000000` at `analyzer.go:1197` is therefore **never true for npm packages**, making the fallback always produce "low popularity" results regardless of actual download counts.
+**Status:** FIXED (prior to this audit)
 
-**Recommendation:** Fetch download counts from the npm downloads API (`https://api.npmjs.org/downloads/point/last-month/{name}`). For the `dep.Source` issue, attempt to locate a lock file relative to the working directory when `dep.Source` is empty.
+`NPMClient.fetchDownloadCount()` (npm.go:132-154) fetches the last-month download count from `https://api.npmjs.org/downloads/point/last-month/{name}`. The `DownloadCount > 1000000` fallback check now works correctly.
 
 ---
 
-## Category 6: Provenance — BROKEN (GitLab/Bitbucket, PyPI sigs)
+## Category 6: Provenance — PARTIALLY FIXED
 
-### Bug: GitLab/Bitbucket always score maximum provenance risk
+### Fixed: GitLab/Bitbucket provenance now checks CI config files
 
-**File:** `pkg/fetcher/gitlab.go:430-447`, `pkg/fetcher/bitbucket.go:410-424`
+**Status:** FIXED (prior to this audit)
 
-`GetProvenanceInfo` for both platforms only sets `BuildSystem` and returns. All boolean provenance fields (`HasSLSAAttestation`, `HasSigstoreSignature`, etc.) remain false. **GitLab and Bitbucket packages always receive 2 risk points (worst) for provenance.**
+`GetProvenanceInfo` for both GitLab and Bitbucket now:
+- Fetches `.gitlab-ci.yml` / `bitbucket-pipelines.yml` and checks for cosign/sigstore keywords
+- Checks for SLSA generator usage in CI pipelines
+- Checks for `cosign.pub` or `.cosign/` directory presence
 
-### Bug: SLSA check has unreachable positive path on GitHub
+Packages that use Sigstore or SLSA in their CI pipelines will now receive provenance credit. Packages without these tools still receive 2 risk points, which is correct (no verifiable provenance).
 
-**File:** `pkg/fetcher/github.go:512-517`
+### Note: SLSA detection requires specific file patterns
 
-The SLSA attestation check has an `// unreachable` comment followed by `return false, ""`. Repos with `.github/workflows` but no specific SLSA workflow file always return `HasSLSAAttestation = false`. This is intentional but worth noting — only actual SLSA attestation files trigger detection.
+**Status:** KNOWN LIMITATION
 
-### Bug: PyPI `has_sig` deprecated and always false
+The SLSA attestation check on GitHub requires `.slsa-provenance.json` or `.github/workflows/slsa*.yml` files. Repos using SLSA generators without these specific naming patterns may not be detected.
 
-PyPI deprecated GPG signatures in May 2023. The `has_sig` field now always returns `false`, making `CheckPyPISignatures` always return `(false, 0, 0, nil)`.
+### Fixed: PyPI signature check now includes Trusted Publisher attestations
 
-**Recommendation:** For GitLab, check for Sigstore/cosign config files or `.gitlab-ci.yml` patterns for signing steps. For PyPI, check for Sigstore attestations (new PyPI standard) instead of `has_sig`.
+**Status:** FIXED
+
+`CheckPyPISignatures` now checks for PEP 740 Trusted Publisher attestations (the `provenance` field on release URLs) in addition to the deprecated PGP `has_sig` field. Packages using PyPI's Trusted Publisher mechanism will now receive provenance credit.
+
+**File changed:** `pkg/fetcher/pypi.go`
 
 ---
 
@@ -104,11 +115,15 @@ PyPI deprecated GPG signatures in May 2023. The `has_sig` field now always retur
 
 ### Bug: PR stats stubs for GitLab/Bitbucket
 
-**File:** `pkg/fetcher/gitlab.go:595-599`, `pkg/fetcher/bitbucket.go:555-557`
+**Status:** OPEN
+
+**File:** `pkg/fetcher/gitlab.go:616-620`, `pkg/fetcher/bitbucket.go:574-576`
 
 `GetPullRequestStats` returns empty `PRStats{}` for both platforms. `CodeReviewRate`, `RequiredReviewers`, and `HasBranchProtection` are always zero/false.
 
 ### Bug: CI quality always 5/10 for GitLab/Bitbucket
+
+**Status:** OPEN
 
 `AnalyzeCIQuality` returns a hardcoded `QualityScore = 5` when CI is found for these platforms. The health scoring requires `>= 7` to award a CI quality point. **GitLab/Bitbucket repos with CI can never earn the CI health point.**
 
@@ -119,6 +134,8 @@ PyPI deprecated GPG signatures in May 2023. The `has_sig` field now always retur
 ## Category 8: Governance — PARTIALLY BROKEN
 
 ### Bug: Issue response time only measured for GitHub
+
+**Status:** OPEN
 
 **File:** `pkg/analyzer/governance.go:49-55`
 
@@ -132,44 +149,78 @@ Issue response time analysis is behind a `gitClient.GetPlatformName() == "GitHub
 
 ### Bug: `HasReleaseProcess` uses release existence, not CI automation
 
+**Status:** OPEN
+
 **File:** `pkg/analyzer/analyzer.go:465-468`
 
 `HasAutomatedReleases` checks if any GitHub releases exist — not whether they are CI-driven. Manual releases satisfy this check, defeating the intent of "CI publishing."
 
 ### Bug: Two components always false for GitLab/Bitbucket
 
-`HasBranchProtection` and `SignedReleases` depend on `GetPullRequestStats` and `GetProvenanceInfo`, both stubs for GitLab/Bitbucket. **Two of the four scored components are always false for non-GitHub packages.**
+**Status:** OPEN (partially mitigated)
 
-**Recommendation:** Check for release automation by correlating CI files with release workflow patterns (e.g., `on: release:` trigger in GitHub Actions). Implement branch protection checks for GitLab (`/projects/{id}/protected_branches`) and Bitbucket.
+`HasBranchProtection` and `SignedReleases` depend on `GetPullRequestStats` and `GetProvenanceInfo`. PR stats are still stubs for GitLab/Bitbucket, but provenance now checks CI config files for signing tooling. **Branch protection remains unavailable for non-GitHub packages.**
+
+**Recommendation:** Implement branch protection checks for GitLab (`/projects/{id}/protected_branches`) and Bitbucket.
+
+---
+
+## Category 10: Package Maturity — WORKING
+
+Logic is structurally sound. Three sub-checks (age, staleness, cadence regularity) independently assess risk and take the maximum. Defaults to 1 risk point when publish/commit data is missing.
 
 ---
 
 ## Cross-Cutting Issue: GitLab and Bitbucket Structural Bias
 
-Any package hosted on GitLab or Bitbucket is biased toward higher risk scores regardless of actual security practices, because 6+ interface methods are stubs returning zero values. Data that would reduce risk is never collected.
+Any package hosted on GitLab or Bitbucket is biased toward higher risk scores, though the bias has been significantly reduced:
 
-**Affected categories for GitLab/Bitbucket:**
-- PublisherControl: signing always marked absent (+0.5)
-- Provenance: always max risk (+2)
+**Remaining affected categories for GitLab/Bitbucket:**
+- ~~PublisherControl: signing always marked absent (+0.5)~~ → **FIXED** (now treated as unchecked)
+- ~~Provenance: always max risk (+2)~~ → **PARTIALLY FIXED** (checks CI config for cosign/sigstore/SLSA)
 - Health: PR stats absent, CI quality capped at 5/10
 - Governance: issue response time unavailable
-- ReleaseSecurity: branch protection and signed releases always false
+- ReleaseSecurity: branch protection always false
 
-**Recommendation:** Create a milestone to implement stub methods for GitLab and Bitbucket, prioritizing the highest-impact ones (PR stats, provenance, branch protection).
+**Recommendation:** Create a milestone to implement remaining stub methods for GitLab and Bitbucket, prioritizing PR stats and branch protection.
 
 ---
 
 ## Priority Fix List
 
-| Priority | Category | Issue | Impact |
+| Priority | Category | Issue | Status |
 |----------|----------|-------|--------|
-| P0 | Dependency Sprawl | `dep.Source` always empty → lock file always skipped | Core check never runs |
-| P0 | Provenance | GitLab/Bitbucket always get max risk | All non-GitHub packages over-scored |
-| P1 | Ownership Changes | PyPI `Uploader` field doesn't exist | PyPI ownership detection broken |
-| P1 | Dependency Sprawl | npm download count always 0 | Fallback logic never works |
-| P1 | Publisher Control | npm email domain check skipped | Email risk never evaluated |
-| P2 | Health | GitLab/Bitbucket PR/CI stubs | Non-GitHub health always worst |
-| P2 | Governance | Issue response only for GitHub | Non-GitHub governance incomplete |
-| P2 | Release Security | `HasReleaseProcess` too broad | Manual releases count as CI |
-| P3 | Install Execution | Maven `HasInstallScripts` unreachable | Benign Maven scripts not scored |
-| P3 | Provenance | PyPI `has_sig` deprecated | PyPI sig check always false |
+| ~~P0~~ | ~~Provenance~~ | ~~GitLab/Bitbucket always get max risk~~ | **FIXED** (CI config checks added) |
+| ~~P1~~ | ~~Dependency Sprawl~~ | ~~npm download count always 0~~ | **FIXED** (fetchDownloadCount) |
+| ~~P1~~ | ~~Publisher Control~~ | ~~npm email domain check skipped~~ | **FIXED** (email format) |
+| ~~P1~~ | ~~Publisher Control~~ | ~~GitLab/Bitbucket signing penalty~~ | **FIXED** (return errors) |
+| ~~P3~~ | ~~Install Execution~~ | ~~Maven HasInstallScripts unreachable~~ | **FIXED** (set before danger check) |
+| ~~P3~~ | ~~Provenance~~ | ~~PyPI has_sig deprecated~~ | **FIXED** (PEP 740 attestations) |
+| P0 | Dependency Sprawl | `dep.Source` always empty → lock file always skipped | OPEN |
+| P1 | Ownership Changes | PyPI `Uploader` field doesn't exist | OPEN |
+| P2 | Health | GitLab/Bitbucket PR/CI stubs | OPEN |
+| P2 | Governance | Issue response only for GitHub | OPEN |
+| P2 | Release Security | `HasReleaseProcess` too broad | OPEN |
+| P2 | Release Security | GitLab/Bitbucket branch protection stubs | OPEN |
+| P3 | Install Execution | PyPI setup.py skipped without repo URL | OPEN |
+
+---
+
+## Alignment with Project Mission
+
+All 10 scoring categories have been validated against the project instructions (CLAUDE.md):
+
+| Category | Assesses Compromise Likelihood? | Academic Source | Verdict |
+|----------|--------------------------------|----------------|---------|
+| Publisher Control | Yes — account takeover risk | Ohm et al. 2020 | Aligned |
+| Ownership Changes | Yes — malicious acquisition | Ohm et al. 2020 | Aligned |
+| Release Anomalies | Yes — dormant reactivation | Ohm et al. 2020 | Aligned |
+| Install Execution | Yes — direct code execution | NDSS 2020 | Aligned |
+| Dependency Sprawl | Yes — attack surface | Zimmermann et al. 2019 | Aligned |
+| Provenance | Yes — build integrity | SLSA, Sigstore | Aligned |
+| Health | Yes — code review barriers | OSSF Scorecard | Aligned |
+| Governance | Yes — maintainer responsiveness | Ohm et al. 2020 | Aligned |
+| Release Security | Yes — publishing pipeline | SLSA, NDSS 2020 | Aligned |
+| Package Maturity | Yes — vetting & staleness | Ohm et al. 2020 | Aligned |
+
+**No categories track CVEs or known vulnerabilities. All assess supply chain compromise likelihood.**
