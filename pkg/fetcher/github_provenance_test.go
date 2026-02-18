@@ -547,3 +547,52 @@ func TestGetProvenanceInfo_InvalidURL(t *testing.T) {
 		t.Error("GetProvenanceInfo() expected error for non-GitHub URL, got nil")
 	}
 }
+
+// Test: GetProvenanceInfo returns clean result for repo with no provenance indicators
+// Justification: Ensures the absence of provenance indicators is correctly reported as
+//                all-false/zero values, not as errors — many legitimate packages simply
+//                haven't adopted SLSA/Sigstore yet.
+// Source: OSSF Scorecard methodology – https://github.com/ossf/scorecard
+// Methodology: Mock all GitHub API endpoints to return 404/empty for every check.
+// Result: All provenance fields are false/zero.
+func TestGetProvenanceInfo_NoIndicators(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/releases") {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]GitHubRelease{})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	info, err := client.GetProvenanceInfo("https://github.com/owner/repo")
+	if err != nil {
+		t.Fatalf("GetProvenanceInfo() unexpected error: %v", err)
+	}
+
+	if info.HasSLSAAttestation {
+		t.Error("expected HasSLSAAttestation=false")
+	}
+	if info.SLSALevel != "" {
+		t.Errorf("expected empty SLSALevel, got %q", info.SLSALevel)
+	}
+	if info.HasSigstoreSignature {
+		t.Error("expected HasSigstoreSignature=false")
+	}
+	if info.SignedReleaseCount != 0 {
+		t.Errorf("expected SignedReleaseCount=0, got %d", info.SignedReleaseCount)
+	}
+	if info.TotalReleaseCount != 0 {
+		t.Errorf("expected TotalReleaseCount=0, got %d", info.TotalReleaseCount)
+	}
+	if info.ReproducibleBuild {
+		t.Error("expected ReproducibleBuild=false")
+	}
+}

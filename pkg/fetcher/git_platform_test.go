@@ -180,9 +180,8 @@ func TestDetectPlatform(t *testing.T) {
 // Result: All representative real-world package repo URLs resolve to PlatformGitHub
 //         (all sampled packages host on GitHub).
 func TestDetectPlatformRealPackages(t *testing.T) {
-	// Repository URLs as they appear in npm/PyPI registry responses for packages
-	// listed in /Users/mike/Projects/mike-libraries/javascript/package.json and
-	// /Users/mike/Projects/mike-libraries/python/requirements.txt
+	// Repository URLs as they appear in npm/PyPI/Maven registry responses for packages
+	// listed in /Users/mike/Projects/mike-libraries/{javascript,python,java}
 	tests := []struct {
 		pkg     string
 		repoURL string
@@ -196,6 +195,9 @@ func TestDetectPlatformRealPackages(t *testing.T) {
 		{"helmet", "git+https://github.com/helmetjs/helmet.git", PlatformGitHub},
 		{"winston", "git+https://github.com/winstonjs/winston.git", PlatformGitHub},
 		{"jsonwebtoken", "git+https://github.com/auth0/node-jsonwebtoken.git", PlatformGitHub},
+		{"socket.io", "git+https://github.com/socketio/socket.io.git", PlatformGitHub},
+		{"passport", "git+https://github.com/jaredhanson/passport.git", PlatformGitHub},
+		{"sharp", "git+https://github.com/lovell/sharp.git", PlatformGitHub},
 
 		// Python packages (PyPI stores plain HTTPS URLs)
 		{"Flask", "https://github.com/pallets/flask", PlatformGitHub},
@@ -205,6 +207,23 @@ func TestDetectPlatformRealPackages(t *testing.T) {
 		{"SQLAlchemy", "https://github.com/sqlalchemy/sqlalchemy", PlatformGitHub},
 		{"cryptography", "https://github.com/pyca/cryptography", PlatformGitHub},
 		{"celery", "https://github.com/celery/celery", PlatformGitHub},
+		{"pydantic", "https://github.com/pydantic/pydantic", PlatformGitHub},
+		{"aiohttp", "https://github.com/aio-libs/aiohttp", PlatformGitHub},
+
+		// Java packages from mike-libraries/java/pom.xml
+		// Maven Central SCM URLs typically point to GitHub
+		{"spring-boot", "https://github.com/spring-projects/spring-boot", PlatformGitHub},
+		{"guava", "https://github.com/google/guava", PlatformGitHub},
+		{"jackson-databind", "https://github.com/FasterXML/jackson-databind", PlatformGitHub},
+		{"okhttp", "https://github.com/square/okhttp", PlatformGitHub},
+		{"lombok", "https://github.com/projectlombok/lombok", PlatformGitHub},
+		{"flyway-core", "https://github.com/flyway/flyway", PlatformGitHub},
+		{"caffeine", "https://github.com/ben-manes/caffeine", PlatformGitHub},
+		{"mapstruct", "https://github.com/mapstruct/mapstruct", PlatformGitHub},
+		// Apache commons hosted on Apache git infrastructure
+		{"commons-lang3", "https://gitbox.apache.org/repos/asf/commons-lang.git", PlatformApache},
+		{"commons-io", "https://gitbox.apache.org/repos/asf/commons-io.git", PlatformApache},
+		{"commons-collections4", "https://gitbox.apache.org/repos/asf/commons-collections.git", PlatformApache},
 	}
 
 	for _, tt := range tests {
