@@ -1877,12 +1877,14 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 // Source: "Measuring the Health of Open Source Software Ecosystems" (Manikas & Hansen, 2013)
 //         "Backstabber's Knife Collection" (Ohm et al., 2020) - maintainer compromise patterns
 //         OSSF Scorecard methodology - https://github.com/ossf/scorecard
-// Methodology: Three-component scoring (bus factor, code review, CI quality) with OSSF
+// Methodology: Three-component scoring (bus factor, code review, CI presence) with OSSF
 //              Scorecard supplementation when direct API data is unavailable. TopContributorPct
 //              gates the bus factor point to prevent inflated bus factor from masking concentration.
+//              CI presence (quality >= 3 or HasCI) earns a point because automated builds are
+//              a meaningful supply chain signal even without confirmed test coverage.
 // Result:
 //   - 0 risk points (best): Distributed development (bus factor >= 3, <90% concentration),
-//                            code reviews enforced, high-quality CI with tests
+//                            code reviews enforced, CI present
 //   - 1 risk point (moderate): Two of three components satisfied
 //   - 2 risk points (worst): At most one component satisfied (concentrated development,
 //                             no reviews, no CI)
@@ -1995,8 +1997,10 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 	// Component 3: CI Quality
 	//
 	// Justification: CI with automated tests catches malicious or buggy code before release.
-	// High-quality CI (score >= 7) earns a point; CI presence without quality assessment
-	// also earns a point since CI existence is itself a meaningful supply chain signal.
+	// CI presence is itself a meaningful supply chain signal — automated builds reduce
+	// the window for unverified code to reach users. A point is awarded when CI is
+	// detected (quality >= 3, which is the base score for CI existence, or HasCI flag).
+	// High-quality CI (>= 7) is noted in evidence but the point threshold is CI presence.
 	// When neither direct CI data nor quality is available, OSSF "CI-Tests" supplements.
 	// Source: "Continuous Integration, Delivery and Deployment: A Systematic Review" (Shahin et al., 2017)
 	if result.Metadata.CIQualityScore >= 7 {
@@ -2007,20 +2011,19 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 			evidence = append(evidence, "CI includes tests")
 		}
 		verified = true
-	} else if result.Metadata.CIQualityScore >= 4 {
-		// Moderate CI — not enough for a point but acknowledged
-		evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (moderate)", result.Metadata.CIQualityScore))
-		verified = true
-	} else if result.Metadata.CIQualityScore > 0 {
-		// Basic CI only
-		evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (basic)", result.Metadata.CIQualityScore))
-		verified = true
-	} else if result.Metadata.HasCI {
-		// CI detected but quality not assessed (e.g., API failure or non-GitHub platform).
-		// CI presence is still a meaningful signal for supply chain integrity —
-		// automated builds reduce the window for unverified code to reach users.
+	} else if result.Metadata.CIQualityScore >= 3 || result.Metadata.HasCI {
+		// CI is present. AnalyzeCIQuality gives a base score of 3 for CI existence,
+		// so quality >= 3 means CI was detected. The HasCI flag catches cases where
+		// quality assessment failed entirely (e.g., API rate limiting) but CI config
+		// files were found. Either way, CI presence earns a point.
 		points++
-		evidence = append(evidence, fmt.Sprintf("CI detected: %v (quality not assessed)", result.Metadata.CISystems))
+		if result.Metadata.CIQualityScore >= 4 {
+			evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (moderate)", result.Metadata.CIQualityScore))
+		} else if result.Metadata.CIQualityScore > 0 {
+			evidence = append(evidence, fmt.Sprintf("CI quality: %d/10 (basic)", result.Metadata.CIQualityScore))
+		} else {
+			evidence = append(evidence, fmt.Sprintf("CI detected: %v (quality not assessed)", result.Metadata.CISystems))
+		}
 		verified = true
 	} else {
 		// Fallback: OSSF Scorecard "CI-Tests" check

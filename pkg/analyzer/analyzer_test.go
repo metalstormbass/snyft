@@ -2092,16 +2092,16 @@ func TestScoreHealth_MediumRisk(t *testing.T) {
 			wantRisk: 1, // Medium risk - 2 points (CI + reviews, but no bus factor point)
 		},
 		{
-			name: "Good bus factor with high review rate but basic CI",
+			name: "Good bus factor with moderate CI but no reviews",
 			result: &models.AnalysisResult{
 				Metadata: models.PackageMetadata{
 					BusFactor:      4,
 					HasCI:          true,
 					CIQualityScore: 4,
-					CodeReviewRate: 80,
+					CodeReviewRate: 0,
 				},
 			},
-			wantRisk: 1, // Medium risk - 2 points (bus factor + reviews)
+			wantRisk: 1, // Medium risk - 2 points (bus factor + CI presence)
 		},
 	}
 
@@ -2166,6 +2166,18 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 				},
 			},
 			wantRisk: 0, // Low risk
+		},
+		{
+			name: "Good bus factor with high review rate and basic CI",
+			result: &models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					BusFactor:      4,
+					HasCI:          true,
+					CIQualityScore: 4,
+					CodeReviewRate: 80,
+				},
+			},
+			wantRisk: 0, // Low risk - 3 points (bus factor + CI presence + reviews)
 		},
 	}
 
@@ -2713,14 +2725,14 @@ func TestScoreHealth_CIQualityAssessment(t *testing.T) {
 			hasCI:          true,
 			ciQualityScore: 5,
 			ciHasTests:     false,
-			expectsPoint:   false,
+			expectsPoint:   true, // CI presence earns a point
 		},
 		{
 			name:           "Basic CI only",
 			hasCI:          true,
 			ciQualityScore: 3,
 			ciHasTests:     false,
-			expectsPoint:   false,
+			expectsPoint:   true, // CI presence earns a point
 		},
 		{
 			name:           "No CI",
