@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 // This file contains integration tests that make REAL API calls to Claude.

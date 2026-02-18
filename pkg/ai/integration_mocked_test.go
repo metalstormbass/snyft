@@ -216,4 +216,93 @@ func TestMockClient_MultipleResponses(t *testing.T) {
 	assert.Equal(t, "Response 3", msg3.Content[0].Text)
 }
 
+// Test: MatchAgainstKnownAttacks ecosystem filtering (no API calls needed)
+// Justification: PyPI packages should be filtered out before API calls since all
+//                KnownAttacks are npm-ecosystem. This validates the filter logic
+//                without requiring an API key.
+// Source: Cross-ecosystem filtering requirements for attack pattern matching
+// Methodology: Submit a PyPI package through MatchAgainstKnownAttacks with a real
+//              Client (no API calls will be made since all attacks are npm-only).
+// Result: Should return 0 matches — PyPI package correctly filtered from npm attack DB
+func TestMatchAgainstKnownAttacks_EcosystemFilter_Mocked(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+	defer client.Close()
+
+	req := AttackMatchRequest{
+		PackageName: "requests",
+		Ecosystem:   models.EcosystemPyPI,
+		AnalysisResult: models.AnalysisResult{
+			RiskLevel: "MEDIUM",
+			RiskScore: 55,
+			RiskFactors: []string{
+				"Single primary maintainer",
+			},
+			Metadata: models.PackageMetadata{
+				Maintainers: []string{"primary-author"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 6,
+				RiskLevel:  "MEDIUM",
+			},
+		},
+		Threshold: 0.3, // Low threshold to verify filtering, not scoring
+	}
+
+	ctx := context.Background()
+	matches, err := MatchAgainstKnownAttacks(ctx, client, req)
+	require.NoError(t, err, "MatchAgainstKnownAttacks should not error")
+
+	// All KnownAttacks are npm; PyPI package should be filtered out before any API call
+	assert.Equal(t, 0, len(matches),
+		"PyPI package should match 0 npm-only attack patterns; got %d", len(matches))
+}
+
+// Test: MatchAgainstKnownAttacks with empty known attacks ecosystem
+// Justification: Verifies that an ecosystem with no known attacks returns empty
+// Source: Edge case handling for attack pattern matching
+// Methodology: Use Maven ecosystem which has no entries in KnownAttacks
+// Result: Should return 0 matches without errors
+func TestMatchAgainstKnownAttacks_NoMatchingEcosystem_Mocked(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.APIKey = "test-key"
+	client, err := NewClient(cfg)
+	require.NoError(t, err)
+	defer client.Close()
+
+	req := AttackMatchRequest{
+		PackageName: "com.google.guava:guava",
+		Ecosystem:   models.EcosystemMaven,
+		AnalysisResult: models.AnalysisResult{
+			RiskLevel: "LOW",
+			RiskScore: 15,
+		},
+		Threshold: 0.1,
+	}
+
+	ctx := context.Background()
+	matches, err := MatchAgainstKnownAttacks(ctx, client, req)
+	require.NoError(t, err)
+	assert.Equal(t, 0, len(matches), "Maven package should match 0 npm-only attack patterns")
+}
+
+// Test: BatchExplain input validation
+// Justification: Mismatched input arrays should return a clear error
+// Source: Defensive programming for batch operations
+// Methodology: Pass arrays of different lengths to BatchExplain
+// Result: Should return an error for mismatched lengths
+func TestBatchExplain_InputValidation_Mocked(t *testing.T) {
+	explainer := NewExplainer(&ExplainerConfig{})
+
+	packages := []string{"pkg-a", "pkg-b"}
+	ecosystems := []models.Ecosystem{models.EcosystemNPM} // Mismatched length
+	results := []models.AnalysisResult{{RiskLevel: "LOW"}, {RiskLevel: "HIGH"}}
+
+	_, err := explainer.BatchExplain(context.Background(), packages, ecosystems, results)
+	assert.Error(t, err, "Should return error for mismatched input lengths")
+	assert.Contains(t, err.Error(), "mismatched input lengths")
+}
+
 // Note: countSentences and min helpers are defined in other test files
