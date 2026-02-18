@@ -120,13 +120,15 @@ func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repo
 //	Total 0 points = 2 risk (poor governance)
 //	Override: Archived repos and abandoned packages always get 2 risk
 func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.CategoryScore {
+	const govSource = " [Source: OSSF Scorecard; Backstabber's Knife Collection (Ohm et al., 2020)]"
+
 	// Early return if no repository URL
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
 			Description: "No repository available for governance assessment",
-			Evidence:    "No source repository URL found",
+			Evidence:    "No source repository URL found" + govSource,
 			Verified:    false,
 		}
 	}
@@ -137,7 +139,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Score:       0,
 			RiskPoints:  2,
 			Description: "Archived repository: no active governance",
-			Evidence:    "Repository is archived and no longer accepting contributions",
+			Evidence:    "Repository is archived and no longer accepting contributions" + govSource,
 			Verified:    true,
 		}
 	}
@@ -151,7 +153,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 				Score:       0,
 				RiskPoints:  2,
 				Description: "Abandoned project: high risk of compromise",
-				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince),
+				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince) + govSource,
 				Verified:    true,
 			}
 		}
@@ -165,7 +167,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Score:       0,
 			RiskPoints:  1,
 			Description: "Unable to verify governance",
-			Evidence:    "Could not fetch repository information",
+			Evidence:    "Could not fetch repository information" + govSource,
 			Verified:    false,
 		}
 	}
@@ -283,7 +285,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		Score:       2 - riskPoints, // Invert for display
 		RiskPoints:  riskPoints,
 		Description: description,
-		Evidence:    strings.Join(evidenceParts, "; "),
+		Evidence:    strings.Join(evidenceParts, "; ") + govSource,
 		Verified:    true,
 	}
 }
