@@ -478,6 +478,10 @@ type PyPIFullResponse struct {
 
 type PyPIReleaseFile struct {
 	Filename   string    `json:"filename"`
-	UploadTime time.Time `json:"upload_time"`
+	// upload_time_iso_8601 is preferred over upload_time because it includes a timezone
+	// indicator (e.g. "2010-04-16T14:29:37.458396Z") that Go's time.Time can unmarshal.
+	// The plain upload_time field ("2010-04-16T14:29:37") lacks a timezone suffix and
+	// causes json.Unmarshal to fail with RFC3339 parse errors on historical PyPI data.
+	UploadTime time.Time `json:"upload_time_iso_8601"`
 	Uploader   string    `json:"uploader"`
 }
