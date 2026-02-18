@@ -764,3 +764,42 @@ func TestScoreReleaseSecurity_RealWorldProfile_NPMSingleMaintainerUtility(t *tes
 		t.Error("Expected verified score (repository URL present)")
 	}
 }
+
+// Test: Real-world profile - security-sensitive npm package (jsonwebtoken/bcryptjs pattern)
+// Justification: Security-sensitive npm packages from mike-libraries (jsonwebtoken, bcryptjs,
+//                passport) handle authentication and cryptography. These often have CI-based
+//                publishing and some branch protection, but their small team sizes mean
+//                limited reviewer coverage and no signed releases.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - security-critical packages
+//         are high-value targets for supply chain attacks
+// Methodology: Simulate metadata of a security-sensitive npm package: CI releases, partial
+//              branch protection, no signing, no required reviews
+// Result: 1 risk point - has CI but missing signing and review requirements
+func TestScoreReleaseSecurity_RealWorldProfile_SecuritySensitiveNPMPackage(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/auth-lib/jwt-package",
+		Metadata: models.PackageMetadata{
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      false,
+			RequiredReviewers:   0,
+			CISystems:           []string{"GitHub Actions"},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// 2 points (CI + branch protection) → riskPoints=1 (moderate)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for security-sensitive npm package, got %d", score.RiskPoints)
+	}
+
+	if !strings.Contains(score.Evidence, "No required code reviews") {
+		t.Errorf("Expected evidence to flag missing code reviews, got: %s", score.Evidence)
+	}
+
+	if !score.Verified {
+		t.Error("Expected verified score")
+	}
+}

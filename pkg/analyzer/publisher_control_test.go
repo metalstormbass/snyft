@@ -1135,3 +1135,107 @@ func TestPackageProfile_NPM_Dotenv_SingleMaintainer_HighRisk(t *testing.T) {
 		t.Errorf("dotenv: Expected HIGH risk, got %s", analysis.RiskLevel)
 	}
 }
+
+// ============================================================
+// Additional package profiles from /Users/mike/Projects/mike-libraries
+// Packages: axios (npm), pydantic (PyPI), guava (Maven)
+// ============================================================
+
+// Test: axios (npm) - small team, personal emails, no signing
+// Profile: ~3 maintainers, personal email domains, personal GitHub accounts
+// Source: npm/axios - popular HTTP client, moderate team size
+// Justification: Popular utility with limited maintainers creates moderate supply chain risk
+// Result: MEDIUM risk (1 point) - small team + personal emails
+func TestPackageProfile_NPM_Axios_SmallTeam_MediumRisk(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "axios",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{
+				"dev1@gmail.com",
+				"dev2@gmail.com",
+				"dev3@gmail.com",
+			},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.MaintainerCount != 3 {
+		t.Errorf("axios: Expected 3 maintainers, got %d", analysis.MaintainerCount)
+	}
+	// Score: 0.3 (3 maintainers ≤3) + 0.3 (personal emails) + 0.5 (no signing) = 1.1 → 1 point
+	if analysis.RiskPoints != 1 {
+		t.Errorf("axios: Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("axios: Expected MEDIUM risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: pydantic (PyPI) - popular modern Python library, moderate team
+// Profile: 3 maintainers, mixed personal/org email domains
+// Source: pydantic/pydantic on GitHub - data validation library
+// Justification: Popular library with moderate maintainer count and mixed email domains
+//   creates moderate supply chain risk from the mixed-domain weakest-link model
+// Result: MEDIUM risk (1 point) - small team + mixed domains
+func TestPackageProfile_PyPI_Pydantic_ModerateTeam_MediumRisk(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "pydantic",
+			Ecosystem: models.EcosystemPyPI,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{
+				"dev1@pydantic.dev",
+				"dev2@gmail.com",
+				"dev3@pydantic.dev",
+			},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.MaintainerCount != 3 {
+		t.Errorf("pydantic: Expected 3 maintainers, got %d", analysis.MaintainerCount)
+	}
+	// 3 maintainers (0.3) + mixed: has expirable gmail (0.3) + no signing (0.5) = 1.1 → 1 point
+	if analysis.RiskPoints != 1 {
+		t.Errorf("pydantic: Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("pydantic: Expected MEDIUM risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: guava (Maven) - Google org, many committers, signed
+// Profile: Google org, 20+ committers, org emails, signed releases
+// Source: google/guava on GitHub - Google core Java library
+// Justification: Large corporate org with formal governance, many maintainers,
+//   and signed releases provides strong institutional accountability
+// Result: LOW risk (0 points) - corporate org + many maintainers + signing
+func TestPackageProfile_Maven_Guava_GoogleOrg_LowRisk(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:   20,
+		SingleMaintainer:  false,
+		IsOrganization:    true,
+		OrgName:           "google",
+		HasOrgDomains:     true,
+		HasSignedCommits:  true,
+		HasSignedReleases: true,
+	}
+	analysis.calculateRiskScore()
+
+	if analysis.RiskPoints != 0 {
+		t.Errorf("guava: Expected 0 risk points, got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("guava: Expected LOW risk, got %s", analysis.RiskLevel)
+	}
+}
