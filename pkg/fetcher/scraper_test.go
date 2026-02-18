@@ -229,11 +229,17 @@ func TestMavenScrapingFallback_Forbidden(t *testing.T) {
 	_, err := client.GetPackageInfo("com.example:test-artifact")
 
 	// Maven has 3 fallback strategies (direct, search, scrape).
-	// With mock server returning 403 for both, at least two strategies
-	// should have been attempted.
-	if err == nil {
-		t.Log("One of Maven's fallback strategies succeeded")
-		return
+	// With mock server returning 403 for both API strategies, the third
+	// strategy (scraping) hits the real Maven Central site. Either:
+	// - scraping succeeds (real network) → result is non-nil
+	// - scraping fails → error is from final fallback, not first API call
+	// Both outcomes are acceptable; the key invariant is that we never get
+	// a raw "403" error from the first attempt.
+	if err != nil {
+		errMsg := err.Error()
+		if errMsg == "Maven API returned status 403" {
+			t.Error("GetPackageInfo() returned first-attempt API error instead of exercising fallback strategies")
+		}
 	}
 }
 

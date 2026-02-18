@@ -292,3 +292,74 @@ func TestCheckPyPISignatures_PGPSignatureFieldOnly(t *testing.T) {
 		t.Errorf("CheckPyPISignatures() signedCount = %d, want 1", signedCount)
 	}
 }
+
+// Test: CheckPyPISignatures returns error for 404 not found
+// Justification: Non-existent package names (e.g. typosquatting candidates)
+//                must be clearly distinguished from packages without signatures
+// Source: PyPI JSON API — 404 for unknown packages
+// Methodology: Mock server returns 404 Not Found
+// Result: Returns error indicating package was not found
+func TestCheckPyPISignatures_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	_, _, _, err := client.CheckPyPISignatures("nonexistent-package-zzz")
+	if err == nil {
+		t.Error("CheckPyPISignatures() expected error for 404, got nil")
+	}
+}
+
+// Test: CheckPyPISignatures returns error for malformed JSON
+// Justification: Corrupt or tampered API responses must be detected rather
+//                than silently parsed into zero-value structs that would
+//                falsely report "no signatures"
+// Source: Defense-in-depth principle — untrusted input validation
+// Methodology: Mock server returns invalid JSON body with 200 status
+// Result: Returns error indicating JSON decode failure
+func TestCheckPyPISignatures_MalformedJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	_, _, _, err := client.CheckPyPISignatures("any-package")
+	if err == nil {
+		t.Error("CheckPyPISignatures() expected error for malformed JSON, got nil")
+	}
+}
+
+// Test: CheckPyPISignatures returns error for 429 Too Many Requests
+// Justification: Rate-limited responses should produce errors, not silently
+//                report zero signatures (which would inflate risk scores)
+// Source: PyPI service policies — rate limiting behavior
+// Methodology: Mock server returns 429 status
+// Result: Returns error with status code in message
+func TestCheckPyPISignatures_RateLimited(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	_, _, _, err := client.CheckPyPISignatures("any-package")
+	if err == nil {
+		t.Error("CheckPyPISignatures() expected error for 429, got nil")
+	}
+}
