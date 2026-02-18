@@ -50,7 +50,8 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch PyPI package: %w", err)
+		// Network error (timeout, DNS, connection refused) — try scraping fallback
+		return c.scrapePyPIPackageInfo(packageName)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

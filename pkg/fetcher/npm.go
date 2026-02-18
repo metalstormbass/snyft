@@ -55,7 +55,8 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch npm package: %w", err)
+		// Network error (timeout, DNS, connection refused) — try scraping fallback
+		return c.scrapeNPMPackageInfo(packageName)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
