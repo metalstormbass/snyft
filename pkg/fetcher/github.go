@@ -99,6 +99,16 @@ func NewGitHubClient() *GitHubClient {
 	}
 }
 
+// NewGitHubClientWithBaseURL creates a GitHubClient pointing at a custom API base URL.
+// This is primarily used for testing with httptest servers.
+func NewGitHubClientWithBaseURL(baseURL string) *GitHubClient {
+	return &GitHubClient{
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+		baseURL:    baseURL,
+		cache:      newRepoCache(),
+	}
+}
+
 // GetRepositoryInfo fetches repository information from GitHub
 func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
@@ -440,11 +450,64 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	exists := resp.StatusCode == http.StatusOK
-	if c.cache != nil {
-		c.cache.setFileExists(cacheKey, exists)
+	if resp.StatusCode == http.StatusOK {
+		if c.cache != nil {
+			c.cache.setFileExists(cacheKey, true)
+		}
+		return true
 	}
-	return exists
+
+	// Rate-limited: try raw.githubusercontent.com fallback (not subject to API rate limits).
+	// Do NOT cache false for rate-limited responses — the file may exist but the API
+	// refused to answer. A cached false here would poison subsequent checks.
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		exists := c.checkFileViaRawURL(owner, repo, path)
+		if exists && c.cache != nil {
+			c.cache.setFileExists(cacheKey, true)
+		}
+		return exists
+	}
+
+	// File genuinely not found (404) or other client error — safe to cache.
+	if c.cache != nil {
+		c.cache.setFileExists(cacheKey, false)
+	}
+	return false
+}
+
+// checkFileViaRawURL checks if a file exists by issuing a HEAD request to
+// raw.githubusercontent.com, which is served by a CDN and is not subject to
+// the GitHub API rate limit. This is used as a fallback when the API returns
+// 403/429.
+func (c *GitHubClient) checkFileViaRawURL(owner, repo, path string) bool {
+	for _, branch := range []string{"main", "master"} {
+		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, path)
+		req, err := http.NewRequest("HEAD", rawURL, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return true
+		}
+	}
+	return false
+}
+
+// FileExistsInRepo checks if a file exists in a GitHub repository using a
+// cached HEAD request. This is more efficient than GetFileContent when only
+// file existence matters (no content needed). Falls back to
+// raw.githubusercontent.com when the API is rate-limited.
+func (c *GitHubClient) FileExistsInRepo(repoURL, filePath string) bool {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return false
+	}
+	return c.fileExists(owner, repo, filePath)
 }
 
 // GitHub API response structures
