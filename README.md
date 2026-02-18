@@ -67,13 +67,27 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 | **6. Provenance** | No SLSA/Sigstore/provenance attestations |
 | **7. Health** | Low bus factor, no CI, no code reviews |
 | **8. Governance** | No SECURITY.md, slow issue response |
-| **9. Release Security** | Manual publishing, no branch protection |
+| **9. Release Security** | Manual publishing, no branch protection, CI workflow risks |
 | **10. Package Maturity** | New/abandoned package, irregular updates |
 
 **Total Score**: 0-20 points
 - **0-5**: Low risk
 - **6-14**: Medium risk
 - **15-20**: High risk
+
+## Typosquatting Detection
+
+Snyft checks package names against curated lists of popular packages across npm, PyPI, and Maven to detect potential typosquatting attacks. Seven detection techniques are used:
+
+- **Character omission/insertion** — `lodas` vs `lodash`
+- **Character substitution** — `lodesh` vs `lodash`
+- **Adjacent transposition** — `reqeusts` vs `requests`
+- **Homoglyph substitution** — `1odash` vs `lodash`
+- **Separator confusion** — `crossenv` vs `cross-env`
+- **Scope manipulation** — `@evil/react` vs `react`
+- **Repeated characters** — `expresss` vs `express`
+
+Typosquatting findings are reported as informational warnings and do not affect the 0-20 risk score.
 
 ## Supported Ecosystems
 
