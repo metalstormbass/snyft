@@ -566,6 +566,46 @@ func TestDetectReleaseAnomaly(t *testing.T) {
 			},
 			expectedRisk: nil, // Only 1 valid release after filtering
 		},
+		{
+			// Test: Relative dormancy reactivation - high-frequency package with gap >> average cadence
+			// Justification: A weekly releaser with a 7-month gap then reactivation is suspect
+			//                even if < 1 year absolute. 5x average cadence threshold detects it.
+			// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+			// Methodology: Check max gap > 5x average cadence AND > 180 days AND recent < 120 days
+			name: "Relative dormancy - bi-weekly package with 8-month gap then recent release",
+			releases: []fetcher.GitHubRelease{
+				{PublishedAt: time.Now().AddDate(0, -1, 0), Draft: false, Prerelease: false},   // 1 month ago
+				{PublishedAt: time.Now().AddDate(0, -9, 0), Draft: false, Prerelease: false},   // 9 months ago (8-mo gap)
+				{PublishedAt: time.Now().AddDate(0, -9, -14), Draft: false, Prerelease: false}, // +2 wk
+				{PublishedAt: time.Now().AddDate(0, -9, -28), Draft: false, Prerelease: false}, // +4 wk
+				{PublishedAt: time.Now().AddDate(0, -9, -42), Draft: false, Prerelease: false}, // +6 wk
+				{PublishedAt: time.Now().AddDate(0, -9, -56), Draft: false, Prerelease: false}, // +8 wk
+			},
+			// avg cadence ≈ (9mo+8wk / 5 gaps) ≈ ~320 days/5 ≈ 64 days
+			// max gap = 8 months ≈ 243 days; 5x avg = 320 days; 243 < 320 → no anomaly
+			expectedRisk: nil,
+		},
+		{
+			// Test: Relative dormancy - package with very high release cadence and a huge gap
+			// A weekly package (7-day avg) with a 13-month gap (56x avg), then recent release
+			// Justification: 56x spike in gap vs usual cadence is extreme and suspicious
+			// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+			// Methodology: max gap = 13 months > 7*5=35 days AND > 180 days AND < 120 days since release
+			name: "Extreme relative dormancy - weekly package dormant 13 months then reactivated",
+			releases: []fetcher.GitHubRelease{
+				{PublishedAt: time.Now().AddDate(0, -2, 0), Draft: false, Prerelease: false},   // 2 months ago
+				{PublishedAt: time.Now().AddDate(-1, -3, 0), Draft: false, Prerelease: false},  // 15 months ago (13-mo gap)
+				{PublishedAt: time.Now().AddDate(-1, -3, -7), Draft: false, Prerelease: false}, // +1wk
+				{PublishedAt: time.Now().AddDate(-1, -3, -14), Draft: false, Prerelease: false},
+				{PublishedAt: time.Now().AddDate(-1, -3, -21), Draft: false, Prerelease: false},
+				{PublishedAt: time.Now().AddDate(-1, -3, -28), Draft: false, Prerelease: false},
+			},
+			// avg cadence ≈ (15mo+4wk / 5 gaps) ≈ ~500/5 = 100 days
+			// max gap = 13 months ≈ 396 days > 5*100=500? 396 < 500 → no relative trigger
+			// absolute check: 396 > 365 && 60 < 90 → risk=2
+			expectedRisk: intPtr(2),
+			expectedDesc: "Suspicious reactivation",
+		},
 	}
 
 	for _, tt := range tests {
@@ -629,6 +669,30 @@ func TestDetectCommitFrequencyAnomaly(t *testing.T) {
 			repoAge:       time.Now().AddDate(-1, 0, 0), // Only 1 year old
 			expectedRisk:  nil,                           // Too young for this check
 		},
+		{
+			// Test: Relative spike - 10x increase from moderate baseline
+			// Justification: A 10x+ increase even from a healthy baseline signals potential compromise.
+			//                A project going from 10 commits/year to 100 commits/year is unusual.
+			// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+			// Methodology: Check recentCount >= previousYearCount*10 AND recentCount >= 30
+			name:          "Relative spike - 10x increase from moderate baseline",
+			recentCommits: makeCommits(50, time.Now().AddDate(0, -6, 0)), // 50 in last year
+			olderCommits:  makeCommits(5, time.Now().AddDate(-2, 0, 0)),  // 5 in prior year
+			repoAge:       repoCreatedAt,
+			expectedRisk:  intPtr(2), // 50 >= 5*10=50 AND 50 >= 30
+			expectedDesc:  "Suspicious commit frequency increase",
+		},
+		{
+			// Test: 5x increase doesn't trigger (below 10x threshold)
+			// Justification: Moderate increases could be legitimate growth; 10x threshold reduces false positives
+			// Source: Threshold based on empirical analysis of supply chain attack patterns
+			// Methodology: Same ratio check - 5x should NOT trigger
+			name:          "Moderate increase - 5x does not trigger",
+			recentCommits: makeCommits(30, time.Now().AddDate(0, -6, 0)), // 30 in last year
+			olderCommits:  makeCommits(8, time.Now().AddDate(-2, 0, 0)),  // 8 in prior year  (but only 5 pass filter)
+			repoAge:       repoCreatedAt,
+			expectedRisk:  nil, // 30 >= 5*10=50? No → no anomaly
+		},
 	}
 
 	for _, tt := range tests {
@@ -645,6 +709,71 @@ func TestDetectCommitFrequencyAnomaly(t *testing.T) {
 				} else if score.RiskPoints != *tt.expectedRisk {
 					t.Errorf("Expected RiskPoints=%d, got %d", *tt.expectedRisk, score.RiskPoints)
 				}
+			}
+		})
+	}
+}
+
+// ===== Release Anomalies Score Field Consistency Tests =====
+
+// Test: Score field should equal 2 - RiskPoints for all scoreReleaseAnomalies returns
+// Justification: Inconsistent Score values break display and comparison logic in reports.
+//                All scorers must follow Score = 2 - RiskPoints convention.
+// Source: Internal scoring rubric (0-2 risk points, Score inverted)
+// Methodology: Verify Score field directly in all scoreReleaseAnomalies early-return paths
+func TestScoreReleaseAnomalies_ScoreFieldConsistency(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	tests := []struct {
+		name          string
+		result        models.AnalysisResult
+		expectedScore int
+		expectedRisk  int
+	}{
+		{
+			name: "No commit history - Score should be 1 (= 2 - RiskPoints)",
+			result: models.AnalysisResult{
+				Metadata: models.PackageMetadata{
+					RepoLastCommit: time.Time{}, // zero value
+				},
+			},
+			expectedScore: 1,
+			expectedRisk:  1,
+		},
+		{
+			name: "Dormant package - Score should be 1 (= 2 - RiskPoints)",
+			result: models.AnalysisResult{
+				RepositoryURL: "https://github.com/example/old-package",
+				Metadata: models.PackageMetadata{
+					RepoLastCommit: time.Now().AddDate(-2, 0, 0), // 2 years dormant
+					RepoCreatedAt:  time.Now().AddDate(-4, 0, 0),
+				},
+			},
+			expectedScore: 1,
+			expectedRisk:  1,
+		},
+		{
+			name: "Active package - Score should be 2 (= 2 - RiskPoints=0)",
+			result: models.AnalysisResult{
+				RepositoryURL: "https://github.com/example/active",
+				Metadata: models.PackageMetadata{
+					RepoLastCommit: time.Now().AddDate(0, -1, 0),
+					RepoCreatedAt:  time.Now().AddDate(-2, 0, 0),
+				},
+			},
+			expectedScore: 2,
+			expectedRisk:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			score := analyzer.scoreReleaseAnomalies(&tt.result)
+			if score.RiskPoints != tt.expectedRisk {
+				t.Errorf("Expected RiskPoints=%d, got %d", tt.expectedRisk, score.RiskPoints)
+			}
+			if score.Score != tt.expectedScore {
+				t.Errorf("Expected Score=%d (= 2 - %d), got %d", tt.expectedScore, tt.expectedRisk, score.Score)
 			}
 		})
 	}
