@@ -2269,9 +2269,9 @@ func TestCalculateSupplyChainScore_OwnershipChangesIntegration(t *testing.T) {
 		t.Errorf("OwnershipChanges risk points = %d, want 0 (evidence: %s)", ownershipScore.RiskPoints, ownershipScore.Evidence)
 	}
 
-	// Total score should be in valid range (10 categories × 0-2 points = 0-20)
-	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 20 {
-		t.Errorf("TotalScore = %v, want 0-20", result.SupplyChainScore.TotalScore)
+	// Total score should be in valid range (11 categories × 0-2 points = 0-22)
+	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 22 {
+		t.Errorf("TotalScore = %v, want 0-22", result.SupplyChainScore.TotalScore)
 	}
 }
 

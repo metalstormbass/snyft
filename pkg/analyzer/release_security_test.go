@@ -284,12 +284,12 @@ func TestScoreReleaseSecurity_ModerateRisk_AllControlsExceptSigning(t *testing.T
 // Justification: Self-hosted runners are not controlled by a trusted cloud provider.
 //                An attacker who compromises the runner machine gains full control over
 //                the build environment and can inject malicious code into published artifacts.
-//                The penalty reduces the effective security score even when CI is present.
 // Source: SLSA Build L3 - https://slsa.dev/spec/v1.0/levels
 //         "Backstabber's Knife Collection" (Ohm et al., 2020) - https://arxiv.org/abs/2005.09535
-// Methodology: Check HasSelfHosted=true with CI and branch protection present; verify penalty applied
-// Result: 2 risk points - self-hosted runner erodes value of CI-based publishing
-func TestScoreReleaseSecurity_HighRisk_SelfHostedRunnerPenalty(t *testing.T) {
+// Methodology: Check HasSelfHosted=true; verify CI pipeline security category assigns risk points
+// Result: Self-hosted runner detected as CI pipeline security risk
+// NOTE: Self-hosted runner penalty is now assessed in CI Pipeline Security category (not Release Security)
+func TestScoreReleaseSecurity_SelfHostedRunnerNoLongerPenalizesReleaseSecurity(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/selfhosted/package",
@@ -298,7 +298,8 @@ func TestScoreReleaseSecurity_HighRisk_SelfHostedRunnerPenalty(t *testing.T) {
 			HasBranchProtection: true,  // Has branch protection
 			SignedReleases:      false,
 			RequiredReviewers:   0,
-			HasSelfHosted:       true, // Self-hosted runner: erodes CI security
+			HasSelfHosted:       true,
+			HasCI:               true,
 			BuildSystems: []models.BuildSystemInfo{
 				{
 					Platform:      "GitHub Actions",
@@ -311,44 +312,37 @@ func TestScoreReleaseSecurity_HighRisk_SelfHostedRunnerPenalty(t *testing.T) {
 		},
 	}
 
-	score := analyzer.scoreReleaseSecurity(result)
-
-	// Points: CI(+1) + BranchProtection(+1) + SelfHosted(-1) = 1 → riskPoints=2
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for self-hosted runner with partial controls, got %d", score.RiskPoints)
+	// Release Security should NOT be penalized for self-hosted (that's CI Pipeline Security now)
+	relScore := analyzer.scoreReleaseSecurity(result)
+	// CI(+1) + BranchProtection(+1) = 2 points → riskPoints=1
+	if relScore.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for release security (2 of 4 controls), got %d", relScore.RiskPoints)
 	}
 
-	if score.Score > 1 {
-		t.Errorf("Expected low score for self-hosted runner, got %d", score.Score)
-	}
-
-	if !score.Verified {
-		t.Error("Expected verified score")
-	}
-
-	// Evidence must mention self-hosted runner as a risk signal
-	if score.Evidence == "" {
-		t.Error("Expected evidence to be populated for self-hosted runner")
+	// CI Pipeline Security SHOULD penalize for self-hosted
+	ciScore := analyzer.scoreCIPipelineSecurity(result)
+	if ciScore.RiskPoints < 1 {
+		t.Errorf("Expected CI pipeline security to penalize self-hosted runner, got %d risk points", ciScore.RiskPoints)
 	}
 }
 
-// Test: Package with all 4 controls but self-hosted CI runner
-// Justification: Even comprehensive security controls are partially undermined by self-hosted runners.
-//                Scoring reflects that self-hosted = uncontrolled build environment regardless of
-//                branch protection, reviews, or signed releases.
-// Source: SLSA Build L3 requirements - trusted build environment is non-negotiable
-// Methodology: Check all 4 controls present + HasSelfHosted=true; verify penalty reduces to moderate
-// Result: 1 risk point - self-hosted penalty prevents achieving lowest risk score
-func TestScoreReleaseSecurity_ModerateRisk_SelfHostedWithFullControls(t *testing.T) {
+// Test: Package with all 4 release controls and self-hosted CI runner
+// Justification: Self-hosted runners are now assessed in CI Pipeline Security, not Release Security.
+//                Release Security only evaluates release process, branch protection, signing, reviews.
+// Source: SLSA Build L3 requirements
+// Methodology: Check all 4 controls present + HasSelfHosted=true; verify release security unaffected
+// Result: 0 risk points for release security (all 4 controls), CI pipeline detects self-hosted
+func TestScoreReleaseSecurity_FullControlsNotAffectedBySelfHosted(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/full-selfhosted/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true, // CI/CD
-			HasBranchProtection: true, // Branch protection
-			SignedReleases:      true, // Signed releases
-			RequiredReviewers:   2,    // Required reviews
-			HasSelfHosted:       true, // Self-hosted penalty
+			HasReleaseProcess:   true,
+			HasBranchProtection: true,
+			SignedReleases:      true,
+			RequiredReviewers:   2,
+			HasSelfHosted:       true,
+			HasCI:               true,
 			BuildSystems: []models.BuildSystemInfo{
 				{
 					Platform:     "Jenkins",
@@ -360,20 +354,16 @@ func TestScoreReleaseSecurity_ModerateRisk_SelfHostedWithFullControls(t *testing
 		},
 	}
 
-	score := analyzer.scoreReleaseSecurity(result)
-
-	// Points: CI(+1) + Branch(+1) + Signed(+1) + Reviewers(+1) + SelfHosted(-1) = 3 → riskPoints=1
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point (self-hosted penalty on full controls), got %d", score.RiskPoints)
+	relScore := analyzer.scoreReleaseSecurity(result)
+	// All 4 controls present → 0 risk points (self-hosted no longer affects this)
+	if relScore.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for release security with all 4 controls, got %d", relScore.RiskPoints)
 	}
 
-	// Should NOT achieve 0 risk points despite having all 4 controls (self-hosted prevents that)
-	if score.RiskPoints == 0 {
-		t.Error("Expected self-hosted runner to prevent achieving 0 risk points")
-	}
-
-	if !score.Verified {
-		t.Error("Expected verified score")
+	// CI Pipeline Security should detect self-hosted
+	ciScore := analyzer.scoreCIPipelineSecurity(result)
+	if ciScore.RiskPoints < 1 {
+		t.Errorf("Expected CI pipeline security to penalize self-hosted runner, got %d risk points", ciScore.RiskPoints)
 	}
 }
 
@@ -857,24 +847,20 @@ func TestScoreReleaseSecurity_SelfHostedPenaltyFloor_CannotGoNegative(t *testing
 
 	// 0 points → high risk (2 risk points)
 	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for self-hosted with no controls, got %d", score.RiskPoints)
+		t.Errorf("Expected 2 risk points for no controls, got %d", score.RiskPoints)
 	}
 
-	// Evidence must mention self-hosted runner
-	if !strings.Contains(score.Evidence, "Self-hosted CI runners detected") {
-		t.Errorf("Expected self-hosted evidence, got: %q", score.Evidence)
-	}
+	// Self-hosted evidence is now in CI Pipeline Security, not Release Security
+	// Release security should only reflect the 4 core controls
 }
 
-// Test: Cloud-hosted CI evidence path - BuildSystems and CISystems both populated, not self-hosted
-// Justification: When BuildSystems contains entries and CISystems is non-empty but HasSelfHosted
-//                is false, the evidence should include "Cloud-hosted CI: {CISystems[0]}". This
-//                path (release_security.go:106-108) provides positive evidence that the build
-//                environment is controlled by a trusted provider.
+// Test: Cloud-hosted CI evidence path in CI Pipeline Security category
+// Justification: When BuildSystems contains cloud-hosted entries and HasSelfHosted is false,
+//                the CI Pipeline Security evidence should include cloud-hosted CI info.
 // Source: SLSA Build L2-L3 - cloud-hosted CI from trusted providers is a security positive
 // Methodology: Set BuildSystems and CISystems with cloud-hosted entries, HasSelfHosted=false
-// Result: Evidence contains "Cloud-hosted CI: GitHub Actions"
-func TestScoreReleaseSecurity_CloudHostedCI_EvidenceIncluded(t *testing.T) {
+// Result: CI Pipeline Security evidence contains cloud-hosted CI info
+func TestScoreCIPipelineSecurity_CloudHostedCI_EvidenceIncluded(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/cloud-ci/package",
@@ -884,6 +870,7 @@ func TestScoreReleaseSecurity_CloudHostedCI_EvidenceIncluded(t *testing.T) {
 			SignedReleases:      false,
 			RequiredReviewers:   0,
 			HasSelfHosted:       false,
+			HasCI:               true,
 			BuildSystems: []models.BuildSystemInfo{
 				{
 					Platform: "GitHub Actions",
@@ -894,46 +881,51 @@ func TestScoreReleaseSecurity_CloudHostedCI_EvidenceIncluded(t *testing.T) {
 		},
 	}
 
-	score := analyzer.scoreReleaseSecurity(result)
+	score := analyzer.scoreCIPipelineSecurity(result)
 
-	if !strings.Contains(score.Evidence, "Cloud-hosted CI: GitHub Actions") {
+	if !strings.Contains(score.Evidence, "Cloud-hosted CI") {
 		t.Errorf("Expected cloud-hosted CI evidence, got: %q", score.Evidence)
+	}
+	if score.RiskPoints > 0 {
+		t.Errorf("Expected 0 risk points for cloud-hosted CI with no workflow risks, got %d", score.RiskPoints)
 	}
 }
 
-// ===== CI Workflow Risk Integration Tests =====
-// These tests verify that parsed CI workflow risk signals correctly affect release security scoring.
+// ===== CI Workflow Risk Tests =====
+// These tests verify that parsed CI workflow risk signals are assessed in CI Pipeline Security.
+// NOTE: CI workflow risks were moved from Release Security to the dedicated CI Pipeline Security
+// category to give CI configuration analysis first-class visibility.
 
-// Test: CI workflow risks penalty applied when 3+ risk signals found
-// Justification: Multiple insecure CI patterns indicate systemic poor security practices
-//                in the release pipeline. The penalty reduces the release security score
-//                to reflect the increased compromise risk.
+// Test: CI workflow risks with critical issues (script injection, dangerous triggers)
+// Justification: Multiple insecure CI patterns indicate systemic poor security practices.
+//                Critical issues like script injection or dangerous triggers should score 2 risk points.
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 //         GitHub Actions Security Hardening guide
-// Methodology: Provide CIWorkflowRisks with 3+ risk signals and verify penalty is applied
-// Result: Score is reduced by the CI workflow risk penalty
-func TestScoreReleaseSecurity_CIWorkflowRiskPenalty(t *testing.T) {
+// Methodology: Provide CIWorkflowRisks with critical risk signals and verify penalty is applied
+// Result: CI Pipeline Security category assigns high risk
+func TestScoreCIPipelineSecurity_CriticalCIWorkflowRisks(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/risky-ci/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   1,
-			CISystems:           []string{"GitHub Actions"},
+			HasCI:     true,
+			CISystems: []string{"GitHub Actions"},
+			BuildSystems: []models.BuildSystemInfo{
+				{Platform: "GitHub Actions", HostedBy: "GitHub"},
+			},
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
 					Platform:                     "GitHub Actions",
 					UnpinnedActions:              []string{"actions/checkout@v4", "actions/setup-node@v3"},
 					HasExcessivePermissions:      true,
-					HasScriptInjection:           false,
+					HasScriptInjection:           true, // Critical
 					MissingEnvironmentProtection: true,
-					RiskCount:                    4,
+					RiskCount:                    5,
 					Details: []string{
 						"Unpinned action actions/checkout@v4",
 						"Unpinned action actions/setup-node@v3",
 						"Workflow uses 'permissions: write-all'",
+						"Script injection risk",
 						"Release workflow lacks environment protection",
 					},
 				},
@@ -941,66 +933,65 @@ func TestScoreReleaseSecurity_CIWorkflowRiskPenalty(t *testing.T) {
 		},
 	}
 
-	score := analyzer.scoreReleaseSecurity(result)
+	score := analyzer.scoreCIPipelineSecurity(result)
 
-	// Without CI workflow risks: 4 points (all controls) → 0 risk points
-	// With CI workflow risks (3+ signals): 4 - 1 penalty = 3 points → 1 risk point
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point (CI workflow penalty on full controls), got %d", score.RiskPoints)
+	// Script injection is a critical issue → 2 risk points
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for critical CI workflow risks (script injection), got %d", score.RiskPoints)
 	}
 }
 
-// Test: CI workflow risks below threshold do not trigger penalty
-// Justification: Minor CI configuration issues (e.g., 1-2 unpinned actions) should not
-//                penalize the release security score. Only systemic issues (3+) matter.
-// Source: Proportional risk assessment - minor issues should not override strong controls
-// Methodology: Provide CIWorkflowRisks with <3 risk signals
-// Result: No penalty applied, score unchanged
-func TestScoreReleaseSecurity_CIWorkflowRiskBelowThreshold(t *testing.T) {
+// Test: Minor CI workflow risks result in moderate risk (1 risk point)
+// Justification: A single unpinned action is a moderate concern but not critical.
+// Source: Proportional risk assessment
+// Methodology: Provide CIWorkflowRisks with minor risk signals
+// Result: 1 risk point for moderate CI concerns
+func TestScoreCIPipelineSecurity_MinorRisks(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/minor-ci-risk/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   1,
-			CISystems:           []string{"GitHub Actions"},
+			HasCI:     true,
+			CISystems: []string{"GitHub Actions"},
+			BuildSystems: []models.BuildSystemInfo{
+				{Platform: "GitHub Actions", HostedBy: "GitHub"},
+			},
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
-					Platform:        "GitHub Actions",
-					UnpinnedActions: []string{"actions/checkout@v4"},
-					RiskCount:       1,
-					Details:         []string{"Unpinned action actions/checkout@v4"},
+					Platform:                     "GitHub Actions",
+					UnpinnedActions:              []string{"actions/checkout@v4", "actions/setup-node@v3"},
+					MissingEnvironmentProtection: true,
+					RiskCount:                    3,
+					Details:                      []string{"Unpinned action", "Unpinned action", "Missing env protection"},
 				},
 			},
 		},
 	}
 
-	score := analyzer.scoreReleaseSecurity(result)
+	score := analyzer.scoreCIPipelineSecurity(result)
 
-	// Below threshold: no penalty → 4 points → 0 risk points
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points (CI risk below penalty threshold), got %d", score.RiskPoints)
+	// Moderate issues (unpinned actions + missing env protection, no critical issues) → 1 risk point
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for moderate CI risks, got %d", score.RiskPoints)
 	}
 }
 
-// Test: CI workflow risk evidence appears in score output
+// Test: CI workflow risk evidence appears in CI Pipeline Security output
 // Justification: Evidence strings must include CI workflow risk details for audit trail
 //                and to help maintainers understand what needs to be fixed.
 // Source: OSSF Scorecard methodology - evidence-based assessment
 // Methodology: Provide CIWorkflowRisks with various risk types and check evidence strings
 // Result: Evidence contains CI workflow risk details
-func TestScoreReleaseSecurity_CIWorkflowRiskEvidence(t *testing.T) {
+func TestScoreCIPipelineSecurity_WorkflowRiskEvidence(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/evidence-ci/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      false,
-			RequiredReviewers:   0,
-			CISystems:           []string{"GitHub Actions"},
+			HasCI:     true,
+			CISystems: []string{"GitHub Actions"},
+			BuildSystems: []models.BuildSystemInfo{
+				{Platform: "GitHub Actions", HostedBy: "GitHub"},
+			},
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
 					Platform:                     "GitHub Actions",
@@ -1016,14 +1007,14 @@ func TestScoreReleaseSecurity_CIWorkflowRiskEvidence(t *testing.T) {
 		},
 	}
 
-	score := analyzer.scoreReleaseSecurity(result)
+	score := analyzer.scoreCIPipelineSecurity(result)
 
 	// Check that evidence mentions CI workflow risks
 	evidenceChecks := []string{
 		"script injection",
 		"pull_request_target",
 		"unpinned CI dependencies",
-		"Excessive permissions",
+		"excessive permissions",
 		"environment protection",
 	}
 
@@ -1039,17 +1030,18 @@ func TestScoreReleaseSecurity_CIWorkflowRiskEvidence(t *testing.T) {
 //                Risks from all platforms should be aggregated for scoring.
 // Source: Defense-in-depth principle - all CI configs must be secure
 // Methodology: Provide CIWorkflowRisks from multiple platforms
-// Result: Risks from all platforms are counted toward the penalty threshold
-func TestScoreReleaseSecurity_MultipleCIPlatformRisks(t *testing.T) {
+// Result: Risks from all platforms are counted in CI Pipeline Security
+func TestScoreCIPipelineSecurity_MultipleCIPlatformRisks(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/multi-ci/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   1,
-			CISystems:           []string{"GitHub Actions", "CircleCI"},
+			HasCI:     true,
+			CISystems: []string{"GitHub Actions", "CircleCI"},
+			BuildSystems: []models.BuildSystemInfo{
+				{Platform: "GitHub Actions", HostedBy: "GitHub"},
+				{Platform: "CircleCI", HostedBy: "CircleCI"},
+			},
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
 					Platform:        "GitHub Actions",
@@ -1066,12 +1058,11 @@ func TestScoreReleaseSecurity_MultipleCIPlatformRisks(t *testing.T) {
 		},
 	}
 
-	score := analyzer.scoreReleaseSecurity(result)
+	score := analyzer.scoreCIPipelineSecurity(result)
 
-	// Combined risk count = 1 + 2 = 3 >= threshold → penalty applied
-	// 4 points - 1 penalty = 3 → riskPoints = 1
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point (multi-platform CI risks aggregate to penalty), got %d", score.RiskPoints)
+	// Combined: 3 unpinned actions + missing env protection → moderate risk (1 risk point)
+	if score.RiskPoints < 1 {
+		t.Errorf("Expected at least 1 risk point for multi-platform CI risks, got %d", score.RiskPoints)
 	}
 }
 

@@ -13,7 +13,6 @@ import (
 // Justification: Where attackers inject malicious payloads into the supply chain.
 //                Local publishing from developer machines = single point of compromise.
 //                No branch protection/reviews = direct path to inject malicious code.
-//                GitHub Actions with excessive permissions = workflow compromise vector.
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 //         https://arxiv.org/abs/2005.09535
 //         "Towards Measuring Supply Chain Attacks on Package Managers" (NDSS 2020)
@@ -23,11 +22,13 @@ import (
 //   - Query branch protection rules via GitHub/GitLab/Bitbucket APIs (with OSSF fallback)
 //   - Verify signed releases via GetProvenanceInfo and CheckSignedReleases (with OSSF fallback)
 //   - Check required PR reviews from branch protection or code review rate (with OSSF fallback)
-//   - Analyze GitHub Actions workflow permissions for least privilege
 // Result:
 //   - 0 risk points (score 2): CI publishing + branch protection + signed tags + required reviews
 //   - 1 risk point (score 1): Some controls present but gaps exist
 //   - 2 risk points (score 0): Local publishing or no protections
+//
+// Note: CI/CD workflow configuration security (unpinned actions, excessive permissions,
+// script injection, self-hosted runners) is assessed separately in CI Pipeline Security.
 //
 // Score: 0 = local publishing/no protections (high risk)
 //        1 = some controls but gaps (medium risk)
@@ -35,7 +36,7 @@ import (
 func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.CategoryScore {
 	const releaseSecSource = " [Source: SLSA v1.0 Build Level Requirements; Backstabber's Knife Collection (Ohm et al., 2020)]"
 
-	relSecMethodology := "Checked for: (1) automated CI/CD release process, (2) branch protection on default branch, (3) cryptographically signed releases/tags, (4) required PR reviewers, (5) CI/CD workflow security (unpinned actions, excessive permissions, script injection), (6) self-hosted runner detection. Data sources: GitHub/GitLab/Bitbucket APIs with OSSF Scorecard fallback."
+	relSecMethodology := "Checked for: (1) automated CI/CD release process, (2) branch protection on default branch, (3) cryptographically signed releases/tags, (4) required PR reviewers. Data sources: GitHub/GitLab/Bitbucket APIs with OSSF Scorecard fallback. Note: CI workflow configuration security is assessed separately in the CI Pipeline Security category."
 
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
@@ -157,65 +158,13 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		}
 	}
 
-	// Component 5: CI/CD Workflow Security (parsed from config files)
-	// Insecure CI configurations create direct attack vectors: unpinned actions can be
-	// hijacked, excessive permissions widen blast radius, script injection enables RCE.
-	// Source: GitHub Actions Security Hardening; SLSA Build Level Requirements
-	ciWorkflowRiskCount := 0
-	for _, ciRisk := range result.Metadata.CIWorkflowRisks {
-		ciWorkflowRiskCount += ciRisk.RiskCount
-		if ciRisk.HasScriptInjection {
-			evidence = append(evidence, fmt.Sprintf("CI script injection risk in %s workflow", ciRisk.Platform))
-		}
-		if len(ciRisk.DangerousTriggers) > 0 {
-			evidence = append(evidence, fmt.Sprintf("Dangerous CI triggers: %s", strings.Join(ciRisk.DangerousTriggers, ", ")))
-		}
-		if len(ciRisk.UnpinnedActions) > 0 {
-			evidence = append(evidence, fmt.Sprintf("%d unpinned CI dependencies (tag hijacking risk)", len(ciRisk.UnpinnedActions)))
-		}
-		if ciRisk.HasExcessivePermissions {
-			evidence = append(evidence, fmt.Sprintf("Excessive permissions in %s workflow", ciRisk.Platform))
-		}
-		if ciRisk.MissingEnvironmentProtection {
-			evidence = append(evidence, fmt.Sprintf("No environment protection on %s publish workflow", ciRisk.Platform))
-		}
-	}
-	// Penalize for significant CI workflow risks (3+ signals = -1 point)
-	if ciWorkflowRiskCount >= 3 {
-		points--
-		if points < 0 {
-			points = 0
-		}
-	}
-
-	// Component 6: Build System Location (self-hosted runner detection)
-	// Self-hosted runners give attackers who compromise the runner full control over
-	// the build environment and published artifacts. Cloud-hosted runners are isolated.
-	// Source: SLSA Build L3 - https://slsa.dev/spec/v1.0/levels
-	if result.Metadata.HasSelfHosted {
-		// Self-hosted runners negate the value of CI-based publishing
-		// because the build environment is not controlled by a trusted provider
-		points-- // Penalize: self-hosted erodes release security regardless of other controls
-		if points < 0 {
-			points = 0
-		}
-		selfHostedNames := []string{}
-		for _, bs := range result.Metadata.BuildSystems {
-			if bs.IsSelfHosted {
-				selfHostedNames = append(selfHostedNames, bs.Platform)
-			}
-		}
-		evidence = append(evidence, fmt.Sprintf("Self-hosted CI runners detected (%s): build environment not controlled by trusted provider",
-			strings.Join(selfHostedNames, ", ")))
-	} else if len(result.Metadata.BuildSystems) > 0 && len(result.Metadata.CISystems) > 0 {
-		evidence = append(evidence, fmt.Sprintf("Cloud-hosted CI: %s", result.Metadata.CISystems[0]))
-	}
-
 	// Calculate risk points based on total security controls
 	// Strong release security requires multiple layers of defense
+	// Note: CI workflow configuration security (unpinned actions, permissions,
+	// script injection, self-hosted runners) is assessed in CI Pipeline Security category.
 	// 0-1 points earned = high risk (2 risk points) - minimal controls
 	// 2-3 points earned = medium risk (1 risk point) - some controls
-	// 4+ points earned = low risk (0 risk points) - comprehensive controls
+	// 4 points earned = low risk (0 risk points) - comprehensive controls
 	riskPoints := 2
 	if points >= 4 {
 		riskPoints = 0
