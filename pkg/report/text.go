@@ -234,47 +234,59 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 	r.printAIExecutiveSummary(w)
 }
 
-// printAIExecutiveSummary prints AI-powered executive insights if available
+// printAIExecutiveSummary prints the report-level AI summary in the executive section.
+// This summary is generated AFTER all packages are analyzed and synthesizes
+// all findings into a holistic assessment. Generated last, displayed first.
 func (r *Reporter) printAIExecutiveSummary(w io.Writer) {
-	// Find the first package with AI analysis that has an executive summary
-	var executiveSummary *models.ExecutiveExplanation
-	for _, result := range r.results {
-		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
-			executiveSummary = result.AIAnalysis.ExecutiveSummary
-			break
-		}
-	}
-
-	if executiveSummary == nil {
+	if r.reportAISummary == nil {
 		return
 	}
+
+	summary := r.reportAISummary
 
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintf(w, "  %s🤖 AI-Powered Risk Assessment%s\n", ColorBold+ColorCyan, ColorReset)
 	_, _ = fmt.Fprintln(w)
 
-	// Summary
-	_, _ = fmt.Fprintf(w, "  %s%s%s\n", ColorBold, executiveSummary.Summary, ColorReset)
+	// Overall Assessment
+	_, _ = fmt.Fprintf(w, "  %s%s%s\n", ColorBold, summary.OverallAssessment, ColorReset)
 	_, _ = fmt.Fprintln(w)
 
-	// Key Risks
-	if len(executiveSummary.KeyRisks) > 0 {
-		_, _ = fmt.Fprintf(w, "  %sKey Risks Identified:%s\n", ColorBold, ColorReset)
-		for _, risk := range executiveSummary.KeyRisks {
-			_, _ = fmt.Fprintf(w, "    %s•%s %s\n", ColorRed, ColorReset, risk)
+	// Key Threats
+	if len(summary.KeyThreats) > 0 {
+		_, _ = fmt.Fprintf(w, "  %sKey Threats:%s\n", ColorBold, ColorReset)
+		for _, threat := range summary.KeyThreats {
+			_, _ = fmt.Fprintf(w, "    %s•%s %s\n", ColorRed, ColorReset, threat)
 		}
 		_, _ = fmt.Fprintln(w)
 	}
 
-	// Business Impact
-	if executiveSummary.BusinessImpact != "" {
-		_, _ = fmt.Fprintf(w, "  %sBusiness Impact:%s\n", ColorBold, ColorReset)
-		_, _ = fmt.Fprintf(w, "  %s\n", executiveSummary.BusinessImpact)
+	// Cross-Package Patterns
+	if len(summary.CrossPatterns) > 0 {
+		_, _ = fmt.Fprintf(w, "  %sCross-Package Patterns:%s\n", ColorBold, ColorReset)
+		for _, pattern := range summary.CrossPatterns {
+			_, _ = fmt.Fprintf(w, "    %s•%s %s\n", ColorYellow, ColorReset, pattern)
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+
+	// Priority Packages
+	if len(summary.PriorityPackages) > 0 {
+		_, _ = fmt.Fprintf(w, "  %sPriority Packages:%s\n", ColorBold, ColorReset)
+		for _, pkg := range summary.PriorityPackages {
+			_, _ = fmt.Fprintf(w, "    %s•%s %s\n", ColorRed, ColorReset, pkg)
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+
+	// Risk Posture
+	if summary.RiskPosture != "" {
+		_, _ = fmt.Fprintf(w, "  %sRisk Posture:%s %s\n", ColorBold, ColorReset, summary.RiskPosture)
 		_, _ = fmt.Fprintln(w)
 	}
 
 	// Confidence
-	confidencePct := executiveSummary.Confidence * 100
+	confidencePct := summary.Confidence * 100
 	confidenceColor := ColorGreen
 	if confidencePct < 50 {
 		confidenceColor = ColorYellow

@@ -685,6 +685,157 @@ Respond ONLY with valid JSON (no markdown, no code blocks).`, sb.String()),
 }
 
 // ============================================================================
+// REPORT-LEVEL SUMMARY PROMPT
+// ============================================================================
+
+// ReportSummarySystemPrompt provides context for generating a holistic report-level
+// AI summary that synthesizes findings across ALL packages in a scan.
+const ReportSummarySystemPrompt = `You are a supply chain security analyst producing a holistic assessment of an entire project's dependency risk posture.
+
+You receive the complete scan results for ALL packages in a project — risk scores, findings, attack pattern matches, and per-package AI analysis. Your job is to synthesize this into a single coherent report-level assessment.
+
+## What You Assess
+
+You look at the ENTIRE dependency graph as a whole:
+- Which packages pose the greatest compromise risk and why
+- Cross-package patterns (e.g., multiple packages from same single-maintainer)
+- Aggregate risk posture (are most dependencies well-maintained or poorly maintained?)
+- Concentration risks (key dependencies with high risk)
+- Attack surface breadth (how many entry points exist?)
+
+## What You DO NOT Do
+
+- Do NOT recommend fixes, improvements, or mitigations
+- Do NOT prescribe best practices
+- Do NOT track CVEs or known vulnerabilities
+- Focus purely on assessing and describing the overall supply chain risk
+
+## Output Format
+
+Respond ONLY with valid JSON. No markdown, no code blocks, no text outside the JSON object.
+
+{
+  "overall_assessment": "3-5 sentence holistic assessment of the project's supply chain risk posture",
+  "key_threats": ["threat 1", "threat 2", "threat 3"],
+  "cross_patterns": ["pattern observed across multiple packages"],
+  "priority_packages": ["package_name: reason it needs attention"],
+  "risk_posture": "1-2 sentence overall supply chain health summary",
+  "confidence": 0.0
+}
+
+IMPORTANT:
+- overall_assessment should be 3-5 sentences synthesizing ALL findings.
+- key_threats should have 2-5 entries describing the most significant cross-cutting risks.
+- cross_patterns should identify patterns that appear across multiple packages (may be empty).
+- priority_packages should list 1-5 packages that need the most attention, with reasoning.
+- confidence should reflect data quality: 0.9 if comprehensive data, 0.5 if sparse.
+- Do NOT include recommendations, mitigations, or advice of any kind.
+- Respond ONLY with valid JSON.`
+
+// NewReportSummaryPrompt creates a prompt that synthesizes ALL package results
+// into a single holistic report-level supply chain risk assessment.
+// This is called AFTER all per-package analysis is complete.
+func NewReportSummaryPrompt(results []models.AnalysisResult, stats ReportStats) *PromptTemplate {
+	var sb strings.Builder
+
+	// Report overview
+	sb.WriteString(fmt.Sprintf("## Project Scan Overview\n\n"))
+	sb.WriteString(fmt.Sprintf("Total Packages: %d\n", stats.TotalPackages))
+	sb.WriteString(fmt.Sprintf("HIGH Risk: %d (%.1f%%)\n", stats.HighRisk, float64(stats.HighRisk)/float64(max(stats.TotalPackages, 1))*100))
+	sb.WriteString(fmt.Sprintf("MEDIUM Risk: %d (%.1f%%)\n", stats.MediumRisk, float64(stats.MediumRisk)/float64(max(stats.TotalPackages, 1))*100))
+	sb.WriteString(fmt.Sprintf("LOW Risk: %d (%.1f%%)\n\n", stats.LowRisk, float64(stats.LowRisk)/float64(max(stats.TotalPackages, 1))*100))
+
+	// Summarize each package (keep it compact to fit in context)
+	sb.WriteString("## Package Summaries\n\n")
+
+	for i, result := range results {
+		// Limit detail for LOW risk packages
+		if result.RiskLevel == "LOW" && i > 20 {
+			continue // Skip low-risk packages after first 20 to save tokens
+		}
+
+		sb.WriteString(fmt.Sprintf("### %s@%s (%s) — %s Risk", result.Dependency.Name, result.Dependency.Version, result.Dependency.Ecosystem, result.RiskLevel))
+
+		if result.SupplyChainScore != nil {
+			sb.WriteString(fmt.Sprintf(" (%d/22 pts)", result.SupplyChainScore.TotalScore))
+		}
+		sb.WriteString("\n")
+
+		// Key findings for HIGH/MEDIUM packages
+		if result.RiskLevel == "HIGH" || result.RiskLevel == "MEDIUM" {
+			for _, f := range result.Findings {
+				if f.Severity == "HIGH" || f.Severity == "CRITICAL" {
+					sb.WriteString(fmt.Sprintf("- [%s] %s\n", f.Severity, f.Description))
+				}
+			}
+
+			// Include per-package AI unified summary if available
+			if result.AIAnalysis != nil && result.AIAnalysis.UnifiedSummary != nil {
+				sb.WriteString(fmt.Sprintf("- AI Summary: %s\n", result.AIAnalysis.UnifiedSummary.Summary))
+			}
+		}
+
+		// Risk factors (compact)
+		if len(result.RiskFactors) > 0 && (result.RiskLevel == "HIGH" || result.RiskLevel == "MEDIUM") {
+			sb.WriteString(fmt.Sprintf("- Risk factors: %s\n", strings.Join(result.RiskFactors, "; ")))
+		}
+
+		sb.WriteString("\n")
+	}
+
+	// Aggregate stats
+	sb.WriteString("## Aggregate Observations\n\n")
+
+	// Count packages with install scripts
+	installScripts := 0
+	missingSource := 0
+	singleMaintainer := 0
+	missingProvenance := 0
+	for _, r := range results {
+		if r.Metadata.HasInstallScripts {
+			installScripts++
+		}
+		if !r.SourceCodeAvailable {
+			missingSource++
+		}
+		if len(r.Metadata.Maintainers) == 1 {
+			singleMaintainer++
+		}
+		if r.SupplyChainScore != nil && r.SupplyChainScore.CategoryScores.Provenance.RiskPoints > 1 {
+			missingProvenance++
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("- Packages with install scripts: %d\n", installScripts))
+	sb.WriteString(fmt.Sprintf("- Packages missing source code: %d\n", missingSource))
+	sb.WriteString(fmt.Sprintf("- Packages with single maintainer: %d\n", singleMaintainer))
+	sb.WriteString(fmt.Sprintf("- Packages missing provenance: %d\n", missingProvenance))
+
+	return &PromptTemplate{
+		SystemPrompt: ReportSummarySystemPrompt,
+		UserPrompt: fmt.Sprintf(`Synthesize the following complete scan results into a holistic report-level supply chain risk assessment.
+
+%s
+
+Produce a single JSON response with your holistic assessment of the entire project's supply chain risk posture.
+Consider cross-package patterns, concentration risks, and overall dependency health.
+Do NOT include recommendations, mitigations, or advice of any kind.
+Respond ONLY with valid JSON (no markdown, no code blocks).`, sb.String()),
+		Parameters:  map[string]string{},
+		Temperature: 0.3,
+		MaxTokens:   2000,
+	}
+}
+
+// ReportStats provides aggregate statistics for the report-level AI summary prompt.
+type ReportStats struct {
+	TotalPackages int
+	HighRisk      int
+	MediumRisk    int
+	LowRisk       int
+}
+
+// ============================================================================
 // COMPARATIVE ANALYSIS PROMPTS
 // ============================================================================
 

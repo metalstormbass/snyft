@@ -379,6 +379,22 @@ type CategoryAIInsight struct {
 	Recommendation string   `json:"recommendation"`   // Deprecated: per CLAUDE.md, recommendations are out of scope
 }
 
+// ReportAISummary is a report-level AI synthesis generated AFTER all packages
+// are analyzed. Unlike per-package UnifiedAISummary which only sees one package,
+// this summary sees every package's results, risk distribution, and cross-package
+// patterns to produce a holistic supply chain risk assessment for the entire project.
+//
+// Generated last, displayed first (in the executive summary section).
+type ReportAISummary struct {
+	OverallAssessment string   `json:"overall_assessment"`  // 3-5 sentence holistic assessment
+	KeyThreats        []string `json:"key_threats"`         // Top cross-package threats
+	CrossPatterns     []string `json:"cross_patterns"`      // Patterns observed across multiple packages
+	PriorityPackages  []string `json:"priority_packages"`   // Packages requiring immediate attention (with reasoning)
+	RiskPosture       string   `json:"risk_posture"`        // Overall supply chain risk posture summary
+	Confidence        float64  `json:"confidence"`          // 0.0-1.0
+	GeneratedAt       time.Time `json:"generated_at"`
+}
+
 // EcosystemCapabilities describes what data each package registry exposes.
 // Scoring functions should check these before interpreting zero values.
 // A zero value in a field that the ecosystem does not expose means "data unavailable",

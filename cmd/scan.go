@@ -165,6 +165,40 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Clear progress line
 	reporter.ClearProgress()
 
+	// Generate report-level AI summary AFTER all packages are analyzed.
+	// This summary sees everything and provides a holistic assessment.
+	// It is displayed at the TOP of the report (executive summary section).
+	if aiConfig != nil {
+		fmt.Fprintf(statusOut, "🤖 Generating report-level AI summary...\n")
+		a := analyzer.NewAnalyzer(analyzer.WithAIConfig(aiConfig))
+
+		// Count risk distribution for the AI prompt
+		var highRisk, mediumRisk, lowRisk int
+		for _, r := range results {
+			switch r.RiskLevel {
+			case "HIGH":
+				highRisk++
+			case "MEDIUM":
+				mediumRisk++
+			case "LOW":
+				lowRisk++
+			}
+		}
+
+		reportSummary := a.GenerateReportSummary(results, ai.ReportStats{
+			TotalPackages: len(results),
+			HighRisk:      highRisk,
+			MediumRisk:    mediumRisk,
+			LowRisk:       lowRisk,
+		})
+		if reportSummary != nil {
+			reporter.SetReportAISummary(reportSummary)
+			fmt.Fprintf(statusOut, "✅ Report-level AI summary generated\n\n")
+		} else {
+			fmt.Fprintf(statusOut, "⚠️  Report-level AI summary could not be generated\n\n")
+		}
+	}
+
 	// Generate report
 	reporter.AddResults(results)
 	return reporter.Generate()
