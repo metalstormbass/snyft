@@ -93,12 +93,19 @@ func runScan(cmd *cobra.Command, args []string) error {
 		statusOut = os.Stderr
 	}
 
-	// Create reporter
+	// Create reporter – enable progress bar for all formats.
+	// For non-text formats (or file output), route the animated progress to stderr
+	// so it doesn't corrupt the structured output on stdout.
+	var progressWriter *os.File
+	if format != report.FormatText || outputFile != "" {
+		progressWriter = os.Stderr
+	}
 	reporter := report.NewReporter(report.Config{
-		Format:       format,
-		Verbose:      verbose,
-		Writer:       outputWriter,
-		ShowProgress: format == report.FormatText && outputFile == "", // Only show progress for text on stdout
+		Format:         format,
+		Verbose:        verbose,
+		Writer:         outputWriter,
+		ShowProgress:   true,
+		ProgressWriter: progressWriter,
 	})
 
 	fmt.Fprintf(statusOut, "🔍 Scanning directory: %s\n", scanPath)
@@ -228,8 +235,13 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 	var wg sync.WaitGroup
 	var completed int
 	var mu sync.Mutex
+	// currentPkg tracks what the workers are currently analyzing so the
+	// heartbeat ticker can refresh the spinner even while a slow AI call
+	// is in progress.
+	var currentPkg string
 
 	startTime := time.Now()
+	_ = startTime // used by reporter internally
 
 	// Create analyzer with AI configuration
 	var a *analyzer.Analyzer
@@ -241,6 +253,30 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 		a = analyzer.NewAnalyzer(analyzer.WithAIDisabled())
 	}
 
+	// When AI is enabled, start a heartbeat ticker that refreshes the progress
+	// spinner every 500ms. Without this, the progress bar appears frozen during
+	// long AI API calls.
+	done := make(chan struct{})
+	if aiConfig != nil {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		go func() {
+			for {
+				select {
+				case <-ticker.C:
+					mu.Lock()
+					if currentPkg != "" {
+						suffix := " [AI analyzing]"
+						reporter.ShowProgress(completed, len(deps), currentPkg+suffix)
+					}
+					mu.Unlock()
+				case <-done:
+					ticker.Stop()
+					return
+				}
+			}
+		}()
+	}
+
 	// Start workers
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
@@ -248,17 +284,18 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 			defer wg.Done()
 			for idx := range jobs {
 				dep := deps[idx]
+				pkgLabel := fmt.Sprintf("%s@%s", dep.Name, dep.Version)
+
+				mu.Lock()
+				currentPkg = pkgLabel
+				mu.Unlock()
+
 				results[idx] = a.Analyze(dep)
 
 				// Update progress
 				mu.Lock()
 				completed++
-				if reporter.HasProgress() {
-					reporter.ShowProgress(completed, len(deps), fmt.Sprintf("%s@%s", dep.Name, dep.Version))
-				} else {
-					// For non-text formats, print simple progress to stderr
-					fmt.Fprintf(statusOut, "  Analyzed %d/%d: %s@%s\n", completed, len(deps), dep.Name, dep.Version)
-				}
+				reporter.ShowProgress(completed, len(deps), pkgLabel)
 				mu.Unlock()
 			}
 		}()
@@ -272,6 +309,7 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 
 	// Wait for completion
 	wg.Wait()
+	close(done)
 
 	duration := time.Since(startTime)
 	reporter.ClearProgress()
