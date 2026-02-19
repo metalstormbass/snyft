@@ -5,255 +5,147 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// checkAnalyzerSystemPrompt provides the foundational context for per-category AI analysis.
-// The AI augments rule-based scoring with deeper contextual analysis - it does NOT replace it.
-const checkAnalyzerSystemPrompt = `You are a supply chain security expert augmenting rule-based risk scoring with deeper contextual analysis.
+// deepAnalysisSystemPrompt focuses on what rules CANNOT do: cross-cutting pattern
+// recognition, behavioral anomaly detection, and compound risk identification.
+// The AI receives ALL data at once to find holistic insights the per-category
+// rule-based engine misses by design.
+const deepAnalysisSystemPrompt = `You are a supply chain security analyst performing deep behavioral analysis.
 
 ## Your Role
 
-You receive a rule-based risk score for a specific supply chain security category and the raw data that produced it. Your job is to:
+You receive the COMPLETE analysis of a package — all 10 category scores, all metadata, all findings. The rule-based engine has already scored each category individually. Your job is to find what the rules MISSED:
 
-1. **Validate or challenge** the rule-based assessment with additional context
-2. **Identify patterns** the rules may have missed or underweighted
-3. **Add context** about whether signals are typical or anomalous for this type of package
-4. **Amplify or mitigate** risk based on correlated signals
-5. **Assess the compromise scenarios** enabled by identified risk factors
+1. **Compound risk patterns**: Combinations of weak signals that together indicate HIGH risk
+   - Example: single maintainer + 2 years dormant + sudden release + no CI = classic account takeover pattern
+   - Example: ownership transfer + new install scripts + removed tests = potential malicious acquisition
 
-## What You Assess
+2. **Behavioral anomalies in maintainer/process**:
+   - Does the maintainer behavior pattern look consistent with legitimate development?
+   - Are there signs of account compromise, social engineering, or hostile takeover?
+   - Does the release pattern match normal software development cadence?
 
-Supply chain compromise risk factors only:
-- Maintainer account security and control concentration
-- Suspicious behavioral patterns (dormancy, reactivation, anomalous activity)
-- Build and release integrity weaknesses
-- Community health and governance gaps
-- Install-time code execution risks
-- Dependency attack surface
+3. **Insights rules cannot detect**:
+   - Contextual interpretation (e.g., "a 10-year-old package with 1M downloads and 1 maintainer is a bigger takeover target than a new package with 1 maintainer")
+   - Ecosystem-specific norms (e.g., "no CI is unusual for packages with >1M downloads in npm")
+   - Temporal correlations (e.g., "ownership changed 2 weeks before a major release")
 
 ## What You DO NOT Do
 
-❌ Track known CVEs or security advisories
-❌ Scan for code vulnerabilities (SQL injection, XSS, etc.)
-❌ Analyze code quality or correctness
-❌ Reference CVE databases
+- Do NOT simply restate or paraphrase the rule-based findings
+- Do NOT track CVEs or known vulnerabilities
+- Do NOT recommend fixes or best practices
+- Do NOT analyze code quality
 
 ## Academic Foundation
 
-Your analysis is grounded in:
-- "Backstabber's Knife Collection" (Ohm et al., 2020) - OSS supply chain attack patterns
-- "Small World with High Risks" (Zimmermann et al., 2019) - npm dependency network analysis
-- SLSA Framework - Build integrity and provenance
-- OSSF Scorecard - Automated security health metrics
+- "Backstabber's Knife Collection" (Ohm et al., 2020) — 90% of supply chain attacks target maintainer accounts
+- "Small World with High Risks" (Zimmermann et al., 2019) — dependency network compromise propagation
+- SLSA Framework — build integrity requirements
+- OSSF Scorecard — automated security health metrics
 
 ## Output Format
 
 Respond ONLY with valid JSON. No markdown, no code blocks, no text outside the JSON object.
 
 {
-  "ai_risk_level": "HIGH|MEDIUM|LOW",
-  "confidence": 0.0,
-  "findings": ["specific finding 1", "specific finding 2"],
-  "context": "contextual analysis explaining amplifying or mitigating factors",
-  "recommendation": "risk assessment summary describing what compromise scenarios this enables"
-}`
-
-// categoryAIResponse is the JSON structure expected from Claude for per-category analysis
-type categoryAIResponse struct {
-	AIRiskLevel    string   `json:"ai_risk_level"`
-	Confidence     float64  `json:"confidence"`
-	Findings       []string `json:"findings"`
-	Context        string   `json:"context"`
-	Recommendation string   `json:"recommendation"`
+  "risk_assessment": "1-3 sentence holistic assessment of this package's compromise likelihood",
+  "compound_risks": [
+    {
+      "pattern": "human-readable pattern name",
+      "risk_level": "HIGH|MEDIUM|LOW",
+      "contributing": ["signal 1", "signal 2", "signal 3"],
+      "explanation": "why this combination is concerning"
+    }
+  ],
+  "behavior_findings": ["behavioral anomaly 1", "behavioral anomaly 2"],
+  "missed_by_rules": ["insight 1 that rules cannot detect", "insight 2"],
+  "confidence": 0.0
 }
 
-// CheckAnalyzer performs AI-powered per-category deeper analysis to augment rule-based scoring.
-// Each of the 10 supply chain scoring categories gets its own contextual AI analysis.
+IMPORTANT:
+- If you find NO compound risks or anomalies beyond what rules already caught, say so honestly with an empty array. Do NOT fabricate findings.
+- Only report genuine cross-cutting patterns. Quality over quantity.
+- confidence should reflect data quality: 0.9 if you have rich metadata, 0.5 if data is sparse.`
+
+// deepAnalysisResponse is the JSON structure expected from Claude for deep analysis
+type deepAnalysisResponse struct {
+	RiskAssessment   string `json:"risk_assessment"`
+	CompoundRisks    []struct {
+		Pattern      string   `json:"pattern"`
+		RiskLevel    string   `json:"risk_level"`
+		Contributing []string `json:"contributing"`
+		Explanation  string   `json:"explanation"`
+	} `json:"compound_risks"`
+	BehaviorFindings []string `json:"behavior_findings"`
+	MissedByRules    []string `json:"missed_by_rules"`
+	Confidence       float64  `json:"confidence"`
+}
+
+// CheckAnalyzer performs AI-powered deep analysis to augment rule-based scoring.
+// Instead of re-analyzing each category individually, it performs a single holistic
+// analysis that identifies cross-cutting patterns and behavioral anomalies.
 type CheckAnalyzer struct {
 	client *Client
 }
 
-// NewCheckAnalyzer creates a new per-category check analyzer
+// NewCheckAnalyzer creates a new check analyzer
 func NewCheckAnalyzer(client *Client) *CheckAnalyzer {
 	return &CheckAnalyzer{client: client}
 }
 
-// AnalyzeAllCategories runs AI analysis for all 10 scoring categories in parallel.
-// Results are written directly into the CategoryScore.AIInsight fields on the result.
-// All failures are graceful - AI analysis never blocks or fails the main scan.
+// AnalyzeDeep performs a single consolidated AI analysis that examines ALL signals
+// together to find cross-cutting risk patterns and behavioral anomalies that
+// per-category rule-based scoring cannot detect.
 //
-// Categories analyzed:
-//  1. Publisher Control - maintainer account takeover risk
-//  2. Ownership Changes - suspicious transfer patterns
-//  3. Release Anomalies - dormancy/reactivation patterns
-//  4. Install Execution - semantic analysis of install scripts
-//  5. Dependency Sprawl - attack surface assessment
-//  6. Provenance - build integrity gaps
-//  7. Health - community health and concentration risk
-//  8. Governance - accountability and maintenance patterns
-//  9. Release Security - CI/CD integrity assessment
-//  10. Package Maturity - lifecycle risk assessment
-func (ca *CheckAnalyzer) AnalyzeAllCategories(ctx context.Context, packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) {
+// This replaces the previous AnalyzeAllCategories approach (10 separate per-category
+// API calls) with a single call that provides genuinely new insights.
+//
+// Returns nil on error (graceful degradation).
+func (ca *CheckAnalyzer) AnalyzeDeep(ctx context.Context, packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) *models.DeepAnalysisResult {
 	if result.SupplyChainScore == nil {
-		return
+		return nil
 	}
 
-	cs := &result.SupplyChainScore.CategoryScores
+	// Build the complete context: all categories, all metadata, all findings
+	fullContext := ca.buildFullContext(packageName, ecosystem, result)
 
-	type task struct {
-		name    string
-		context string
-		score   models.CategoryScore
-		set     func(*models.CategoryAIInsight)
-	}
+	userPrompt := fmt.Sprintf(`Perform deep behavioral analysis of this package's supply chain risk profile. All rule-based scoring is already complete — your job is to find what the rules MISSED.
 
-	tasks := []task{
-		{
-			name:    "Publisher Control",
-			context: ca.buildPublisherControlContext(packageName, ecosystem, result),
-			score:   cs.PublisherControl,
-			set:     func(i *models.CategoryAIInsight) { cs.PublisherControl.AIInsight = i },
-		},
-		{
-			name:    "Ownership Changes",
-			context: ca.buildOwnershipChangesContext(packageName, ecosystem, result),
-			score:   cs.OwnershipChanges,
-			set:     func(i *models.CategoryAIInsight) { cs.OwnershipChanges.AIInsight = i },
-		},
-		{
-			name:    "Release Anomalies",
-			context: ca.buildReleaseAnomaliesContext(packageName, ecosystem, result),
-			score:   cs.ReleaseAnomalies,
-			set:     func(i *models.CategoryAIInsight) { cs.ReleaseAnomalies.AIInsight = i },
-		},
-		{
-			name:    "Install Execution",
-			context: ca.buildInstallExecutionContext(packageName, ecosystem, result),
-			score:   cs.InstallExecution,
-			set:     func(i *models.CategoryAIInsight) { cs.InstallExecution.AIInsight = i },
-		},
-		{
-			name:    "Dependency Sprawl",
-			context: ca.buildDependencySprawlContext(packageName, ecosystem, result),
-			score:   cs.DependencySprawl,
-			set:     func(i *models.CategoryAIInsight) { cs.DependencySprawl.AIInsight = i },
-		},
-		{
-			name:    "Provenance",
-			context: ca.buildProvenanceContext(packageName, ecosystem, result),
-			score:   cs.Provenance,
-			set:     func(i *models.CategoryAIInsight) { cs.Provenance.AIInsight = i },
-		},
-		{
-			name:    "Health",
-			context: ca.buildHealthContext(packageName, ecosystem, result),
-			score:   cs.Health,
-			set:     func(i *models.CategoryAIInsight) { cs.Health.AIInsight = i },
-		},
-		{
-			name:    "Governance",
-			context: ca.buildGovernanceContext(packageName, ecosystem, result),
-			score:   cs.Governance,
-			set:     func(i *models.CategoryAIInsight) { cs.Governance.AIInsight = i },
-		},
-		{
-			name:    "Release Security",
-			context: ca.buildReleaseSecurityContext(packageName, ecosystem, result),
-			score:   cs.ReleaseSecurity,
-			set:     func(i *models.CategoryAIInsight) { cs.ReleaseSecurity.AIInsight = i },
-		},
-		{
-			name:    "Package Maturity",
-			context: ca.buildPackageMaturityContext(packageName, ecosystem, result),
-			score:   cs.PackageMaturity,
-			set:     func(i *models.CategoryAIInsight) { cs.PackageMaturity.AIInsight = i },
-		},
-	}
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	for _, t := range tasks {
-		wg.Add(1)
-		go func(t task) {
-			defer wg.Done()
-			insight, err := ca.analyzeSingleCategory(ctx, t.name, t.score, t.context)
-			if err != nil {
-				// Graceful degradation - a failed AI analysis does not affect rule-based scores
-				return
-			}
-			mu.Lock()
-			t.set(insight)
-			mu.Unlock()
-		}(t)
-	}
-
-	wg.Wait()
-}
-
-// analyzeSingleCategory calls Claude to analyze a single scoring category.
-// It receives the rule-based score and category-specific context, and returns
-// a CategoryAIInsight with deeper analysis.
-//
-// Uses Haiku for speed and cost efficiency - these are focused JSON responses
-// with well-structured input, not requiring the full Sonnet capability.
-func (ca *CheckAnalyzer) analyzeSingleCategory(ctx context.Context, categoryName string, score models.CategoryScore, categoryContext string) (*models.CategoryAIInsight, error) {
-	userPrompt := fmt.Sprintf(`Analyze the following supply chain security category for deeper risk insights that augment the rule-based scoring.
-
-Category: %s
-Rule-based Risk Points: %d/2 (0=low risk, 2=high risk)
-Rule-based Description: %s
-Rule-based Evidence: %s
-Data Verified: %v
-
-Package-Specific Context:
 %s
 
 Identify:
-1. Patterns the rule-based check may have missed or underweighted
-2. Contextual factors that amplify or mitigate the measured risk
-3. Whether the risk signals are typical or anomalous for this type of package
-4. What compromise scenarios these risk factors enable
+1. COMPOUND risk patterns: combinations of signals that together indicate higher risk than any single signal
+2. BEHAVIORAL anomalies: patterns in maintainer or process behavior that are inconsistent with legitimate development
+3. CONTEXTUAL insights: things that require holistic judgment rather than individual category scoring
 
-Respond ONLY with valid JSON (no markdown, no code blocks):
-{
-  "ai_risk_level": "HIGH|MEDIUM|LOW",
-  "confidence": 0.0,
-  "findings": ["specific finding 1", "specific finding 2"],
-  "context": "contextual analysis of amplifying/mitigating factors",
-  "recommendation": "risk assessment describing what compromise scenarios this enables"
-}`,
-		categoryName,
-		score.RiskPoints,
-		score.Description,
-		score.Evidence,
-		score.Verified,
-		categoryContext,
-	)
+If there are no genuine compound risks beyond what the rules already found, say so. Do NOT fabricate findings.
+
+Respond ONLY with valid JSON (no markdown, no code blocks).`, fullContext)
 
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaudeHaiku4_5,
-		MaxTokens: 600,
+		Model:     anthropic.ModelClaudeSonnet4_5,
+		MaxTokens: 1500,
 		System: []anthropic.TextBlockParam{
-			{Text: checkAnalyzerSystemPrompt},
+			{Text: deepAnalysisSystemPrompt},
 		},
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
 		},
-		Temperature: anthropic.Float(0.2),
+		Temperature: anthropic.Float(0.3),
 	}
 
 	msg, err := ca.client.CreateMessage(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("API call failed for category %s: %w", categoryName, err)
+		return nil
 	}
 
-	// Extract text content from response
+	// Extract text content
 	var responseText string
 	for _, block := range msg.Content {
 		if block.Type == "text" {
@@ -262,7 +154,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
 	}
 
 	if responseText == "" {
-		return nil, fmt.Errorf("empty response from API for category %s", categoryName)
+		return nil
 	}
 
 	// Clean potential markdown wrapping
@@ -272,145 +164,132 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
 	responseText = strings.TrimSuffix(responseText, "```")
 	responseText = strings.TrimSpace(responseText)
 
-	var resp categoryAIResponse
+	var resp deepAnalysisResponse
 	if err := json.Unmarshal([]byte(responseText), &resp); err != nil {
-		return nil, fmt.Errorf("failed to parse AI response for category %s: %w", categoryName, err)
+		return nil
 	}
 
-	return &models.CategoryAIInsight{
-		AIRiskLevel:    resp.AIRiskLevel,
-		Confidence:     resp.Confidence,
-		Findings:       resp.Findings,
-		Context:        resp.Context,
-		Recommendation: resp.Recommendation,
-	}, nil
+	// Convert to model types
+	compoundRisks := make([]models.CompoundRisk, 0, len(resp.CompoundRisks))
+	for _, cr := range resp.CompoundRisks {
+		compoundRisks = append(compoundRisks, models.CompoundRisk{
+			Pattern:      cr.Pattern,
+			RiskLevel:    cr.RiskLevel,
+			Contributing: cr.Contributing,
+			Explanation:  cr.Explanation,
+		})
+	}
+
+	return &models.DeepAnalysisResult{
+		RiskAssessment:   resp.RiskAssessment,
+		CompoundRisks:    compoundRisks,
+		BehaviorFindings: resp.BehaviorFindings,
+		MissedByRules:    resp.MissedByRules,
+		Confidence:       resp.Confidence,
+	}
 }
 
-// ============================================================================
-// CATEGORY CONTEXT BUILDERS
-// Each function builds the most relevant metadata context for that category,
-// so the AI receives the richest possible input for its analysis.
-// ============================================================================
+// AnalyzeAllCategories is kept for backward compatibility but now delegates to AnalyzeDeep.
+// The deep analysis result is stored on AIAnalysisResult.DeepAnalysis rather than on
+// individual CategoryScore.AIInsight fields.
+func (ca *CheckAnalyzer) AnalyzeAllCategories(ctx context.Context, packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) {
+	// No-op: deep analysis is called directly from ai_enrichment.go now
+}
 
-// buildPublisherControlContext builds context for Publisher Control analysis.
-//
-// Focus: maintainer account takeover risk - single point of compromise,
-// account age, email domain stability, package concentration, signing practices.
-//
-// Source: Ohm et al. (2020) - 90% of supply chain attacks target maintainer accounts
-func (ca *CheckAnalyzer) buildPublisherControlContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
+// buildFullContext creates a comprehensive context dump of ALL data for the package,
+// giving the AI everything it needs for holistic cross-cutting analysis.
+func (ca *CheckAnalyzer) buildFullContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
+	// Package identity
+	sb.WriteString(fmt.Sprintf("## Package: %s (ecosystem: %s)\n\n", packageName, ecosystem))
+
+	// Rule-based scores overview
+	if result.SupplyChainScore != nil {
+		cs := result.SupplyChainScore.CategoryScores
+		sb.WriteString(fmt.Sprintf("## Rule-Based Scores (Total: %d/20, Risk Level: %s)\n\n",
+			result.SupplyChainScore.TotalScore, result.SupplyChainScore.RiskLevel))
+
+		categories := []struct {
+			name  string
+			score models.CategoryScore
+		}{
+			{"Publisher Control", cs.PublisherControl},
+			{"Ownership Changes", cs.OwnershipChanges},
+			{"Release Anomalies", cs.ReleaseAnomalies},
+			{"Install Execution", cs.InstallExecution},
+			{"Dependency Sprawl", cs.DependencySprawl},
+			{"Provenance", cs.Provenance},
+			{"Health", cs.Health},
+			{"Governance", cs.Governance},
+			{"Release Security", cs.ReleaseSecurity},
+			{"Package Maturity", cs.PackageMaturity},
+		}
+
+		for _, cat := range categories {
+			sb.WriteString(fmt.Sprintf("- %s: %d/2 risk points — %s\n", cat.name, cat.score.RiskPoints, cat.score.Description))
+			if cat.score.Evidence != "" {
+				sb.WriteString(fmt.Sprintf("  Evidence: %s\n", cat.score.Evidence))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// Risk factors
+	if len(result.RiskFactors) > 0 {
+		sb.WriteString("## Identified Risk Factors\n\n")
+		for _, rf := range result.RiskFactors {
+			sb.WriteString(fmt.Sprintf("- %s\n", rf))
+		}
+		sb.WriteString("\n")
+	}
+
+	// High-severity findings
+	highFindings := 0
+	for _, f := range result.Findings {
+		if f.Severity == "HIGH" || f.Severity == "CRITICAL" {
+			highFindings++
+		}
+	}
+	if highFindings > 0 {
+		sb.WriteString("## High-Severity Findings\n\n")
+		for _, f := range result.Findings {
+			if f.Severity == "HIGH" || f.Severity == "CRITICAL" {
+				sb.WriteString(fmt.Sprintf("- [%s] %s: %s\n", f.Severity, f.Category, f.Description))
+				if f.Evidence != "" {
+					sb.WriteString(fmt.Sprintf("  Evidence: %s\n", f.Evidence))
+				}
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// Metadata context — the raw signals for behavioral analysis
+	m := result.Metadata
+	sb.WriteString("## Package Metadata (Raw Signals)\n\n")
+
+	// Maintainer info
 	sb.WriteString(fmt.Sprintf("Maintainer count: %d\n", len(m.Maintainers)))
 	if len(m.Maintainers) > 0 {
 		sb.WriteString(fmt.Sprintf("Maintainers: %s\n", strings.Join(m.Maintainers, ", ")))
 	}
 
-	// Download count indicates attack value - compromising a popular package has higher impact
+	// Popularity (attack target value)
 	if m.DownloadCount > 0 {
-		sb.WriteString(fmt.Sprintf("Download count: %d (indicates attack target value)\n", m.DownloadCount))
+		sb.WriteString(fmt.Sprintf("Downloads: %d\n", m.DownloadCount))
+	}
+	if m.RepoStars > 0 {
+		sb.WriteString(fmt.Sprintf("Stars: %d, Forks: %d, Open Issues: %d\n", m.RepoStars, m.RepoForks, m.RepoOpenIssues))
 	}
 
-	// Repository owner type (personal vs org) affects security controls available
-	if m.RepoOwner != "" {
-		sb.WriteString(fmt.Sprintf("Repository owner: %s\n", m.RepoOwner))
-	}
-
-	// Signing practices - absence means no artifact integrity verification
-	sb.WriteString(fmt.Sprintf("Signed releases: %v\n", m.SignedReleases))
-	sb.WriteString(fmt.Sprintf("Has SLSA attestation: %v\n", m.HasSLSAAttestation))
-	sb.WriteString(fmt.Sprintf("Has Sigstore signature: %v\n", m.HasSigstoreSignature))
-	if ecosystem == models.EcosystemNPM {
-		sb.WriteString(fmt.Sprintf("Has npm provenance: %v\n", m.HasNPMProvenance))
-	}
-	if ecosystem == models.EcosystemPyPI {
-		sb.WriteString(fmt.Sprintf("Has PyPI signatures: %v\n", m.HasPyPISignatures))
-	}
-
-	// Repository creation date - newer repos may indicate account hijack or transfer
-	if !m.RepoCreatedAt.IsZero() {
-		age := time.Since(m.RepoCreatedAt)
-		sb.WriteString(fmt.Sprintf("Repository created: %s (%.0f days ago)\n", m.RepoCreatedAt.Format("2006-01-02"), age.Hours()/24))
-	}
-
-	// OSSFScore gives overall health signal
-	if m.OSSFScore > 0 {
-		sb.WriteString(fmt.Sprintf("OSSF Scorecard score: %.1f/10\n", m.OSSFScore))
-	}
-
-	return sb.String()
-}
-
-// buildOwnershipChangesContext builds context for Ownership Changes analysis.
-//
-// Focus: suspicious transfer patterns - timing anomalies between repo creation
-// and package publishing, maintainer turnover, abandoned package takeover risk.
-//
-// Source: Ohm et al. (2020) - ownership transfer as attack vector
-func (ca *CheckAnalyzer) buildOwnershipChangesContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-	sb.WriteString(fmt.Sprintf("Current maintainers: %d (%s)\n", len(m.Maintainers), strings.Join(m.Maintainers, ", ")))
-
-	// Timing comparison: repo creation vs package first publish
-	// Significant gap suggests package predates current repository (possible transfer)
-	if !m.PublishedAt.IsZero() {
-		sb.WriteString(fmt.Sprintf("Package first published: %s\n", m.PublishedAt.Format("2006-01-02")))
-	}
-	if !m.RepoCreatedAt.IsZero() {
-		sb.WriteString(fmt.Sprintf("Repository created: %s\n", m.RepoCreatedAt.Format("2006-01-02")))
-		if !m.PublishedAt.IsZero() {
-			gap := m.RepoCreatedAt.Sub(m.PublishedAt)
-			if gap > 30*24*time.Hour {
-				sb.WriteString(fmt.Sprintf("Repository created %.0f days AFTER package first published (possible transfer indicator)\n", gap.Hours()/24))
-			} else if gap < -30*24*time.Hour {
-				sb.WriteString(fmt.Sprintf("Repository created %.0f days BEFORE package first published (normal development pattern)\n", -gap.Hours()/24))
-			}
-		}
-	}
-
-	// Commit activity patterns - sudden author changes indicate potential takeover
-	if m.BusFactor > 0 {
-		sb.WriteString(fmt.Sprintf("Current bus factor: %d contributor(s) responsible for majority of commits\n", m.BusFactor))
-	}
-	if m.TopContributorPct > 0 {
-		sb.WriteString(fmt.Sprintf("Top contributor: %.0f%% of all commits\n", m.TopContributorPct))
-	}
-	if len(m.CommitDistribution) > 0 {
-		sb.WriteString(fmt.Sprintf("Distinct commit authors: %d\n", len(m.CommitDistribution)))
-	}
-
-	// Source code availability - missing source is a major red flag for takeover
-	sb.WriteString(fmt.Sprintf("Source code available: %v\n", result.SourceCodeAvailable))
-	if !m.RepoLastCommit.IsZero() {
-		sb.WriteString(fmt.Sprintf("Last commit: %s\n", m.RepoLastCommit.Format("2006-01-02")))
-	}
-
-	return sb.String()
-}
-
-// buildReleaseAnomaliesContext builds context for Release Anomalies analysis.
-//
-// Focus: dormancy/reactivation patterns - the classic "abandoned package takeover"
-// attack vector where an attacker gains control and releases malicious versions
-// after a long period of inactivity.
-//
-// Source: Ohm et al. (2020) - dormant package reactivation as attack pattern
-func (ca *CheckAnalyzer) buildReleaseAnomaliesContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-
-	// Release timing context
+	// Timeline
 	if !m.PublishedAt.IsZero() {
 		age := time.Since(m.PublishedAt)
 		sb.WriteString(fmt.Sprintf("First published: %s (%.0f days ago)\n", m.PublishedAt.Format("2006-01-02"), age.Hours()/24))
 	}
+	if !m.RepoCreatedAt.IsZero() {
+		sb.WriteString(fmt.Sprintf("Repository created: %s\n", m.RepoCreatedAt.Format("2006-01-02")))
+	}
 	if !m.RepoLastCommit.IsZero() {
 		staleness := time.Since(m.RepoLastCommit)
 		sb.WriteString(fmt.Sprintf("Last commit: %s (%.0f days ago)\n", m.RepoLastCommit.Format("2006-01-02"), staleness.Hours()/24))
@@ -419,405 +298,61 @@ func (ca *CheckAnalyzer) buildReleaseAnomaliesContext(packageName string, ecosys
 		sb.WriteString(fmt.Sprintf("Latest version: %s\n", m.LatestVersion))
 	}
 
-	// Repository activity indicators
-	if m.RepoStars > 0 {
-		sb.WriteString(fmt.Sprintf("Stars: %d, Forks: %d (community interest level)\n", m.RepoStars, m.RepoForks))
-	}
-	if m.RepoOpenIssues > 0 {
-		sb.WriteString(fmt.Sprintf("Open issues: %d\n", m.RepoOpenIssues))
-	}
-
-	// Bus factor change signals - new single contributor after previously distributed = suspicious
+	// Development health
 	if m.BusFactor > 0 {
-		sb.WriteString(fmt.Sprintf("Current bus factor: %d\n", m.BusFactor))
+		sb.WriteString(fmt.Sprintf("Bus factor: %d\n", m.BusFactor))
 	}
 	if m.TopContributorPct > 0 {
 		sb.WriteString(fmt.Sprintf("Top contributor: %.0f%% of commits\n", m.TopContributorPct))
 	}
+	sb.WriteString(fmt.Sprintf("Code review rate: %.0f%%\n", m.CodeReviewRate))
+	sb.WriteString(fmt.Sprintf("Branch protection: %v\n", m.HasBranchProtection))
+	sb.WriteString(fmt.Sprintf("Required reviewers: %d\n", m.RequiredReviewers))
 
-	// Download count helps contextualize why this package would be a target
-	if m.DownloadCount > 0 {
-		sb.WriteString(fmt.Sprintf("Download count: %d (attack target value)\n", m.DownloadCount))
-	}
-
-	return sb.String()
-}
-
-// buildInstallExecutionContext builds context for Install Execution analysis.
-//
-// Focus: semantic analysis of install scripts - what do the scripts actually do?
-// Rule-based checks use regex for dangerous patterns, but AI can understand
-// the full semantics and intent of the code.
-//
-// Source: Ohm et al. (2020) - install-time execution as primary attack vector
-// Examples: event-stream (2018), ua-parser-js (2021), coa (2021)
-func (ca *CheckAnalyzer) buildInstallExecutionContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-	sb.WriteString(fmt.Sprintf("Has install scripts: %v\n", m.HasInstallScripts))
-
-	// Include actual script content for semantic analysis
-	// This is where AI adds the most value over rule-based pattern matching
-	if len(m.InstallScripts) > 0 {
-		sb.WriteString(fmt.Sprintf("Install script count: %d\n", len(m.InstallScripts)))
-		sb.WriteString("Script contents:\n")
-		for scriptType, scriptContent := range m.InstallScripts {
-			sb.WriteString(fmt.Sprintf("  [%s]: %s\n", scriptType, scriptContent))
-		}
-	}
-
-	// Include already-detected dangerous patterns for context
-	if m.InstallScriptAnalysis != nil {
-		sb.WriteString(fmt.Sprintf("\nRule-based analysis detected dangerous patterns: %v\n", m.InstallScriptAnalysis.HasDangerousPatterns))
-		sb.WriteString(fmt.Sprintf("Rule-based risk level: %s\n", m.InstallScriptAnalysis.RiskLevel))
-		if len(m.InstallScriptAnalysis.DangerousPatterns) > 0 {
-			sb.WriteString("Dangerous patterns detected:\n")
-			for _, p := range m.InstallScriptAnalysis.DangerousPatterns {
-				sb.WriteString(fmt.Sprintf("  - [%s] %s: %s\n", p.Severity, p.Pattern, p.Description))
-				if p.Match != "" {
-					sb.WriteString(fmt.Sprintf("    Match: %s\n", p.Match))
-				}
-			}
-		}
-	}
-
-	// Additional context about the package's legitimacy signals
-	sb.WriteString(fmt.Sprintf("\nSource code available: %v\n", result.SourceCodeAvailable))
+	// Build infrastructure
 	sb.WriteString(fmt.Sprintf("Has CI: %v\n", m.HasCI))
-	if m.DownloadCount > 0 {
-		sb.WriteString(fmt.Sprintf("Download count: %d\n", m.DownloadCount))
-	}
-
-	return sb.String()
-}
-
-// buildDependencySprawlContext builds context for Dependency Sprawl analysis.
-//
-// Focus: attack surface assessment - each dependency is a potential attack vector.
-// High transitive dependency counts create exponential attack surface.
-//
-// Source: Zimmermann et al. (2019) - "Small World with High Risks"
-// Each direct dependency multiplies the attack surface transitively.
-func (ca *CheckAnalyzer) buildDependencySprawlContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-
-	if m.DependencyMetrics != nil {
-		dm := m.DependencyMetrics
-		sb.WriteString(fmt.Sprintf("Direct dependencies: %d\n", dm.DirectCount))
-		sb.WriteString(fmt.Sprintf("Transitive dependencies: %d\n", dm.TransitiveCount))
-		if dm.MaxDepth > 0 {
-			sb.WriteString(fmt.Sprintf("Maximum dependency depth: %d\n", dm.MaxDepth))
-		}
-		sb.WriteString(fmt.Sprintf("Dependency count verified from lock file: %v\n", dm.Verified))
-	}
-
-	// Context about what type of package this is helps assess whether sprawl is expected
-	// A testing framework is expected to have more deps than a simple utility
-	if m.License != "" {
-		sb.WriteString(fmt.Sprintf("License: %s\n", m.License))
-	}
-	if m.DownloadCount > 0 {
-		sb.WriteString(fmt.Sprintf("Download count: %d (popularity indicates attack surface value)\n", m.DownloadCount))
-	}
-
-	// OSSF dependency update check (if available)
-	if score, ok := m.OSSFChecks["Dependency-Update-Tool"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Dependency-Update-Tool score: %d/10\n", score))
-	}
-	if score, ok := m.OSSFChecks["Pinned-Dependencies"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Pinned-Dependencies score: %d/10\n", score))
-	}
-
-	return sb.String()
-}
-
-// buildProvenanceContext builds context for Provenance analysis.
-//
-// Focus: build integrity gaps - can we verify the published artifact matches
-// the source code? Missing provenance means we cannot detect build chain compromise.
-//
-// Source: SLSA Framework - Build Integrity Requirements
-// SolarWinds (2020) and CodeCov (2021) showed build chain compromise impact.
-func (ca *CheckAnalyzer) buildProvenanceContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-
-	// SLSA attestation details
-	sb.WriteString(fmt.Sprintf("Has SLSA attestation: %v\n", m.HasSLSAAttestation))
-	if m.SLSALevel != "" {
-		sb.WriteString(fmt.Sprintf("SLSA level: %s\n", m.SLSALevel))
-	}
-
-	// Signing mechanisms
-	sb.WriteString(fmt.Sprintf("Has Sigstore signature: %v\n", m.HasSigstoreSignature))
-	if ecosystem == models.EcosystemNPM {
-		sb.WriteString(fmt.Sprintf("Has npm provenance attestation: %v\n", m.HasNPMProvenance))
-	}
-	if ecosystem == models.EcosystemPyPI {
-		sb.WriteString(fmt.Sprintf("Has PyPI cryptographic signatures: %v\n", m.HasPyPISignatures))
-	}
-	sb.WriteString(fmt.Sprintf("Has signed GitHub releases: %v\n", m.SignedReleases))
-	sb.WriteString(fmt.Sprintf("Reproducible build configured: %v\n", m.ReproducibleBuild))
-	if m.ProvenanceDetails != "" {
-		sb.WriteString(fmt.Sprintf("Provenance details: %s\n", m.ProvenanceDetails))
-	}
-
-	// Build system context
 	if len(m.CISystems) > 0 {
 		sb.WriteString(fmt.Sprintf("CI systems: %s\n", strings.Join(m.CISystems, ", ")))
 	}
-	sb.WriteString(fmt.Sprintf("Has automated release process: %v\n", m.HasReleaseProcess))
+	sb.WriteString(fmt.Sprintf("Has self-hosted runners: %v\n", m.HasSelfHosted))
+	sb.WriteString(fmt.Sprintf("Automated release process: %v\n", m.HasReleaseProcess))
 
-	// Source code availability as a prerequisite for provenance
-	sb.WriteString(fmt.Sprintf("Source code available: %v\n", result.SourceCodeAvailable))
-	if result.SourceVerification != nil {
-		sb.WriteString(fmt.Sprintf("Has matching git tag: %v\n", result.SourceVerification.HasMatchingGitTag))
-		sb.WriteString(fmt.Sprintf("Has source package: %v\n", result.SourceVerification.HasSourcePackage))
-	}
-
-	// OSSF Signed-Releases score
-	if score, ok := m.OSSFChecks["Signed-Releases"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Signed-Releases score: %d/10\n", score))
-	}
-
-	return sb.String()
-}
-
-// buildHealthContext builds context for Health analysis.
-//
-// Focus: community health and concentration risk - a package controlled by
-// a single contributor is far more vulnerable to account takeover or
-// malicious insider action than one with distributed development.
-//
-// Source: Ohm et al. (2020) - single maintainer as primary attack target
-// node-ipc (2022) demonstrated insider threat from solo maintainer
-func (ca *CheckAnalyzer) buildHealthContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-
-	// Bus factor - key concentration risk indicator
-	sb.WriteString(fmt.Sprintf("Bus factor: %d (contributors needed for 50%% of commits)\n", m.BusFactor))
-	if m.TopContributorPct > 0 {
-		sb.WriteString(fmt.Sprintf("Top contributor concentration: %.0f%% of all commits\n", m.TopContributorPct))
-	}
-	if len(m.CommitDistribution) > 0 {
-		sb.WriteString(fmt.Sprintf("Total distinct commit authors: %d\n", len(m.CommitDistribution)))
-	}
-	sb.WriteString(fmt.Sprintf("Maintainer count: %d\n", len(m.Maintainers)))
-
-	// Code review - key oversight mechanism
-	sb.WriteString(fmt.Sprintf("Code review rate: %.0f%% of PRs reviewed\n", m.CodeReviewRate))
-	sb.WriteString(fmt.Sprintf("Branch protection enabled: %v\n", m.HasBranchProtection))
-	sb.WriteString(fmt.Sprintf("Required reviewers: %d\n", m.RequiredReviewers))
-
-	// CI quality - automated quality gates
-	sb.WriteString(fmt.Sprintf("CI quality score: %d/10\n", m.CIQualityScore))
-	sb.WriteString(fmt.Sprintf("CI includes tests: %v\n", m.CIHasTests))
-	if len(m.CISystems) > 0 {
-		sb.WriteString(fmt.Sprintf("CI systems: %s\n", strings.Join(m.CISystems, ", ")))
-	}
-
-	// Repository activity signals
-	if m.RepoStars > 0 {
-		sb.WriteString(fmt.Sprintf("Stars: %d, Forks: %d, Open issues: %d\n", m.RepoStars, m.RepoForks, m.RepoOpenIssues))
-	}
-	if !m.RepoLastCommit.IsZero() {
-		staleness := time.Since(m.RepoLastCommit)
-		sb.WriteString(fmt.Sprintf("Last commit: %s (%.0f days ago)\n", m.RepoLastCommit.Format("2006-01-02"), staleness.Hours()/24))
-	}
-
-	// OSSF health-related checks
-	if score, ok := m.OSSFChecks["Code-Review"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Code-Review score: %d/10\n", score))
-	}
-	if score, ok := m.OSSFChecks["Branch-Protection"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Branch-Protection score: %d/10\n", score))
-	}
-
-	return sb.String()
-}
-
-// buildGovernanceContext builds context for Governance analysis.
-//
-// Focus: accountability and maintenance patterns - well-governed projects
-// have security policies, contribution guides, and are responsive to issues.
-// Abandoned or ungoverned packages are easier targets for takeover.
-//
-// Source: OSSF Scorecard - Governance and maintenance metrics
-func (ca *CheckAnalyzer) buildGovernanceContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-
-	// Repository state - archived means permanently unmaintained
-	sb.WriteString(fmt.Sprintf("Repository archived: %v\n", m.RepoArchived))
-
-	// Activity signals
-	if !m.RepoLastCommit.IsZero() {
-		staleness := time.Since(m.RepoLastCommit)
-		sb.WriteString(fmt.Sprintf("Last commit: %s (%.0f days ago)\n", m.RepoLastCommit.Format("2006-01-02"), staleness.Hours()/24))
-	}
-	if !m.RepoUpdatedAt.IsZero() {
-		staleness := time.Since(m.RepoUpdatedAt)
-		sb.WriteString(fmt.Sprintf("Repository last updated: %.0f days ago\n", staleness.Hours()/24))
-	}
-	if m.RepoOpenIssues > 0 {
-		sb.WriteString(fmt.Sprintf("Open issues: %d (responsiveness indicator)\n", m.RepoOpenIssues))
-	}
-
-	// License as a governance signal - no license indicates less formal project
-	if m.License != "" {
-		sb.WriteString(fmt.Sprintf("License: %s\n", m.License))
-	} else {
-		sb.WriteString("License: none (informal project)\n")
-	}
-
-	// Maintainer context
-	sb.WriteString(fmt.Sprintf("Maintainer count: %d\n", len(m.Maintainers)))
-	if m.RepoOwner != "" {
-		sb.WriteString(fmt.Sprintf("Repository owner: %s\n", m.RepoOwner))
-	}
-
-	// OSSF governance-related checks
-	if score, ok := m.OSSFChecks["Security-Policy"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Security-Policy score: %d/10\n", score))
-	}
-	if score, ok := m.OSSFChecks["Maintained"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Maintained score: %d/10\n", score))
-	}
-	if m.OSSFScore > 0 {
-		sb.WriteString(fmt.Sprintf("Overall OSSF score: %.1f/10\n", m.OSSFScore))
-	}
-
-	return sb.String()
-}
-
-// buildReleaseSecurityContext builds context for Release Security analysis.
-//
-// Focus: CI/CD integrity - releases published directly from a developer machine
-// (rather than automated CI) are far more susceptible to build chain compromise.
-// Self-hosted runners provide uncontrolled build environments.
-//
-// Source: SLSA Build Level Requirements
-// SolarWinds (2020) demonstrated the impact of compromised build infrastructure
-func (ca *CheckAnalyzer) buildReleaseSecurityContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-
-	// Build system details - structured data if available
-	if len(m.BuildSystems) > 0 {
-		sb.WriteString("Build systems detected:\n")
-		for _, bs := range m.BuildSystems {
-			sb.WriteString(fmt.Sprintf("  - %s (hosted by: %s, self-hosted: %v)\n", bs.Platform, bs.HostedBy, bs.IsSelfHosted))
-			if bs.RunnerDetails != "" {
-				sb.WriteString(fmt.Sprintf("    Runner: %s\n", bs.RunnerDetails))
-			}
-			if bs.ConfigFile != "" {
-				sb.WriteString(fmt.Sprintf("    Config: %s\n", bs.ConfigFile))
-			}
-		}
-	} else if len(m.CISystems) > 0 {
-		sb.WriteString(fmt.Sprintf("CI systems: %s\n", strings.Join(m.CISystems, ", ")))
-	} else {
-		sb.WriteString("CI systems: none detected (possible manual publishing)\n")
-	}
-
-	sb.WriteString(fmt.Sprintf("Has self-hosted runners: %v (uncontrolled build environment)\n", m.HasSelfHosted))
-	sb.WriteString(fmt.Sprintf("Has automated release process: %v\n", m.HasReleaseProcess))
-
-	// Release controls
-	sb.WriteString(fmt.Sprintf("Branch protection enabled: %v\n", m.HasBranchProtection))
-	sb.WriteString(fmt.Sprintf("Required reviewers: %d\n", m.RequiredReviewers))
+	// Provenance
 	sb.WriteString(fmt.Sprintf("Signed releases: %v\n", m.SignedReleases))
-	sb.WriteString(fmt.Sprintf("Has SLSA attestation: %v\n", m.HasSLSAAttestation))
+	sb.WriteString(fmt.Sprintf("SLSA attestation: %v\n", m.HasSLSAAttestation))
+	sb.WriteString(fmt.Sprintf("Sigstore signature: %v\n", m.HasSigstoreSignature))
+	if ecosystem == models.EcosystemNPM {
+		sb.WriteString(fmt.Sprintf("npm provenance: %v\n", m.HasNPMProvenance))
+	}
 
-	// Source code traceability
+	// Source verification
 	sb.WriteString(fmt.Sprintf("Source code available: %v\n", result.SourceCodeAvailable))
 	if result.SourceVerification != nil {
-		sb.WriteString(fmt.Sprintf("Has matching git tag for release: %v\n", result.SourceVerification.HasMatchingGitTag))
+		sb.WriteString(fmt.Sprintf("Matching git tag: %v\n", result.SourceVerification.HasMatchingGitTag))
+		sb.WriteString(fmt.Sprintf("Source package: %v\n", result.SourceVerification.HasSourcePackage))
 	}
 
-	// OSSF release security checks
-	if score, ok := m.OSSFChecks["CI-Tests"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF CI-Tests score: %d/10\n", score))
-	}
-	if score, ok := m.OSSFChecks["Branch-Protection"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Branch-Protection score: %d/10\n", score))
-	}
-
-	return sb.String()
-}
-
-// buildPackageMaturityContext builds context for Package Maturity analysis.
-//
-// Focus: lifecycle risk - very new packages are unvetted; abandoned packages
-// are vulnerable to takeover. Irregular release cadence indicates governance issues.
-//
-// Source: Ohm et al. (2020) - maturity as a proxy for security vetting
-// Zimmermann et al. (2019) - new packages have higher compromise risk
-func (ca *CheckAnalyzer) buildPackageMaturityContext(packageName string, ecosystem models.Ecosystem, result *models.AnalysisResult) string {
-	m := result.Metadata
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Package: %s (ecosystem: %s)\n", packageName, ecosystem))
-
-	// Package age - too new = unvetted; too old without activity = abandoned
-	if !m.PublishedAt.IsZero() {
-		age := time.Since(m.PublishedAt)
-		sb.WriteString(fmt.Sprintf("First published: %s (%.0f days / %.1f years ago)\n",
-			m.PublishedAt.Format("2006-01-02"), age.Hours()/24, age.Hours()/(24*365)))
+	// Install scripts
+	sb.WriteString(fmt.Sprintf("Has install scripts: %v\n", m.HasInstallScripts))
+	if len(m.InstallScripts) > 0 {
+		sb.WriteString("Install script contents:\n")
+		for scriptType, content := range m.InstallScripts {
+			sb.WriteString(fmt.Sprintf("  [%s]: %s\n", scriptType, content))
+		}
 	}
 
-	// Staleness - when was the last development activity?
-	if !m.RepoLastCommit.IsZero() {
-		staleness := time.Since(m.RepoLastCommit)
-		sb.WriteString(fmt.Sprintf("Last commit: %s (%.0f days ago)\n", m.RepoLastCommit.Format("2006-01-02"), staleness.Hours()/24))
-	}
-	if !m.RepoUpdatedAt.IsZero() {
-		staleness := time.Since(m.RepoUpdatedAt)
-		sb.WriteString(fmt.Sprintf("Repository last updated: %.0f days ago\n", staleness.Hours()/24))
-	}
-
-	// Version progression - indicates maturity trajectory
-	if m.LatestVersion != "" {
-		sb.WriteString(fmt.Sprintf("Latest version: %s\n", m.LatestVersion))
-	}
-
-	// Community engagement as maturity proxy
-	if m.RepoStars > 0 {
-		sb.WriteString(fmt.Sprintf("Stars: %d, Forks: %d\n", m.RepoStars, m.RepoForks))
-	}
-	if m.DownloadCount > 0 {
-		sb.WriteString(fmt.Sprintf("Download count: %d\n", m.DownloadCount))
-	}
-	if m.RepoOpenIssues > 0 {
-		sb.WriteString(fmt.Sprintf("Open issues: %d\n", m.RepoOpenIssues))
-	}
-
-	// Repository archived status - permanent maintenance end
+	// Repository status
 	sb.WriteString(fmt.Sprintf("Repository archived: %v\n", m.RepoArchived))
 
-	// Maintainer continuity
-	sb.WriteString(fmt.Sprintf("Maintainer count: %d\n", len(m.Maintainers)))
-	if m.BusFactor > 0 {
-		sb.WriteString(fmt.Sprintf("Bus factor: %d\n", m.BusFactor))
+	// OSSF Score
+	if m.OSSFScore > 0 {
+		sb.WriteString(fmt.Sprintf("OSSF Scorecard: %.1f/10\n", m.OSSFScore))
 	}
 
-	// OSSF maintained check
-	if score, ok := m.OSSFChecks["Maintained"]; ok {
-		sb.WriteString(fmt.Sprintf("OSSF Maintained score: %d/10\n", score))
+	// Dependency metrics
+	if m.DependencyMetrics != nil {
+		sb.WriteString(fmt.Sprintf("Direct dependencies: %d\n", m.DependencyMetrics.DirectCount))
+		sb.WriteString(fmt.Sprintf("Transitive dependencies: %d\n", m.DependencyMetrics.TransitiveCount))
 	}
 
 	return sb.String()

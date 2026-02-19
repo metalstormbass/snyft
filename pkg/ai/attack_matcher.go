@@ -137,66 +137,119 @@ var KnownAttacks = []HistoricalAttack{
 
 // AttackMatchRequest contains the data needed to match against known attacks
 type AttackMatchRequest struct {
-	PackageName   string
-	Ecosystem     models.Ecosystem
+	PackageName    string
+	Ecosystem      models.Ecosystem
 	AnalysisResult models.AnalysisResult
-	Threshold     float64 // Minimum similarity score (default: 0.7)
+	Threshold      float64 // Minimum similarity score (default: 0.7)
 }
 
-// AttackMatchResponse contains the AI-generated similarity assessment
-type AttackMatchResponse struct {
-	AttackName       string   `json:"attack_name"`
-	SimilarityScore  float64  `json:"similarity_score"`  // 0.0-1.0
-	Confidence       float64  `json:"confidence"`        // 0.0-1.0
-	MatchingIndicators []string `json:"matching_indicators"`
-	DifferingFactors []string `json:"differing_factors,omitempty"`
-	Explanation      string   `json:"explanation"`
-	Severity         string   `json:"severity"`  // HIGH, MEDIUM, LOW
+// batchAttackMatchResponse is the JSON structure for the batched attack matching response
+type batchAttackMatchResponse struct {
+	Matches []struct {
+		AttackName         string   `json:"attack_name"`
+		SimilarityScore    float64  `json:"similarity_score"`
+		Confidence         float64  `json:"confidence"`
+		MatchingIndicators []string `json:"matching_indicators"`
+		DifferingFactors   []string `json:"differing_factors,omitempty"`
+		Explanation        string   `json:"explanation"`
+		Severity           string   `json:"severity"`
+	} `json:"matches"`
 }
 
-// MatchAgainstKnownAttacks compares a package against the database of known supply chain attacks
-// Returns matches with similarity scores above the threshold (default: 0.7)
+// MatchAgainstKnownAttacks compares a package against ALL relevant known supply chain
+// attacks in a single API call. This replaces the previous approach of making one API
+// call per attack pattern, reducing API calls from N to 1.
+//
+// Returns matches with similarity scores above the threshold (default: 0.7).
 func MatchAgainstKnownAttacks(ctx context.Context, client *Client, req AttackMatchRequest) ([]models.AttackPatternMatch, error) {
 	if req.Threshold == 0 {
 		req.Threshold = 0.7
 	}
 
-	// Build package profile for comparison
+	// Filter relevant attacks by ecosystem
+	var relevantAttacks []HistoricalAttack
+	for _, attack := range KnownAttacks {
+		if attack.Ecosystem == string(req.Ecosystem) || attack.Ecosystem == "universal" {
+			relevantAttacks = append(relevantAttacks, attack)
+		}
+	}
+
+	if len(relevantAttacks) == 0 {
+		return nil, nil
+	}
+
+	// Build package profile
 	packageProfile := buildPackageProfile(req.PackageName, req.Ecosystem, req.AnalysisResult)
 
-	// For each known attack, ask Claude to assess similarity
+	// Build batched comparison prompt
+	prompt := buildBatchedAttackPrompt(packageProfile, relevantAttacks, req.Threshold)
+
+	// Single API call for ALL attack comparisons
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model("claude-sonnet-4-5-20250929"),
+		MaxTokens: 2500,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+		Temperature: anthropic.Float(0.3),
+	}
+
+	msg, err := client.CreateMessage(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call Claude API: %w", err)
+	}
+
+	// Extract text
+	var responseText string
+	for _, block := range msg.Content {
+		if block.Type == "text" {
+			responseText += block.Text
+		}
+	}
+
+	if responseText == "" {
+		return nil, fmt.Errorf("empty response from Claude API")
+	}
+
+	// Clean potential markdown wrapping
+	responseText = strings.TrimSpace(responseText)
+	responseText = strings.TrimPrefix(responseText, "```json")
+	responseText = strings.TrimPrefix(responseText, "```")
+	responseText = strings.TrimSuffix(responseText, "```")
+	responseText = strings.TrimSpace(responseText)
+
+	var resp batchAttackMatchResponse
+	if err := json.Unmarshal([]byte(responseText), &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w (response: %s)", err, responseText)
+	}
+
+	// Convert to model types, filtering by threshold
 	var matches []models.AttackPatternMatch
-
-	for _, attack := range KnownAttacks {
-		// Skip attacks from different ecosystems (unless ecosystem-agnostic patterns)
-		if attack.Ecosystem != string(req.Ecosystem) && attack.Ecosystem != "universal" {
+	for _, m := range resp.Matches {
+		if m.SimilarityScore < req.Threshold {
 			continue
 		}
 
-		// Build comparison prompt
-		prompt := buildAttackComparisonPrompt(packageProfile, attack)
-
-		// Call Claude API
-		response, err := callClaudeForComparison(ctx, client, prompt)
-		if err != nil {
-			// Log error but continue with other attacks
-			continue
-		}
-
-		// Parse response
-		if response.SimilarityScore >= req.Threshold {
-			match := models.AttackPatternMatch{
-				PatternName:      attack.Name,
-				Description:      attack.Description,
-				Confidence:       response.Confidence,
-				Severity:         response.Severity,
-				Evidence:         response.MatchingIndicators,
-				AcademicSource:   attack.AcademicSource,
-				Indicators:       attack.Indicators,
-				MitigationAdvice: generateMitigationAdvice(attack, *response),
+		// Find the matching attack for academic source
+		var academicSource string
+		var indicators []string
+		for _, attack := range relevantAttacks {
+			if attack.Name == m.AttackName {
+				academicSource = attack.AcademicSource
+				indicators = attack.Indicators
+				break
 			}
-			matches = append(matches, match)
 		}
+
+		matches = append(matches, models.AttackPatternMatch{
+			PatternName:    m.AttackName,
+			Description:    m.Explanation,
+			Confidence:     m.Confidence,
+			Severity:       m.Severity,
+			Evidence:       m.MatchingIndicators,
+			AcademicSource: academicSource,
+			Indicators:     indicators,
+		})
 	}
 
 	return matches, nil
@@ -249,147 +302,57 @@ func buildPackageProfile(packageName string, ecosystem models.Ecosystem, result 
 	return profile.String()
 }
 
-// buildAttackComparisonPrompt creates a prompt for comparing a package to a known attack
-func buildAttackComparisonPrompt(packageProfile string, attack HistoricalAttack) string {
+// buildBatchedAttackPrompt creates a single prompt that compares a package against
+// ALL relevant known attacks at once, instead of one-at-a-time.
+func buildBatchedAttackPrompt(packageProfile string, attacks []HistoricalAttack, threshold float64) string {
 	var prompt strings.Builder
 
-	prompt.WriteString("You are analyzing a software package to determine if it exhibits patterns similar to a documented supply chain attack.\n\n")
-
-	prompt.WriteString("## Historical Attack Pattern\n\n")
-	prompt.WriteString(fmt.Sprintf("**Attack Name:** %s\n", attack.Name))
-	prompt.WriteString(fmt.Sprintf("**Date:** %s\n", attack.Date))
-	prompt.WriteString(fmt.Sprintf("**Attack Vector:** %s\n", attack.AttackVector))
-	prompt.WriteString(fmt.Sprintf("**Description:** %s\n\n", attack.Description))
-
-	prompt.WriteString("**Known Indicators from Historical Attack:**\n")
-	for _, indicator := range attack.Indicators {
-		prompt.WriteString(fmt.Sprintf("- %s\n", indicator))
-	}
-
-	prompt.WriteString(fmt.Sprintf("\n**Impact:** %s\n", attack.ImpactDescription))
-	prompt.WriteString(fmt.Sprintf("**Academic Source:** %s\n\n", attack.AcademicSource))
+	prompt.WriteString("You are analyzing a software package to determine if it exhibits patterns similar to documented supply chain attacks.\n\n")
 
 	prompt.WriteString("## Package Under Analysis\n\n")
 	prompt.WriteString(packageProfile)
 
-	prompt.WriteString("\n## Task\n\n")
-	prompt.WriteString("Compare the package under analysis to this historical attack pattern and provide a structured assessment:\n\n")
-	prompt.WriteString("1. **Similarity Score** (0.0-1.0): How similar is this package's profile to the historical attack?\n")
-	prompt.WriteString("   - 0.0-0.3: Minimal similarity (different pattern)\n")
-	prompt.WriteString("   - 0.3-0.5: Some shared characteristics (weak match)\n")
-	prompt.WriteString("   - 0.5-0.7: Moderate similarity (notable overlap)\n")
-	prompt.WriteString("   - 0.7-0.9: High similarity (strong pattern match)\n")
-	prompt.WriteString("   - 0.9-1.0: Near-identical pattern (almost certain match)\n\n")
+	prompt.WriteString("\n## Known Attack Patterns to Compare Against\n\n")
 
-	prompt.WriteString("2. **Confidence** (0.0-1.0): How confident are you in this assessment based on available data?\n\n")
+	for i, attack := range attacks {
+		prompt.WriteString(fmt.Sprintf("### Attack %d: %s\n", i+1, attack.Name))
+		prompt.WriteString(fmt.Sprintf("**Date:** %s | **Vector:** %s\n", attack.Date, attack.AttackVector))
+		prompt.WriteString(fmt.Sprintf("**Description:** %s\n", attack.Description))
+		prompt.WriteString("**Indicators:**\n")
+		for _, indicator := range attack.Indicators {
+			prompt.WriteString(fmt.Sprintf("- %s\n", indicator))
+		}
+		prompt.WriteString(fmt.Sprintf("**Source:** %s\n\n", attack.AcademicSource))
+	}
 
-	prompt.WriteString("3. **Matching Indicators**: List which indicators from the historical attack are present\n\n")
+	prompt.WriteString("## Task\n\n")
+	prompt.WriteString(fmt.Sprintf("Compare this package against ALL %d attack patterns above. For each pattern, assess the similarity.\n\n", len(attacks)))
+	prompt.WriteString(fmt.Sprintf("Only include matches with similarity_score >= %.1f in the output.\n\n", threshold))
+	prompt.WriteString("Scoring guide:\n")
+	prompt.WriteString("- 0.0-0.3: Minimal similarity\n")
+	prompt.WriteString("- 0.3-0.5: Some shared characteristics\n")
+	prompt.WriteString("- 0.5-0.7: Moderate similarity\n")
+	prompt.WriteString("- 0.7-0.9: High similarity (strong match)\n")
+	prompt.WriteString("- 0.9-1.0: Near-identical pattern\n\n")
 
-	prompt.WriteString("4. **Differing Factors**: List factors that distinguish this package from the attack\n\n")
-
-	prompt.WriteString("5. **Explanation**: Provide a clear explanation of the comparison\n\n")
-
-	prompt.WriteString("6. **Severity**: Assess severity (HIGH/MEDIUM/LOW) if this pattern match suggests real risk\n\n")
-
-	prompt.WriteString("Respond ONLY with valid JSON in this exact format (no markdown, no code blocks):\n")
+	prompt.WriteString("Respond ONLY with valid JSON (no markdown, no code blocks):\n")
 	prompt.WriteString("{\n")
-	prompt.WriteString("  \"attack_name\": \"attack name\",\n")
-	prompt.WriteString("  \"similarity_score\": 0.0,\n")
-	prompt.WriteString("  \"confidence\": 0.0,\n")
-	prompt.WriteString("  \"matching_indicators\": [\"indicator 1\", \"indicator 2\"],\n")
-	prompt.WriteString("  \"differing_factors\": [\"factor 1\", \"factor 2\"],\n")
-	prompt.WriteString("  \"explanation\": \"detailed explanation\",\n")
-	prompt.WriteString("  \"severity\": \"HIGH\"\n")
-	prompt.WriteString("}\n")
+	prompt.WriteString("  \"matches\": [\n")
+	prompt.WriteString("    {\n")
+	prompt.WriteString("      \"attack_name\": \"exact attack name from list above\",\n")
+	prompt.WriteString("      \"similarity_score\": 0.0,\n")
+	prompt.WriteString("      \"confidence\": 0.0,\n")
+	prompt.WriteString("      \"matching_indicators\": [\"indicator 1\"],\n")
+	prompt.WriteString("      \"differing_factors\": [\"factor 1\"],\n")
+	prompt.WriteString("      \"explanation\": \"why this pattern matches or doesn't\",\n")
+	prompt.WriteString("      \"severity\": \"HIGH|MEDIUM|LOW\"\n")
+	prompt.WriteString("    }\n")
+	prompt.WriteString("  ]\n")
+	prompt.WriteString("}\n\n")
+	prompt.WriteString("If NO attacks have similarity >= the threshold, return {\"matches\": []}.\n")
+	prompt.WriteString("Be conservative — only flag genuine pattern matches, not superficial overlaps.")
 
 	return prompt.String()
-}
-
-// callClaudeForComparison calls the Claude API to assess similarity between package and attack
-func callClaudeForComparison(ctx context.Context, client *Client, prompt string) (*AttackMatchResponse, error) {
-	params := anthropic.MessageNewParams{
-		Model:       anthropic.Model("claude-sonnet-4-5-20250929"),
-		MaxTokens:   2000,
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
-		},
-		Temperature: anthropic.Float(0.3), // Low temperature for analytical consistency
-	}
-
-	msg, err := client.CreateMessage(ctx, params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call Claude API: %w", err)
-	}
-
-	// Extract text from response
-	if len(msg.Content) == 0 {
-		return nil, fmt.Errorf("empty response from Claude API")
-	}
-
-	var responseText string
-	for _, block := range msg.Content {
-		if block.Type == "text" {
-			responseText += block.Text
-		}
-	}
-
-	if responseText == "" {
-		return nil, fmt.Errorf("no text content in Claude API response")
-	}
-
-	// Parse JSON response
-	var response AttackMatchResponse
-	// Clean potential markdown code blocks
-	responseText = strings.TrimSpace(responseText)
-	responseText = strings.TrimPrefix(responseText, "```json")
-	responseText = strings.TrimPrefix(responseText, "```")
-	responseText = strings.TrimSuffix(responseText, "```")
-	responseText = strings.TrimSpace(responseText)
-
-	if err := json.Unmarshal([]byte(responseText), &response); err != nil {
-		return nil, fmt.Errorf("failed to parse Claude API response: %w (response: %s)", err, responseText)
-	}
-
-	return &response, nil
-}
-
-// generateMitigationAdvice provides contextual mitigation advice based on the attack pattern match
-func generateMitigationAdvice(attack HistoricalAttack, response AttackMatchResponse) string {
-	var advice strings.Builder
-
-	advice.WriteString(fmt.Sprintf("Based on similarity to the %s attack pattern:\n\n", attack.Name))
-
-	// Generic advice based on attack vector
-	switch {
-	case strings.Contains(attack.AttackVector, "Account Takeover"):
-		advice.WriteString("- Verify maintainer identity and account security (check for 2FA)\n")
-		advice.WriteString("- Review recent ownership or maintainer changes\n")
-		advice.WriteString("- Check for unexpected releases or version changes\n")
-		advice.WriteString("- Consider using package version pinning\n")
-
-	case strings.Contains(attack.AttackVector, "Malicious Dependency"):
-		advice.WriteString("- Audit all dependencies, especially recent additions\n")
-		advice.WriteString("- Use dependency lock files to prevent unexpected updates\n")
-		advice.WriteString("- Scan dependencies for known malicious packages\n")
-		advice.WriteString("- Review transitive dependencies carefully\n")
-
-	case strings.Contains(attack.AttackVector, "Install Script"):
-		advice.WriteString("- Inspect install scripts (postinstall, preinstall) for malicious behavior\n")
-		advice.WriteString("- Consider using --ignore-scripts flag during installation\n")
-		advice.WriteString("- Sandbox installation processes\n")
-		advice.WriteString("- Monitor network activity during package installation\n")
-	}
-
-	// Severity-based advice
-	if response.Severity == "HIGH" || response.Severity == "CRITICAL" {
-		advice.WriteString("\n**Immediate Actions (High Severity):**\n")
-		advice.WriteString("- DO NOT use this package in production until verified safe\n")
-		advice.WriteString("- Conduct thorough security audit of package code\n")
-		advice.WriteString("- Report findings to package registry security team\n")
-		advice.WriteString("- Consider alternative packages with better security posture\n")
-	}
-
-	return advice.String()
 }
 
 // GetKnownAttack retrieves a specific attack by name from the database

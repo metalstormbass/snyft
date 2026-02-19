@@ -600,6 +600,61 @@ func (r *Reporter) printHTMLPackageAIAnalysis(w io.Writer, aiAnalysis *models.AI
 		return
 	}
 
+	// Deep Analysis (compound risks, behavioral anomalies, missed-by-rules insights)
+	if aiAnalysis.DeepAnalysis != nil {
+		da := aiAnalysis.DeepAnalysis
+		_, _ = fmt.Fprintln(w, "        <div style=\"margin-top: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px; border-radius: 5px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"color: white; margin-top: 0;\">🤖 AI Deep Analysis</h4>")
+
+		if da.RiskAssessment != "" {
+			_, _ = fmt.Fprintf(w, "          <p style=\"color: white;\">%s</p>\n", html.EscapeString(da.RiskAssessment))
+		}
+
+		if len(da.CompoundRisks) > 0 {
+			_, _ = fmt.Fprintln(w, "          <div style=\"margin-top: 10px;\">")
+			_, _ = fmt.Fprintln(w, "            <strong style=\"color: white;\">Compound Risk Patterns:</strong>")
+			for _, cr := range da.CompoundRisks {
+				bgColor := "#fff9e6"
+				if cr.RiskLevel == "HIGH" {
+					bgColor = "#ffe6e6"
+				}
+				_, _ = fmt.Fprintf(w, "            <div style=\"background: %s; padding: 10px; margin: 8px 0; border-radius: 4px;\">\n", bgColor)
+				_, _ = fmt.Fprintf(w, "              <strong>[%s]</strong> %s\n", html.EscapeString(cr.RiskLevel), html.EscapeString(cr.Pattern))
+				if cr.Explanation != "" {
+					_, _ = fmt.Fprintf(w, "              <div style=\"font-size: 13px; color: #666; margin-top: 4px;\">%s</div>\n", html.EscapeString(cr.Explanation))
+				}
+				_, _ = fmt.Fprintln(w, "            </div>")
+			}
+			_, _ = fmt.Fprintln(w, "          </div>")
+		}
+
+		if len(da.BehaviorFindings) > 0 {
+			_, _ = fmt.Fprintln(w, "          <div style=\"margin-top: 10px;\">")
+			_, _ = fmt.Fprintln(w, "            <strong style=\"color: white;\">Behavioral Anomalies:</strong>")
+			_, _ = fmt.Fprintln(w, "            <ul style=\"color: white;\">")
+			for _, bf := range da.BehaviorFindings {
+				_, _ = fmt.Fprintf(w, "              <li>%s</li>\n", html.EscapeString(bf))
+			}
+			_, _ = fmt.Fprintln(w, "            </ul>")
+			_, _ = fmt.Fprintln(w, "          </div>")
+		}
+
+		if len(da.MissedByRules) > 0 {
+			_, _ = fmt.Fprintln(w, "          <div style=\"margin-top: 10px;\">")
+			_, _ = fmt.Fprintln(w, "            <strong style=\"color: white;\">Insights Beyond Rules:</strong>")
+			_, _ = fmt.Fprintln(w, "            <ul style=\"color: white;\">")
+			for _, insight := range da.MissedByRules {
+				_, _ = fmt.Fprintf(w, "              <li>%s</li>\n", html.EscapeString(insight))
+			}
+			_, _ = fmt.Fprintln(w, "            </ul>")
+			_, _ = fmt.Fprintln(w, "          </div>")
+		}
+
+		confidencePct := da.Confidence * 100
+		_, _ = fmt.Fprintf(w, "          <div style=\"font-size: 12px; color: rgba(255,255,255,0.7); margin-top: 8px;\">Confidence: %.0f%%</div>\n", confidencePct)
+		_, _ = fmt.Fprintln(w, "        </div>")
+	}
+
 	// Attack Pattern Matches
 	if len(aiAnalysis.AttackPatterns) > 0 {
 		_, _ = fmt.Fprintln(w, "        <div style=\"margin-top: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px; border-radius: 5px;\">")

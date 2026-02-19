@@ -396,6 +396,60 @@ func (r *Reporter) printPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnal
 		return
 	}
 
+	// Deep Analysis (compound risks, behavioral anomalies, missed-by-rules insights)
+	if aiAnalysis.DeepAnalysis != nil {
+		da := aiAnalysis.DeepAnalysis
+		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+		_, _ = fmt.Fprintf(w, "%s│%s  %s🤖 AI Deep Analysis:%s\n",
+			borderColor, ColorReset,
+			ColorBold+ColorCyan, ColorReset)
+
+		if da.RiskAssessment != "" {
+			_, _ = fmt.Fprintf(w, "%s│%s    %s\n", borderColor, ColorReset, da.RiskAssessment)
+		}
+
+		if len(da.CompoundRisks) > 0 {
+			_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+			_, _ = fmt.Fprintf(w, "%s│%s    %sCompound Risk Patterns:%s\n",
+				borderColor, ColorReset, ColorBold, ColorReset)
+			for _, cr := range da.CompoundRisks {
+				sevColor := r.getSeverityColor(cr.RiskLevel)
+				_, _ = fmt.Fprintf(w, "%s│%s      %s[%s]%s %s\n",
+					borderColor, ColorReset, sevColor, cr.RiskLevel, ColorReset, cr.Pattern)
+				if cr.Explanation != "" {
+					_, _ = fmt.Fprintf(w, "%s│%s        %s%s%s\n",
+						borderColor, ColorReset, ColorDim, cr.Explanation, ColorReset)
+				}
+				if len(cr.Contributing) > 0 {
+					_, _ = fmt.Fprintf(w, "%s│%s        %sContributing signals: %s%s\n",
+						borderColor, ColorReset, ColorDim, strings.Join(cr.Contributing, ", "), ColorReset)
+				}
+			}
+		}
+
+		if len(da.BehaviorFindings) > 0 {
+			_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+			_, _ = fmt.Fprintf(w, "%s│%s    %sBehavioral Anomalies:%s\n",
+				borderColor, ColorReset, ColorBold, ColorReset)
+			for _, bf := range da.BehaviorFindings {
+				_, _ = fmt.Fprintf(w, "%s│%s      • %s\n", borderColor, ColorReset, bf)
+			}
+		}
+
+		if len(da.MissedByRules) > 0 {
+			_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
+			_, _ = fmt.Fprintf(w, "%s│%s    %sInsights Beyond Rules:%s\n",
+				borderColor, ColorReset, ColorBold, ColorReset)
+			for _, insight := range da.MissedByRules {
+				_, _ = fmt.Fprintf(w, "%s│%s      • %s\n", borderColor, ColorReset, insight)
+			}
+		}
+
+		confidencePct := da.Confidence * 100
+		_, _ = fmt.Fprintf(w, "%s│%s    %sConfidence: %.0f%%%s\n",
+			borderColor, ColorReset, ColorDim, confidencePct, ColorReset)
+	}
+
 	// Attack Pattern Matches
 	if len(aiAnalysis.AttackPatterns) > 0 {
 		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)

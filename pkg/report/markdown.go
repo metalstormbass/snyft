@@ -289,6 +289,56 @@ func (r *Reporter) printMarkdownPackageAIAnalysis(w io.Writer, aiAnalysis *model
 		return
 	}
 
+	// Deep Analysis (compound risks, behavioral anomalies, missed-by-rules insights)
+	if aiAnalysis.DeepAnalysis != nil {
+		da := aiAnalysis.DeepAnalysis
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "#### 🤖 AI Deep Analysis")
+		_, _ = fmt.Fprintln(w)
+
+		if da.RiskAssessment != "" {
+			_, _ = fmt.Fprintf(w, "%s\n", da.RiskAssessment)
+			_, _ = fmt.Fprintln(w)
+		}
+
+		if len(da.CompoundRisks) > 0 {
+			_, _ = fmt.Fprintln(w, "**Compound Risk Patterns:**")
+			_, _ = fmt.Fprintln(w)
+			for _, cr := range da.CompoundRisks {
+				_, _ = fmt.Fprintf(w, "- **[%s]** %s\n", cr.RiskLevel, cr.Pattern)
+				if cr.Explanation != "" {
+					_, _ = fmt.Fprintf(w, "  - %s\n", cr.Explanation)
+				}
+				if len(cr.Contributing) > 0 {
+					_, _ = fmt.Fprintf(w, "  - *Contributing signals:* %s\n", strings.Join(cr.Contributing, ", "))
+				}
+			}
+			_, _ = fmt.Fprintln(w)
+		}
+
+		if len(da.BehaviorFindings) > 0 {
+			_, _ = fmt.Fprintln(w, "**Behavioral Anomalies:**")
+			_, _ = fmt.Fprintln(w)
+			for _, bf := range da.BehaviorFindings {
+				_, _ = fmt.Fprintf(w, "- %s\n", bf)
+			}
+			_, _ = fmt.Fprintln(w)
+		}
+
+		if len(da.MissedByRules) > 0 {
+			_, _ = fmt.Fprintln(w, "**Insights Beyond Rules:**")
+			_, _ = fmt.Fprintln(w)
+			for _, insight := range da.MissedByRules {
+				_, _ = fmt.Fprintf(w, "- %s\n", insight)
+			}
+			_, _ = fmt.Fprintln(w)
+		}
+
+		confidencePct := da.Confidence * 100
+		_, _ = fmt.Fprintf(w, "*AI Confidence: %.0f%%*\n", confidencePct)
+		_, _ = fmt.Fprintln(w)
+	}
+
 	// Attack Pattern Matches
 	if len(aiAnalysis.AttackPatterns) > 0 {
 		_, _ = fmt.Fprintln(w)

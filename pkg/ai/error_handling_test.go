@@ -179,18 +179,9 @@ func TestAttackMatcher_ErrorHandling(t *testing.T) {
 		assert.Empty(t, attacks, "Should return empty list for invalid ecosystem")
 	})
 
-	t.Run("generate mitigation for unknown vector", func(t *testing.T) {
-		attack := HistoricalAttack{
-			Name:         "test-attack",
-			AttackVector: "Unknown Vector Type",
-		}
-		response := AttackMatchResponse{
-			Severity: "HIGH",
-		}
-
-		advice := generateMitigationAdvice(attack, response)
-		assert.NotEmpty(t, advice, "Should generate advice even for unknown vector")
-		assert.Contains(t, advice, "Immediate Actions", "Should include action items")
+	t.Run("build batched attack prompt with empty attacks", func(t *testing.T) {
+		prompt := buildBatchedAttackPrompt("test profile", []HistoricalAttack{}, 0.7)
+		assert.NotEmpty(t, prompt, "Should build prompt even with empty attacks list")
 	})
 }
 
