@@ -121,6 +121,11 @@ func (r *Reporter) Generate() error {
 	}
 }
 
+// HasProgress returns true if the reporter is configured to show progress bars
+func (r *Reporter) HasProgress() bool {
+	return r.config.ShowProgress
+}
+
 // ShowProgress displays an enhanced progress indicator with time info and animations
 func (r *Reporter) ShowProgress(current, total int, packageName string) {
 	if !r.config.ShowProgress {
