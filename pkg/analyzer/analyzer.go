@@ -349,6 +349,7 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 				Description: cat.score.Description,
 				Check:       cat.name + " Assessment",
 				Evidence:    cat.score.Evidence,
+				Methodology: cat.score.Methodology,
 			})
 		} else if cat.score.RiskPoints == 1 {
 			result.Findings = append(result.Findings, models.Finding{
@@ -357,6 +358,7 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 				Description: cat.score.Description,
 				Check:       cat.name + " Assessment",
 				Evidence:    cat.score.Evidence,
+				Methodology: cat.score.Methodology,
 			})
 		}
 	}
@@ -478,10 +480,12 @@ func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.C
 
 	// Convert the detailed analysis to a CategoryScore
 	return models.CategoryScore{
-		Score:       2 - analysis.RiskPoints, // Convert risk points to score
+		Score:       2 - analysis.RiskPoints,
 		RiskPoints:  analysis.RiskPoints,
 		Description: analysis.Evidence,
 		Evidence:    analysis.Evidence,
 		Verified:    analysis.Verified,
+		Methodology: "Checked maintainer count (bus factor), organization vs personal account type via GitHub API, maintainer account ages, email domain stability (personal vs organizational), package concentration per maintainer (npm), commit/release signing practices, and MFA enforcement (GitHub org-level).",
+		ChecksPerformed: analysis.buildPublisherControlChecks(),
 	}
 }

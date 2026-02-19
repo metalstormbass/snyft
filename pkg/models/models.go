@@ -98,8 +98,9 @@ type Finding struct {
 	Severity    string `json:"severity"`
 	Category    string `json:"category"`
 	Description string `json:"description"`
-	Check       string `json:"check"`           // The check that identified this risk
+	Check       string `json:"check"`                      // The check that identified this risk
 	Evidence    string `json:"evidence,omitempty"`
+	Methodology string `json:"methodology,omitempty"`       // How this check was performed (data sources, APIs)
 }
 
 // InstallScriptAnalysis contains analysis of install-time scripts
@@ -299,14 +300,25 @@ type CategoryScores struct {
 	PackageMaturity    CategoryScore `json:"package_maturity"`     // 0-2 pts: package age/update frequency/staleness
 }
 
+// CheckResult represents the outcome of an individual sub-check within a category.
+// Each scoring category performs multiple sub-checks; this struct records whether
+// each sub-check passed, failed, was skipped, or had unavailable data.
+type CheckResult struct {
+	Name   string `json:"name"`   // Sub-check name, e.g. "SLSA attestation", "SECURITY.md present"
+	Status string `json:"status"` // PASS, FAIL, SKIPPED, UNAVAILABLE
+	Detail string `json:"detail"` // Human-readable explanation of the result
+}
+
 // CategoryScore contains the score and details for a single category
 type CategoryScore struct {
-	Score       int                `json:"score"`                 // 0-2 points
-	RiskPoints  int                `json:"risk_points"`           // Points assigned (higher = more risk)
-	Description string             `json:"description"`           // Human-readable description
-	Evidence    string             `json:"evidence"`              // Evidence for the score
-	Verified    bool               `json:"verified"`              // Whether data was available to verify
-	AIInsight   *CategoryAIInsight `json:"ai_insight,omitempty"`  // AI-powered deeper analysis (optional)
+	Score           int                `json:"score"`                           // 0-2 points
+	RiskPoints      int                `json:"risk_points"`                     // Points assigned (higher = more risk)
+	Description     string             `json:"description"`                     // Human-readable description
+	Evidence        string             `json:"evidence"`                        // Evidence for the score
+	Verified        bool               `json:"verified"`                        // Whether data was available to verify
+	Methodology     string             `json:"methodology,omitempty"`           // How this check was performed (data sources, APIs)
+	ChecksPerformed []CheckResult      `json:"checks_performed,omitempty"`      // Individual sub-check outcomes
+	AIInsight       *CategoryAIInsight `json:"ai_insight,omitempty"`            // AI-powered deeper analysis (optional)
 }
 
 // CategoryAIInsight contains AI-powered deeper analysis for a single scoring category.

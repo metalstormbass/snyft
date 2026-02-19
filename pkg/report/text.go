@@ -368,6 +368,13 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 					finding.Evidence)
 			}
 
+			if finding.Methodology != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "%s│%s       %sMethodology:%s %s\n",
+					riskColor, ColorReset,
+					ColorDim, ColorReset,
+					finding.Methodology)
+			}
+
 			if i < len(result.Findings)-1 {
 				_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
 			}
@@ -506,6 +513,32 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 				borderColor, ColorReset,
 				ColorDim, cat.score.Description, ColorReset)
 		}
+
+		// Show individual sub-checks in verbose mode
+		if r.config.Verbose && len(cat.score.ChecksPerformed) > 0 {
+			for _, check := range cat.score.ChecksPerformed {
+				statusIcon := r.getCheckStatusIcon(check.Status)
+				_, _ = fmt.Fprintf(w, "%s│%s      %s  %s %s: %s%s\n",
+					borderColor, ColorReset,
+					ColorDim, statusIcon, check.Name, check.Detail, ColorReset)
+			}
+		}
+	}
+}
+
+// getCheckStatusIcon returns a compact icon for a sub-check status
+func (r *Reporter) getCheckStatusIcon(status string) string {
+	switch status {
+	case "PASS":
+		return ColorGreen + "✓" + ColorReset
+	case "FAIL":
+		return ColorRed + "✗" + ColorReset
+	case "SKIPPED":
+		return ColorDim + "○" + ColorReset
+	case "UNAVAILABLE":
+		return ColorYellow + "?" + ColorReset
+	default:
+		return "·"
 	}
 }
 

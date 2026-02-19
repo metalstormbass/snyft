@@ -24,7 +24,9 @@ import (
 // Scoring: 0=full provenance, 1=partial provenance, 2=no provenance
 func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.CategoryScore {
 	evidence := []string{}
+	checks := []models.CheckResult{}
 	provenanceScore := 0
+	methodology := "Verified source code availability against published package. Checked for SLSA attestations, Sigstore/Cosign signatures, ecosystem-specific provenance (npm provenance, PyPI signatures), signed GitHub releases, reproducible build configuration, and OSSF Scorecard Signed-Releases check."
 
 	// --- Phase 1: Source verification (primary factor) ---
 	//
@@ -39,10 +41,18 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		if result.SourceVerification.Verified {
 			sourceVerified = true
 			evidence = append(evidence, "source code verified")
+			checks = append(checks, models.CheckResult{Name: "Source code verification", Status: "PASS", Detail: result.SourceVerification.Details})
 		} else {
 			sourceExplicitlyFailed = true
 			evidence = append(evidence, "source code NOT verified")
+			detail := "Source code could not be verified against published package"
+			if len(result.SourceVerification.VerificationErrors) > 0 {
+				detail = strings.Join(result.SourceVerification.VerificationErrors, "; ")
+			}
+			checks = append(checks, models.CheckResult{Name: "Source code verification", Status: "FAIL", Detail: detail})
 		}
+	} else {
+		checks = append(checks, models.CheckResult{Name: "Source code verification", Status: "SKIPPED", Detail: "No repository URL available or check not applicable"})
 	}
 
 	// --- Phase 2: Attestation checks (existing logic) ---
@@ -51,35 +61,53 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	if result.Metadata.HasSLSAAttestation {
 		provenanceScore += 2
 		evidence = append(evidence, fmt.Sprintf("SLSA attestation (%s)", result.Metadata.SLSALevel))
+		checks = append(checks, models.CheckResult{Name: "SLSA attestation", Status: "PASS", Detail: fmt.Sprintf("SLSA level: %s", result.Metadata.SLSALevel)})
+	} else {
+		checks = append(checks, models.CheckResult{Name: "SLSA attestation", Status: "FAIL", Detail: "No SLSA attestation found"})
 	}
 
 	// Check for Sigstore signatures
 	if result.Metadata.HasSigstoreSignature {
 		provenanceScore += 2
 		evidence = append(evidence, "Sigstore/Cosign signatures")
+		checks = append(checks, models.CheckResult{Name: "Sigstore signatures", Status: "PASS", Detail: "Sigstore/Cosign signatures found"})
+	} else {
+		checks = append(checks, models.CheckResult{Name: "Sigstore signatures", Status: "FAIL", Detail: "No Sigstore/Cosign signatures found"})
 	}
 
 	// Check for ecosystem-specific provenance
 	if result.Metadata.HasNPMProvenance {
 		provenanceScore += 2
 		evidence = append(evidence, "npm provenance attestations")
+		checks = append(checks, models.CheckResult{Name: "npm provenance", Status: "PASS", Detail: "npm provenance attestations present"})
+	} else if result.Dependency.Ecosystem == models.EcosystemNPM {
+		checks = append(checks, models.CheckResult{Name: "npm provenance", Status: "FAIL", Detail: "No npm provenance attestations found"})
 	}
 
 	if result.Metadata.HasPyPISignatures {
 		provenanceScore += 2
 		evidence = append(evidence, "PyPI cryptographic signatures")
+		checks = append(checks, models.CheckResult{Name: "PyPI signatures", Status: "PASS", Detail: "PyPI cryptographic signatures present"})
+	} else if result.Dependency.Ecosystem == models.EcosystemPyPI {
+		checks = append(checks, models.CheckResult{Name: "PyPI signatures", Status: "FAIL", Detail: "No PyPI cryptographic signatures found"})
 	}
 
 	// Check for signed releases (GitHub releases with signatures)
 	if result.Metadata.SignedReleases {
 		provenanceScore += 1
 		evidence = append(evidence, "signed GitHub releases")
+		checks = append(checks, models.CheckResult{Name: "Signed releases", Status: "PASS", Detail: "GitHub releases are signed"})
+	} else {
+		checks = append(checks, models.CheckResult{Name: "Signed releases", Status: "FAIL", Detail: "Releases are not cryptographically signed"})
 	}
 
 	// Check for reproducible builds
 	if result.Metadata.ReproducibleBuild {
 		provenanceScore += 1
 		evidence = append(evidence, "reproducible build configuration")
+		checks = append(checks, models.CheckResult{Name: "Reproducible build", Status: "PASS", Detail: "Reproducible build configuration found"})
+	} else {
+		checks = append(checks, models.CheckResult{Name: "Reproducible build", Status: "FAIL", Detail: "No reproducible build configuration detected"})
 	}
 
 	// Check OSSF Scorecard for additional provenance indicators
@@ -87,6 +115,9 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		if signingScore, exists := result.Metadata.OSSFChecks["Signed-Releases"]; exists && signingScore >= 7 {
 			provenanceScore += 1
 			evidence = append(evidence, fmt.Sprintf("OSSF Signed-Releases: %d/10", signingScore))
+			checks = append(checks, models.CheckResult{Name: "OSSF Signed-Releases", Status: "PASS", Detail: fmt.Sprintf("Score: %d/10", signingScore)})
+		} else if signingScore, exists := result.Metadata.OSSFChecks["Signed-Releases"]; exists {
+			checks = append(checks, models.CheckResult{Name: "OSSF Signed-Releases", Status: "FAIL", Detail: fmt.Sprintf("Score: %d/10 (below threshold of 7)", signingScore)})
 		}
 	}
 
@@ -163,10 +194,12 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	}
 
 	return models.CategoryScore{
-		Score:       score,
-		RiskPoints:  riskPoints,
-		Description: description,
-		Evidence:    evidenceStr,
-		Verified:    len(evidence) > 0 || provenanceScore == 0,
+		Score:           score,
+		RiskPoints:      riskPoints,
+		Description:     description,
+		Evidence:        evidenceStr,
+		Verified:        len(evidence) > 0 || provenanceScore == 0,
+		Methodology:     methodology,
+		ChecksPerformed: checks,
 	}
 }
