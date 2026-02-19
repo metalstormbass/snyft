@@ -1,6 +1,7 @@
 package fetcher
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -262,5 +263,537 @@ func TestEnrichFromPOM_MissingParentPOM(t *testing.T) {
 
 	if pkg.RepositoryURL != "" {
 		t.Errorf("RepositoryURL should be empty, got %q", pkg.RepositoryURL)
+	}
+}
+
+// Test: enrichFromPOM extracts repo URL from POM <url> when SCM is missing
+// Justification: Many Maven POMs set the <url> element to their GitHub page
+//
+//	even when <scm> is absent.  Without this fallback, snyft cannot find
+//	the source repository, preventing provenance and health checks from
+//	running and inflating the risk score.
+//
+// Source: Maven Central publishing requirements — <url> is a required field.
+//
+//	https://central.sonatype.org/publish/requirements/
+//
+// Methodology: Mock server serves a POM with <url> pointing to GitHub but no
+//
+//	<scm> element.  Verify that enrichFromPOM populates RepositoryURL.
+//
+// Result: pkg.RepositoryURL is set from the POM's <url> element.
+func TestEnrichFromPOM_URLFallback(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>url-only</artifactId>
+  <version>1.0.0</version>
+  <url>https://github.com/example/url-only</url>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/url-only/1.0.0/url-only-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, artifactPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "com.example", ArtifactID: "url-only"}
+	err := client.enrichFromPOM(pkg, "com.example", "url-only", "1.0.0")
+	if err != nil {
+		t.Fatalf("enrichFromPOM returned error: %v", err)
+	}
+
+	want := "https://github.com/example/url-only"
+	if pkg.RepositoryURL != want {
+		t.Errorf("RepositoryURL = %q, want %q", pkg.RepositoryURL, want)
+	}
+}
+
+// Test: enrichFromPOM ignores POM <url> that is not a git hosting provider
+// Justification: The <url> element often points to marketing sites (e.g.
+//
+//	spring.io, hibernate.org).  Accepting these would cause the git platform
+//	client to fail and produce misleading risk data.
+//
+// Source: Observed in the wild — many popular packages set <url> to docs/homepage.
+// Methodology: Mock server serves a POM with <url> pointing to a non-repo host.
+// Result: pkg.RepositoryURL remains empty.
+func TestEnrichFromPOM_URLIgnoredForNonRepoHost(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>marketing</artifactId>
+  <version>1.0.0</version>
+  <url>https://example.com/marketing-page</url>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/marketing/1.0.0/marketing-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, artifactPOM)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "com.example", ArtifactID: "marketing"}
+	_ = client.enrichFromPOM(pkg, "com.example", "marketing", "1.0.0")
+
+	if pkg.RepositoryURL != "" {
+		t.Errorf("RepositoryURL should be empty for non-repo host, got %q", pkg.RepositoryURL)
+	}
+}
+
+// Test: enrichFromPOM extracts repo URL from issueManagement URL
+// Justification: Some POMs lack both <scm> and a repo-pointing <url> but
+//
+//	include an <issueManagement> element pointing to GitHub Issues.
+//	Stripping the /issues suffix reveals the source repository, enabling
+//	provenance and health checks that would otherwise be skipped.
+//
+// Source: Maven POM reference — <issueManagement> often mirrors the repo host.
+// Methodology: Mock server serves a POM with only <issueManagement> URL.
+// Result: pkg.RepositoryURL is derived by stripping /issues from the URL.
+func TestEnrichFromPOM_IssueManagementFallback(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>issues-only</artifactId>
+  <version>1.0.0</version>
+  <url>https://example.com/docs</url>
+  <issueManagement>
+    <system>GitHub Issues</system>
+    <url>https://github.com/example/issues-only/issues</url>
+  </issueManagement>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/issues-only/1.0.0/issues-only-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, artifactPOM)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "com.example", ArtifactID: "issues-only"}
+	err := client.enrichFromPOM(pkg, "com.example", "issues-only", "1.0.0")
+	if err != nil {
+		t.Fatalf("enrichFromPOM returned error: %v", err)
+	}
+
+	want := "https://github.com/example/issues-only"
+	if pkg.RepositoryURL != want {
+		t.Errorf("RepositoryURL = %q, want %q", pkg.RepositoryURL, want)
+	}
+}
+
+// Test: deriveRepoFromGroupID maps well-known groupId prefixes to repo URLs
+// Justification: Sonatype requires domain verification for io.github.*,
+//
+//	com.github.*, io.gitlab.*, and io.bitbucket.* prefixes.  When all
+//	POM-based strategies fail, the groupId itself is a high-confidence
+//	signal for the source repository location.  Missing the repo prevents
+//	all git-based risk checks (provenance, health, governance).
+//
+// Source: https://central.sonatype.org/publish/requirements/coordinates/
+// Methodology: Unit test against each well-known prefix pattern.
+// Result: Correct repository URL is derived from the groupId + artifactId.
+func TestDeriveRepoFromGroupID(t *testing.T) {
+	tests := []struct {
+		name       string
+		groupID    string
+		artifactID string
+		want       string
+	}{
+		{
+			name:       "io.github prefix",
+			groupID:    "io.github.openfeign",
+			artifactID: "feign-core",
+			want:       "https://github.com/openfeign/feign-core",
+		},
+		{
+			name:       "com.github prefix (JitPack convention)",
+			groupID:    "com.github.javaparser",
+			artifactID: "javaparser-core",
+			want:       "https://github.com/javaparser/javaparser-core",
+		},
+		{
+			name:       "io.gitlab prefix",
+			groupID:    "io.gitlab.myuser",
+			artifactID: "my-lib",
+			want:       "https://gitlab.com/myuser/my-lib",
+		},
+		{
+			name:       "io.bitbucket prefix",
+			groupID:    "io.bitbucket.myteam",
+			artifactID: "toolkit",
+			want:       "https://bitbucket.org/myteam/toolkit",
+		},
+		{
+			name:       "org.eclipse prefix",
+			groupID:    "org.eclipse.jgit",
+			artifactID: "org.eclipse.jgit",
+			want:       "https://github.com/eclipse/org.eclipse.jgit",
+		},
+		{
+			name:       "unrecognised prefix returns empty",
+			groupID:    "com.fasterxml.jackson.core",
+			artifactID: "jackson-databind",
+			want:       "",
+		},
+		{
+			name:       "too-short groupId returns empty",
+			groupID:    "io.github",
+			artifactID: "something",
+			want:       "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deriveRepoFromGroupID(tt.groupID, tt.artifactID)
+			if got != tt.want {
+				t.Errorf("deriveRepoFromGroupID(%q, %q) = %q, want %q",
+					tt.groupID, tt.artifactID, got, tt.want)
+			}
+		})
+	}
+}
+
+// Test: repoFromIssueURL strips /issues suffix from known hosting URLs
+// Justification: Issue tracker URLs that point to known git hosts contain
+//
+//	the repository path.  Correctly deriving the repo URL enables source
+//	verification checks for packages that lack <scm>.
+//
+// Source: Observed in the wild — many Apache and Eclipse POMs use this pattern.
+// Methodology: Unit test against URLs with and without /issues suffix.
+// Result: Known-host URLs have /issues stripped; non-repo hosts return empty.
+func TestRepoFromIssueURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "GitHub issues URL",
+			input: "https://github.com/owner/repo/issues",
+			want:  "https://github.com/owner/repo",
+		},
+		{
+			name:  "GitLab issues URL with /-/ prefix",
+			input: "https://gitlab.com/group/project/-/issues",
+			want:  "https://gitlab.com/group/project",
+		},
+		{
+			name:  "non-repo host returns empty",
+			input: "https://jira.example.com/browse/PROJ",
+			want:  "",
+		},
+		{
+			name:  "empty string returns empty",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "repo host without /issues suffix returns empty",
+			input: "https://github.com/owner/repo",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := repoFromIssueURL(tt.input)
+			if got != tt.want {
+				t.Errorf("repoFromIssueURL(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// Test: enrichFromDepsDev extracts repo URL from deps.dev links
+// Justification: deps.dev aggregates metadata across Maven Central and
+//
+//	normalises POM fields.  It succeeds for packages where our own POM
+//	parsing finds nothing, significantly improving source discovery hit
+//	rate and enabling risk checks that depend on repository access.
+//
+// Source: https://docs.deps.dev/api/v3/
+// Methodology: Mock HTTP server returns a deps.dev-shaped JSON response
+//
+//	with a SOURCE_REPO link.  Verify that enrichFromDepsDev populates
+//	RepositoryURL.
+//
+// Result: pkg.RepositoryURL is set from the deps.dev SOURCE_REPO link.
+func TestEnrichFromDepsDev_Links(t *testing.T) {
+	depsResp := depsDevVersionResponse{
+		Links: []depsDevLink{
+			{Label: "HOMEPAGE", URL: "https://example.com"},
+			{Label: "SOURCE_REPO", URL: "https://github.com/example/my-lib.git"},
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(depsResp)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+		depsDevURL: srv.URL,
+	}
+
+	pkg := &MavenPackage{
+		GroupID:       "com.example",
+		ArtifactID:    "my-lib",
+		LatestVersion: "1.0.0",
+	}
+
+	err := client.enrichFromDepsDev(pkg)
+	if err != nil {
+		t.Fatalf("enrichFromDepsDev returned error: %v", err)
+	}
+
+	want := "https://github.com/example/my-lib"
+	if pkg.RepositoryURL != want {
+		t.Errorf("RepositoryURL = %q, want %q", pkg.RepositoryURL, want)
+	}
+}
+
+// Test: enrichFromDepsDev falls back to relatedProjects when links are empty
+// Justification: Some deps.dev responses provide the project key in
+//
+//	relatedProjects rather than as a direct link.  Supporting both paths
+//	maximises the hit rate for source repository discovery.
+//
+// Source: https://docs.deps.dev/api/v3/
+// Methodology: Mock server returns a response with only relatedProjects.
+// Result: pkg.RepositoryURL is derived from the relatedProjects project key.
+func TestEnrichFromDepsDev_RelatedProjects(t *testing.T) {
+	depsResp := depsDevVersionResponse{
+		Links: []depsDevLink{
+			{Label: "HOMEPAGE", URL: "https://example.com"},
+		},
+		RelatedProjects: []depsDevRelatedProject{
+			{
+				ProjectKey:         depsDevProjectKey{ID: "github.com/example/fallback-lib"},
+				RelationType:       "SOURCE_REPO",
+				RelationProvenance: "UNVERIFIED_METADATA",
+			},
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(depsResp)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+		depsDevURL: srv.URL,
+	}
+
+	pkg := &MavenPackage{
+		GroupID:       "com.example",
+		ArtifactID:    "fallback-lib",
+		LatestVersion: "2.0.0",
+	}
+
+	err := client.enrichFromDepsDev(pkg)
+	if err != nil {
+		t.Fatalf("enrichFromDepsDev returned error: %v", err)
+	}
+
+	want := "https://github.com/example/fallback-lib"
+	if pkg.RepositoryURL != want {
+		t.Errorf("RepositoryURL = %q, want %q", pkg.RepositoryURL, want)
+	}
+}
+
+// Test: enrichFromDepsDev handles API failure gracefully
+// Justification: deps.dev may be unavailable or rate-limited.  A failure
+//
+//	must not crash the scan or inflate risk scores — the tool should
+//	degrade gracefully and continue with partial data.
+//
+// Source: Snyft design principle — degrade gracefully, never fail completely.
+// Methodology: Mock server returns 500.  Verify enrichFromDepsDev returns
+//
+//	an error and RepositoryURL remains empty.
+//
+// Result: Error is returned, RepositoryURL is empty.
+func TestEnrichFromDepsDev_APIFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+		depsDevURL: srv.URL,
+	}
+
+	pkg := &MavenPackage{
+		GroupID:       "com.example",
+		ArtifactID:    "fail-lib",
+		LatestVersion: "1.0.0",
+	}
+
+	err := client.enrichFromDepsDev(pkg)
+	if err == nil {
+		t.Fatal("enrichFromDepsDev should return error on API failure")
+	}
+
+	if pkg.RepositoryURL != "" {
+		t.Errorf("RepositoryURL should be empty on API failure, got %q", pkg.RepositoryURL)
+	}
+}
+
+// Test: enrichFromPOM fallback chain ordering — SCM takes priority over <url>
+// Justification: When both <scm> and <url> are present with different values,
+//
+//	the <scm> URL must be preferred because it explicitly declares the source
+//	control location, while <url> can be a documentation or marketing site.
+//	Using the wrong URL causes git platform checks to fail.
+//
+// Source: Maven POM reference — <scm> is the authoritative source control
+//
+//	declaration.  https://maven.apache.org/pom.html#scm
+//
+// Methodology: Mock server serves a POM with both <scm> and <url> pointing
+//
+//	to different GitHub repos.  Verify SCM takes priority.
+//
+// Result: pkg.RepositoryURL is set from <scm>, not <url>.
+func TestEnrichFromPOM_SCMTakesPriorityOverURL(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>priority-test</artifactId>
+  <version>1.0.0</version>
+  <url>https://github.com/example/wrong-repo</url>
+  <scm>
+    <url>https://github.com/example/correct-repo</url>
+  </scm>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/priority-test/1.0.0/priority-test-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, artifactPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "com.example", ArtifactID: "priority-test"}
+	err := client.enrichFromPOM(pkg, "com.example", "priority-test", "1.0.0")
+	if err != nil {
+		t.Fatalf("enrichFromPOM returned error: %v", err)
+	}
+
+	want := "https://github.com/example/correct-repo"
+	if pkg.RepositoryURL != want {
+		t.Errorf("RepositoryURL = %q, want %q (SCM should take priority over <url>)", pkg.RepositoryURL, want)
+	}
+}
+
+// Test: enrichFromPOM uses groupId heuristic when POM/parent have no repo info
+// Justification: Packages with io.github.* groupIds are verified by Sonatype
+//
+//	to match the GitHub username.  When all POM-based strategies fail, the
+//	groupId heuristic provides a high-confidence repo URL, enabling risk
+//	checks that would otherwise be entirely skipped.
+//
+// Source: https://central.sonatype.org/publish/requirements/coordinates/
+// Methodology: Mock server serves a POM with no SCM, no repo-pointing <url>,
+//
+//	and no parent.  The package uses an io.github.* groupId.  Verify that
+//	the groupId heuristic populates RepositoryURL.
+//
+// Result: pkg.RepositoryURL is derived from the groupId pattern.
+func TestEnrichFromPOM_GroupIdHeuristic(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>io.github.openfeign</groupId>
+  <artifactId>feign-core</artifactId>
+  <version>13.0</version>
+  <url>https://feign.io</url>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/io/github/openfeign/feign-core/13.0/feign-core-13.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, artifactPOM)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "io.github.openfeign", ArtifactID: "feign-core"}
+	err := client.enrichFromPOM(pkg, "io.github.openfeign", "feign-core", "13.0")
+	if err != nil {
+		t.Fatalf("enrichFromPOM returned error: %v", err)
+	}
+
+	want := "https://github.com/openfeign/feign-core"
+	if pkg.RepositoryURL != want {
+		t.Errorf("RepositoryURL = %q, want %q", pkg.RepositoryURL, want)
 	}
 }

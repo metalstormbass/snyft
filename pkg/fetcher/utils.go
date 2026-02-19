@@ -122,7 +122,7 @@ func ParseRepoURL(rawURL string) (owner, repo string, err error) {
 }
 
 // isSourceRepoHost returns true if the URL contains a known source code hosting domain.
-// Used by PyPI URL extraction to filter "Homepage" and fallback fields.
+// Used by PyPI URL extraction and Maven POM fallback to filter non-repo URLs.
 func isSourceRepoHost(url string) bool {
 	lower := strings.ToLower(url)
 	for _, host := range []string{
@@ -132,6 +132,8 @@ func isSourceRepoHost(url string) bool {
 		"codeberg.org",
 		"sr.ht",
 		"sourceforge.net",
+		"gitbox.apache.org",
+		"git.eclipse.org",
 	} {
 		if strings.Contains(lower, host) {
 			return true
