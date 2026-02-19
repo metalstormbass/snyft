@@ -4,7 +4,7 @@
   <img src="assets/snyft.png" alt="Snyft Logo" width="400"/>
 </p>
 
-**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a 10-category scoring rubric to identify potential compromise risks.
+**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a **20-point risk scoring system** across 10 categories to identify potential compromise risks.
 
 Unlike vulnerability scanners focused on CVEs, Snyft assesses the **likelihood of supply chain compromise** by analyzing repository metadata, build practices, source code availability, and security signals.
 
