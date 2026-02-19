@@ -261,6 +261,93 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 		}
 	}
 
+	// Parse CI workflow configurations for supply chain risk signals.
+	// The parsers detect: unpinned actions/orbs (tag hijacking), excessive permissions,
+	// dangerous triggers (pull_request_target), script injection, secrets in logs,
+	// and missing environment protection on publish workflows.
+	//
+	// Check: CI/CD workflow security analysis
+	// Justification: Insecure CI configurations create direct supply chain attack vectors.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020);
+	//         GitHub Actions Security Hardening; SLSA Build Level Requirements
+	// Methodology: Fetch CI config file content via git platform API, parse for insecure patterns
+	// Result: Populates CIWorkflowRisks consumed by scoreReleaseSecurity
+	ciConfigPaths := fetcher.CIConfigPaths()
+	for _, bs := range buildSystems {
+		paths, ok := ciConfigPaths[bs.Platform]
+		if !ok {
+			continue
+		}
+
+		for _, cfgPath := range paths {
+			content, err := gitClient.GetFileContent(repoURL, cfgPath)
+			if err != nil || content == "" {
+				continue
+			}
+
+			risk := fetcher.ParseCIWorkflowContent(content, bs.Platform)
+			if risk.RiskCount > 0 {
+				result.Metadata.CIWorkflowRisks = append(result.Metadata.CIWorkflowRisks, risk)
+			}
+
+			// For non-GitHub Actions platforms, one config file is sufficient.
+			// GitHub Actions repos may have multiple workflow files worth checking.
+			if bs.Platform != "GitHub Actions" {
+				break
+			}
+		}
+	}
+
+	// Generate findings from critical CI workflow risks
+	for _, ciRisk := range result.Metadata.CIWorkflowRisks {
+		if ciRisk.HasScriptInjection {
+			result.Findings = append(result.Findings, models.Finding{
+				Severity:    "HIGH",
+				Category:    "CI Script Injection",
+				Description: fmt.Sprintf("Script injection risk detected in %s workflow: untrusted input interpolated into run steps", ciRisk.Platform),
+				Check:       "CI Workflow Security Analysis",
+				Evidence:    strings.Join(ciRisk.Details, "; "),
+			})
+			result.RiskFactors = append(result.RiskFactors, "CI workflow vulnerable to script injection")
+		}
+		if len(ciRisk.DangerousTriggers) > 0 {
+			result.Findings = append(result.Findings, models.Finding{
+				Severity:    "HIGH",
+				Category:    "Dangerous CI Triggers",
+				Description: fmt.Sprintf("Dangerous workflow triggers in %s: %s", ciRisk.Platform, strings.Join(ciRisk.DangerousTriggers, ", ")),
+				Check:       "CI Workflow Security Analysis",
+				Evidence:    strings.Join(ciRisk.Details, "; "),
+			})
+			result.RiskFactors = append(result.RiskFactors, "CI workflow uses dangerous triggers")
+		}
+		if ciRisk.HasExcessivePermissions {
+			result.Findings = append(result.Findings, models.Finding{
+				Severity:    "MEDIUM",
+				Category:    "Excessive CI Permissions",
+				Description: fmt.Sprintf("Overly broad permissions in %s workflow (violates least privilege)", ciRisk.Platform),
+				Check:       "CI Workflow Security Analysis",
+				Evidence:    strings.Join(ciRisk.Details, "; "),
+			})
+		}
+		if len(ciRisk.UnpinnedActions) > 0 {
+			result.Findings = append(result.Findings, models.Finding{
+				Severity:    "MEDIUM",
+				Category:    "Unpinned CI Dependencies",
+				Description: fmt.Sprintf("%d unpinned actions/orbs in %s (vulnerable to tag hijacking)", len(ciRisk.UnpinnedActions), ciRisk.Platform),
+				Check:       "CI Workflow Security Analysis",
+				Evidence:    strings.Join(ciRisk.UnpinnedActions, ", "),
+			})
+		}
+		if ciRisk.MissingEnvironmentProtection {
+			result.Findings = append(result.Findings, models.Finding{
+				Severity:    "MEDIUM",
+				Category:    "Missing CI Environment Protection",
+				Description: fmt.Sprintf("Publish/deploy workflow in %s lacks environment protection rules (no manual approval gate)", ciRisk.Platform),
+				Check:       "CI Workflow Security Analysis",
+			})
+		}
+	}
+
 	if len(ciSystems) > 0 {
 		// Build a human-readable description showing platform and host
 		descriptions := make([]string, 0, len(buildSystems))
