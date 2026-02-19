@@ -152,7 +152,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Analyze dependencies in parallel
-	results := analyzeDependencies(dependencies, workers, reporter, aiConfig)
+	results := analyzeDependencies(dependencies, workers, reporter, aiConfig, statusOut)
 
 	// Clear progress line
 	reporter.ClearProgress()
@@ -222,7 +222,7 @@ func findManifestFiles(dir string) ([]string, error) {
 	return manifestFiles, err
 }
 
-func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, aiConfig *ai.Config) []models.AnalysisResult {
+func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, aiConfig *ai.Config, statusOut *os.File) []models.AnalysisResult {
 	results := make([]models.AnalysisResult, len(deps))
 	jobs := make(chan int, len(deps))
 	var wg sync.WaitGroup
@@ -253,7 +253,12 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 				// Update progress
 				mu.Lock()
 				completed++
-				reporter.ShowProgress(completed, len(deps), fmt.Sprintf("%s@%s", dep.Name, dep.Version))
+				if reporter.HasProgress() {
+					reporter.ShowProgress(completed, len(deps), fmt.Sprintf("%s@%s", dep.Name, dep.Version))
+				} else {
+					// For non-text formats, print simple progress to stderr
+					fmt.Fprintf(statusOut, "  Analyzed %d/%d: %s@%s\n", completed, len(deps), dep.Name, dep.Version)
+				}
 				mu.Unlock()
 			}
 		}()
@@ -270,7 +275,7 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 
 	duration := time.Since(startTime)
 	reporter.ClearProgress()
-	fmt.Printf("✅ Analysis complete in %s\n\n", formatDuration(duration))
+	fmt.Fprintf(statusOut, "✅ Analysis complete in %s\n\n", formatDuration(duration))
 
 	return results
 }
