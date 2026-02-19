@@ -304,13 +304,13 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
 	}
 
-	// Calculate supply chain score (0-20 point rubric)
+	// Calculate supply chain score (0-22 point rubric, 11 categories)
 	a.calculateSupplyChainScore(&result)
 
 	// Derive legacy RiskLevel/RiskScore from SupplyChainScore
 	if result.SupplyChainScore != nil {
 		result.RiskLevel = result.SupplyChainScore.RiskLevel
-		result.RiskScore = result.SupplyChainScore.TotalScore * 5 // Map 0-20 to 0-100
+		result.RiskScore = result.SupplyChainScore.TotalScore * 100 / 22 // Map 0-22 to 0-100
 	}
 
 	// Populate Findings from CategoryScores for backward compatibility
@@ -342,6 +342,7 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 		{"Governance", cs.Governance},
 		{"Release Security", cs.ReleaseSecurity},
 		{"Package Maturity", cs.PackageMaturity},
+		{"CI Pipeline Security", cs.CIPipelineSecurity},
 	}
 	for _, cat := range categories {
 		if cat.score.RiskPoints >= 2 {
@@ -366,9 +367,9 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 	}
 }
 
-// calculateSupplyChainScore implements a 0-20 point supply chain security rubric
-// Each of 10 categories is scored 0-2 points (0=good, 2=high risk)
-// Total: 0-8=Low risk, 9-11=Medium risk, 12+=High risk
+// calculateSupplyChainScore implements a 0-22 point supply chain security rubric
+// Each of 11 categories is scored 0-2 points (0=good, 2=high risk)
+// Total: 0-9=Low risk, 10-13=Medium risk, 14+=High risk
 func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	score := &models.SupplyChainScore{
 		CategoryScores: models.CategoryScores{},
@@ -410,6 +411,9 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	// Category 10: Package Maturity (age/update frequency/staleness)
 	score.CategoryScores.PackageMaturity = a.scorePackageMaturity(result)
 
+	// Category 11: CI Pipeline Security (unpinned actions/script injection/self-hosted runners)
+	score.CategoryScores.CIPipelineSecurity = a.scoreCIPipelineSecurity(result)
+
 	// Prefix each category's evidence with the specific package identifier
 	// so every finding clearly references which library it applies to
 	if pkgID != "" {
@@ -424,6 +428,7 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 			&score.CategoryScores.Governance,
 			&score.CategoryScores.ReleaseSecurity,
 			&score.CategoryScores.PackageMaturity,
+			&score.CategoryScores.CIPipelineSecurity,
 		}
 		for _, cat := range categories {
 			cat.Evidence = pkgID + ": " + cat.Evidence
@@ -440,18 +445,17 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		score.CategoryScores.Health.RiskPoints +
 		score.CategoryScores.Governance.RiskPoints +
 		score.CategoryScores.ReleaseSecurity.RiskPoints +
-		score.CategoryScores.PackageMaturity.RiskPoints
+		score.CategoryScores.PackageMaturity.RiskPoints +
+		score.CategoryScores.CIPipelineSecurity.RiskPoints
 
-	// Determine risk level based on total score (10 categories, 0-20 points)
+	// Determine risk level based on total score (11 categories, 0-22 points)
 	//
-	// Thresholds calibrated against 50 real-world npm/PyPI packages.
-	// Well-maintained packages (flask, react, numpy) score 7-8.
-	// Typical packages score 9-11. Risky/compromised packages score 12+.
-	// Previous thresholds (LOW 0-5, MEDIUM 6-14, HIGH 15+) classified
-	// 100% of packages as MEDIUM, providing zero differentiation.
-	if score.TotalScore >= 12 {
+	// Thresholds calibrated against 87 real-world npm/PyPI/Maven packages.
+	// With 11 categories (0-22 scale), thresholds scaled proportionally:
+	// LOW: 0-9 (~41% of max), MEDIUM: 10-13 (~50-59%), HIGH: 14+ (~64%+)
+	if score.TotalScore >= 14 {
 		score.RiskLevel = "HIGH"
-	} else if score.TotalScore >= 9 {
+	} else if score.TotalScore >= 10 {
 		score.RiskLevel = "MEDIUM"
 	} else {
 		score.RiskLevel = "LOW"

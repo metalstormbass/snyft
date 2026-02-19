@@ -2006,6 +2006,7 @@ func TestScoreHealth_HighRisk(t *testing.T) {
 		{
 			name: "Single contributor, no CI, no reviews",
 			result: &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
 				Metadata: models.PackageMetadata{
 					BusFactor:         1,
 					TopContributorPct: 95.0,
@@ -2019,6 +2020,7 @@ func TestScoreHealth_HighRisk(t *testing.T) {
 		{
 			name: "High contributor concentration",
 			result: &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
 				Metadata: models.PackageMetadata{
 					BusFactor:         1,
 					TopContributorPct: 100.0,
@@ -2032,6 +2034,8 @@ func TestScoreHealth_HighRisk(t *testing.T) {
 		{
 			name: "No maintainers (fallback)",
 			result: &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
+				Dependency:    models.Dependency{Ecosystem: models.EcosystemNPM},
 				Metadata: models.PackageMetadata{
 					BusFactor:      0, // Not calculated
 					Maintainers:    []string{},
@@ -2094,6 +2098,7 @@ func TestScoreHealth_MediumRisk(t *testing.T) {
 		{
 			name: "Good bus factor with moderate CI but no reviews",
 			result: &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
 				Metadata: models.PackageMetadata{
 					BusFactor:      4,
 					HasCI:          true,
@@ -2340,6 +2345,7 @@ func TestScoreHealth_BusFactor1_Justification(t *testing.T) {
 	// Methodology: Analyzed commit history to calculate bus factor using commit distribution algorithm
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/repo",
 		Metadata: models.PackageMetadata{
 			BusFactor:         1,
 			TopContributorPct: 100.0,
@@ -2435,6 +2441,7 @@ func TestScoreHealth_CodeReviewRate0_Justification(t *testing.T) {
 	// Methodology: Analyzed pull request history for review activity
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/repo",
 		Metadata: models.PackageMetadata{
 			BusFactor:           3,
 			HasCI:               true,
@@ -2602,6 +2609,7 @@ func TestScoreHealth_BusFactorCalculation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
 				Metadata: models.PackageMetadata{
 					BusFactor:         tt.busFactor,
 					TopContributorPct: tt.topContributorPct,
@@ -2670,6 +2678,7 @@ func TestScoreHealth_CodeReviewVerification(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
 				Metadata: models.PackageMetadata{
 					BusFactor:           3, // Good bus factor (gets 1 point)
 					HasCI:               true,
@@ -2749,6 +2758,7 @@ func TestScoreHealth_CIQualityAssessment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
 				Metadata: models.PackageMetadata{
 					BusFactor:      3, // Good bus factor (gets 1 point)
 					HasCI:          tt.hasCI,
@@ -2831,6 +2841,7 @@ func TestScoreHealth_TopContributorConcentration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
 				Metadata: models.PackageMetadata{
 					BusFactor:         tt.busFactor,
 					TopContributorPct: tt.topContributorPct,
@@ -2862,6 +2873,8 @@ func TestScoreHealth_NoDataMaxRisk(t *testing.T) {
 	analyzer := NewAnalyzer()
 
 	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/repo",
+		Dependency:    models.Dependency{Ecosystem: models.EcosystemNPM},
 		Metadata: models.PackageMetadata{
 			BusFactor:      0,
 			Maintainers:    []string{},

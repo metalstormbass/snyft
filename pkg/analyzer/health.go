@@ -64,8 +64,10 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 			healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to maintainer count"})
 			healthChecks = append(healthChecks, models.CheckResult{Name: "Maintainer count (fallback)", Status: "FAIL", Detail: fmt.Sprintf("Only %d maintainer(s) < 2 threshold", maintainerCount)})
 		} else if !caps.HasMaintainerList {
+			// Ecosystem doesn't expose this data — don't penalize
+			points++
 			evidence = append(evidence, fmt.Sprintf("Maintainer count unavailable (%s does not expose this data)", result.Dependency.Ecosystem))
-			healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: fmt.Sprintf("%s does not expose commit distribution or maintainer data", result.Dependency.Ecosystem)})
+			healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: fmt.Sprintf("%s does not expose commit distribution or maintainer data; benefit of doubt awarded", result.Dependency.Ecosystem)})
 		} else {
 			healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "No commit distribution or maintainer data available"})
 		}
@@ -90,6 +92,11 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 		evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (insufficient)", result.Metadata.CodeReviewRate))
 		verified = true
 		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "FAIL", Detail: fmt.Sprintf("%.0f%% PRs reviewed (< 75%% threshold)", result.Metadata.CodeReviewRate)})
+	} else if result.RepositoryURL == "" {
+		// No repo to check — don't penalize ecosystems without repo data
+		points++
+		evidence = append(evidence, "Review oversight unavailable (no repository URL)")
+		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "UNAVAILABLE", Detail: "No repository URL available to check review practices; benefit of doubt awarded"})
 	} else {
 		evidence = append(evidence, "No review oversight detected")
 		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "FAIL", Detail: "No branch protection or code review data detected"})
