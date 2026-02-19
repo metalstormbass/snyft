@@ -307,7 +307,7 @@ func buildPackageProfile(packageName string, ecosystem models.Ecosystem, result 
 func buildBatchedAttackPrompt(packageProfile string, attacks []HistoricalAttack, threshold float64) string {
 	var prompt strings.Builder
 
-	prompt.WriteString("You are analyzing a software package to determine if it exhibits patterns similar to documented supply chain attacks.\n\n")
+	prompt.WriteString("You are comparing a software package's scan findings against documented supply chain attack patterns. Only match based on findings that are actually present in the data.\n\n")
 
 	prompt.WriteString("## Package Under Analysis\n\n")
 	prompt.WriteString(packageProfile)
@@ -350,7 +350,7 @@ func buildBatchedAttackPrompt(packageProfile string, attacks []HistoricalAttack,
 	prompt.WriteString("  ]\n")
 	prompt.WriteString("}\n\n")
 	prompt.WriteString("If NO attacks have similarity >= the threshold, return {\"matches\": []}.\n")
-	prompt.WriteString("Be conservative — only flag genuine pattern matches, not superficial overlaps.")
+	prompt.WriteString("Be conservative — only flag matches where multiple indicators are factually present in the scan data. Do not speculate about indicators that were not assessed.")
 
 	return prompt.String()
 }

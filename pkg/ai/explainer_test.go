@@ -69,8 +69,8 @@ func TestExplainer_HighRiskPackage(t *testing.T) {
 	if prompt == nil {
 		t.Fatal("Expected prompt, got nil")
 	}
-	if !contains(prompt.UserPrompt, "URGENT") {
-		t.Error("Expected prompt to contain 'URGENT' for HIGH risk style")
+	if !contains(prompt.UserPrompt, "DIRECT") {
+		t.Error("Expected prompt to contain 'DIRECT' for HIGH risk style")
 	}
 
 	// Attack patterns for both maintainer and install script should be included
@@ -444,17 +444,17 @@ func TestExplainer_StyleGuidance(t *testing.T) {
 		{
 			style:         "urgent",
 			riskLevel:     "HIGH",
-			shouldContain: []string{"URGENT", "critical", "risk level"},
+			shouldContain: []string{"DIRECT", "finding", "risk level"},
 		},
 		{
 			style:         "balanced",
 			riskLevel:     "MEDIUM",
-			shouldContain: []string{"BALANCED", "risk factors", "objectively"},
+			shouldContain: []string{"BALANCED", "findings", "factual"},
 		},
 		{
 			style:         "brief",
 			riskLevel:     "LOW",
-			shouldContain: []string{"BRIEF", "concise", "risk signals"},
+			shouldContain: []string{"BRIEF", "factual", "concise"},
 		},
 	}
 

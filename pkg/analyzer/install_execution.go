@@ -98,17 +98,19 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 		}
 	}
 
-	// Multiple install scripts = higher risk (even if benign)
+	// Multiple install scripts without dangerous patterns = moderate risk (1 point).
+	// Only dangerous content analysis (above) warrants max risk (2 points).
+	// Benign install scripts (build steps, native compilation) are common in legitimate packages.
 	if len(foundScripts) >= 2 {
 		return models.CategoryScore{
 			Score:       0,
-			RiskPoints:  2,
-			Description: "Multiple install-time scripts detected",
-			Evidence:    fmt.Sprintf("Scripts: %s", strings.Join(foundScripts, ", ")),
+			RiskPoints:  1,
+			Description: "Multiple install-time scripts detected (no dangerous patterns)",
+			Evidence:    fmt.Sprintf("Scripts: %s (content analyzed, no dangerous patterns found)", strings.Join(foundScripts, ", ")),
 			Verified:    true,
 			Methodology: methodology,
 			ChecksPerformed: []models.CheckResult{
-				{Name: "Install-time script hooks", Status: "FAIL", Detail: fmt.Sprintf("%d install hooks found: %s", len(foundScripts), strings.Join(foundScripts, ", "))},
+				{Name: "Install-time script hooks", Status: "WARN", Detail: fmt.Sprintf("%d install hooks found: %s", len(foundScripts), strings.Join(foundScripts, ", "))},
 				{Name: "Dangerous pattern analysis", Status: "PASS", Detail: "No dangerous patterns detected in script content"},
 			},
 		}

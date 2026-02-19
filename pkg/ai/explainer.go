@@ -153,51 +153,49 @@ func (e *Explainer) buildExecutivePrompt(packageName string, ecosystem models.Ec
 func (e *Explainer) getStyleGuidance(style, riskLevel string) string {
 	switch style {
 	case "urgent":
-		return `**URGENT TONE REQUIRED**
+		return `**DIRECT TONE REQUIRED**
 
 This is a HIGH RISK package. Your explanation should:
-- Lead with the most critical risk immediately
-- Use clear, action-oriented language
-- Emphasize time sensitivity if applicable
-- Be direct and unambiguous about the risk
+- Lead with the most significant finding immediately
+- Use clear, factual language — describe what was found, not what might happen
+- Be direct and unambiguous about the findings
 - Keep summary to 2-3 sentences maximum
-- Clearly state the risk level and contributing factors
+- Clearly state the risk level and the specific findings that drove it
 
-Example opening: "This package exhibits [critical risk factor] which significantly increases the likelihood of supply chain compromise. [Specific evidence]. Risk level: HIGH."`
+Example opening: "This package scored HIGH risk. The scan found [specific finding 1] and [specific finding 2]. These findings match [X] of [Y] indicators from [documented attack pattern]."`
 
 	case "brief":
-		return `**BRIEF, REASSURING TONE**
+		return `**BRIEF, FACTUAL TONE**
 
 This is a LOW RISK package. Your explanation should:
 - Be concise (2-3 sentences total for summary)
-- Acknowledge that some minor concerns exist but don't warrant alarm
-- Use measured, balanced language
-- Focus on what risk signals exist, even if minor
+- State what the scan found — even if findings are minor
+- Use measured, factual language
 
-Example opening: "This package exhibits low supply chain compromise risk with minor risk factors identified. [Brief summary of findings]. Risk level: LOW."`
+Example opening: "This package scored LOW risk. The scan found [minor findings if any]. No significant supply chain risk factors were identified in the data assessed."`
 
 	case "balanced":
-		return `**BALANCED, ANALYTICAL TONE**
+		return `**BALANCED, FACTUAL TONE**
 
 This is a MEDIUM RISK package. Your explanation should:
-- Present risks objectively without alarm or dismissiveness
-- Provide clear context for each risk factor
-- Balance concerns with mitigating factors
+- Present findings objectively without alarm or dismissiveness
+- Provide clear context for each finding
+- Note both findings and areas where data was favorable
 - Be thorough but concise (3-4 sentences for summary)
-- Clearly state risk factors and their significance
+- Clearly state the specific findings and their significance
 
-Example opening: "This package exhibits several supply chain risk factors that indicate moderate compromise likelihood. [Key findings]. Risk level: MEDIUM."`
+Example opening: "This package scored MEDIUM risk based on [N] findings across [categories]. The scan identified [key finding 1] and [key finding 2]. [Favorable data point if any]."`
 	default:
-		return `**BALANCED, ANALYTICAL TONE**
+		return `**BALANCED, FACTUAL TONE**
 
 This is a MEDIUM RISK package. Your explanation should:
-- Present risks objectively without alarm or dismissiveness
-- Provide clear context for each risk factor
-- Balance concerns with mitigating factors
+- Present findings objectively without alarm or dismissiveness
+- Provide clear context for each finding
+- Note both findings and areas where data was favorable
 - Be thorough but concise (3-4 sentences for summary)
-- Clearly state risk factors and their significance
+- Clearly state the specific findings and their significance
 
-Example opening: "This package exhibits several supply chain risk factors that indicate moderate compromise likelihood. [Key findings]. Risk level: MEDIUM."`
+Example opening: "This package scored MEDIUM risk based on [N] findings across [categories]. The scan identified [key finding 1] and [key finding 2]. [Favorable data point if any]."`
 	}
 }
 
@@ -451,14 +449,14 @@ func (e *Explainer) GenerateQuickSummary(ctx context.Context, packageName string
 Risk Level: %s
 Risk Score: %d/100
 
-Generate a 2-3 sentence executive summary focused on supply chain compromise risk.
+Generate a 2-3 sentence factual summary of the scan findings.
 
 Focus on:
-1. Overall risk level and top concern
-2. Key evidence
+1. Overall risk level from the scan
+2. The specific findings that drove the score
 3. Risk classification (HIGH/MEDIUM/LOW)
 
-Be concise and factual. Format: [Risk assessment]. [Key evidence]. [Risk level: HIGH/MEDIUM/LOW].`,
+Be concise and factual. Only reference actual findings. Format: [Risk level]. [Key findings from the scan]. [Classification: HIGH/MEDIUM/LOW].`,
 		packageName,
 		result.RiskLevel,
 		result.RiskScore,
@@ -469,7 +467,7 @@ Be concise and factual. Format: [Risk assessment]. [Key evidence]. [Risk level: 
 		MaxTokens:   int64(300),
 		Temperature: anthropic.Float(0.3), // Low temperature for concise, focused output
 		System: []anthropic.TextBlockParam{
-			{Text: "You are a security analyst providing concise risk assessments. Be direct and actionable."},
+			{Text: "You are a security analyst summarizing scan findings. Be factual and concise. Only reference data that was actually found — never speculate."},
 		},
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(quickPrompt)),
