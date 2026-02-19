@@ -56,9 +56,9 @@ Snyft uses a **22-point risk scoring system** across 11 categories. Each categor
 
 | Total Score | Risk Level | Meaning |
 |-------------|------------|---------|
-| **0-8** | LOW | Minimal compromise risk detected |
-| **9-11** | MEDIUM | Concerning signals warrant attention |
-| **12+** | HIGH | Critical issues, high compromise likelihood |
+| **0-9** | LOW | Minimal compromise risk detected |
+| **10-13** | MEDIUM | Concerning signals warrant attention |
+| **14+** | HIGH | Critical issues, high compromise likelihood |
 
 ## Output Formats
 
