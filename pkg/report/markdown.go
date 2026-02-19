@@ -108,22 +108,22 @@ func (r *Reporter) generateMarkdown() error {
 		r.printMarkdownPackage(w, result)
 	}
 
-	// Recommendations
-	_, _ = fmt.Fprintln(w, "## Recommendations")
+	// Key Risk Areas
+	_, _ = fmt.Fprintln(w, "## Key Risk Areas")
 	_, _ = fmt.Fprintln(w)
 
-	recommendations := r.generateRecommendations()
-	if len(recommendations) == 0 {
-		_, _ = fmt.Fprintln(w, "✓ No critical issues found. Continue monitoring dependencies for changes.")
+	riskAreas := r.generateRiskAreas()
+	if len(riskAreas) == 0 {
+		_, _ = fmt.Fprintln(w, "✓ No critical supply chain risk factors identified.")
 	} else {
-		for i, rec := range recommendations {
-			// Remove ANSI codes from recommendations
-			cleanRec := strings.ReplaceAll(rec, ColorRed, "")
-			cleanRec = strings.ReplaceAll(cleanRec, ColorYellow, "")
-			cleanRec = strings.ReplaceAll(cleanRec, ColorGreen, "")
-			cleanRec = strings.ReplaceAll(cleanRec, ColorBold, "")
-			cleanRec = strings.ReplaceAll(cleanRec, ColorReset, "")
-			_, _ = fmt.Fprintf(w, "%d. %s\n", i+1, cleanRec)
+		for i, area := range riskAreas {
+			// Remove ANSI codes from risk areas
+			cleanArea := strings.ReplaceAll(area, ColorRed, "")
+			cleanArea = strings.ReplaceAll(cleanArea, ColorYellow, "")
+			cleanArea = strings.ReplaceAll(cleanArea, ColorGreen, "")
+			cleanArea = strings.ReplaceAll(cleanArea, ColorBold, "")
+			cleanArea = strings.ReplaceAll(cleanArea, ColorReset, "")
+			_, _ = fmt.Fprintf(w, "%d. %s\n", i+1, cleanArea)
 			_, _ = fmt.Fprintln(w)
 		}
 	}

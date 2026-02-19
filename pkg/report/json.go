@@ -25,8 +25,8 @@ type JSONReport struct {
 		Summary          string                           `json:"summary"`
 		AIInsights       *JSONAIExecutiveSummary          `json:"ai_insights,omitempty"`
 	} `json:"executive_summary"`
-	Results         interface{} `json:"results"`
-	Recommendations []string    `json:"recommendations"`
+	Results       interface{} `json:"results"`
+	KeyRiskAreas []string    `json:"key_risk_areas"`
 }
 
 // JSONAIExecutiveSummary represents AI-powered executive insights in JSON
@@ -116,13 +116,13 @@ func (r *Reporter) generateJSON() error {
 		}
 	}
 
-	// Recommendations — strip ANSI escape codes so JSON consumers get plain text
-	rawRecs := r.generateRecommendations()
-	cleanRecs := make([]string, len(rawRecs))
-	for i, rec := range rawRecs {
-		cleanRecs[i] = stripANSI(rec)
+	// Key Risk Areas — strip ANSI escape codes so JSON consumers get plain text
+	rawAreas := r.generateRiskAreas()
+	cleanAreas := make([]string, len(rawAreas))
+	for i, area := range rawAreas {
+		cleanAreas[i] = stripANSI(area)
 	}
-	report.Recommendations = cleanRecs
+	report.KeyRiskAreas = cleanAreas
 
 	// Encode JSON
 	encoder := json.NewEncoder(r.config.Writer)

@@ -51,8 +51,8 @@ func (r *Reporter) generateText() error {
 		r.printPackageResult(w, result)
 	}
 
-	// Recommendations
-	r.printRecommendations(w)
+	// Risk Summary
+	r.printRiskSummary(w)
 
 	return nil
 }
@@ -509,22 +509,22 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 	}
 }
 
-// printRecommendations prints recommendations based on findings
-func (r *Reporter) printRecommendations(w io.Writer) {
+// printRiskSummary prints key risk areas based on findings
+func (r *Reporter) printRiskSummary(w io.Writer) {
 	_, _ = fmt.Fprintln(w)
-	r.printSectionHeader(w, "RECOMMENDATIONS")
+	r.printSectionHeader(w, "KEY RISK AREAS")
 	_, _ = fmt.Fprintln(w)
 
-	recommendations := r.generateRecommendations()
+	riskAreas := r.generateRiskAreas()
 
-	if len(recommendations) == 0 {
-		_, _ = fmt.Fprintf(w, "  %s✓%s No critical issues found. Continue monitoring dependencies for changes.\n",
+	if len(riskAreas) == 0 {
+		_, _ = fmt.Fprintf(w, "  %s✓%s No critical supply chain risk factors identified.\n",
 			ColorGreen, ColorReset)
 		return
 	}
 
-	for i, rec := range recommendations {
-		_, _ = fmt.Fprintf(w, "  %s%d.%s %s\n", ColorBold, i+1, ColorReset, rec)
+	for i, area := range riskAreas {
+		_, _ = fmt.Fprintf(w, "  %s%d.%s %s\n", ColorBold, i+1, ColorReset, area)
 		_, _ = fmt.Fprintln(w)
 	}
 }
@@ -599,24 +599,22 @@ func (r *Reporter) calculateOverallRisk() string {
 	return "LOW"
 }
 
-func (r *Reporter) generateRecommendations() []string {
-	var recs []string
+func (r *Reporter) generateRiskAreas() []string {
+	var areas []string
 
-	// Priority 1: HIGH risk packages (immediate action)
+	// HIGH risk packages
 	if r.stats.HighRisk > 0 {
-		recs = append(recs, fmt.Sprintf(
-			"%s[PRIORITY 1 - IMMEDIATE]%s Review %d HIGH risk package%s identified in this scan.\n"+
-				"   %sAction:%s Evaluate each package for:\n"+
-				"   • Alternative packages with better supply chain security\n"+
-				"   • Additional security controls (code review, sandboxing)\n"+
-				"   • Version pinning to prevent automatic updates\n"+
-				"   %sTimeline:%s Within 24-48 hours",
+		areas = append(areas, fmt.Sprintf(
+			"%s[HIGH RISK]%s %d package%s identified with HIGH supply chain compromise risk.\n"+
+				"   %sRisk factors include:%s\n"+
+				"   • Patterns matching known supply chain attack vectors\n"+
+				"   • Weak publisher controls or single points of compromise\n"+
+				"   • Missing build integrity verification",
 			ColorRed+ColorBold, ColorReset, r.stats.HighRisk, pluralize(r.stats.HighRisk),
-			ColorBold, ColorReset,
 			ColorBold, ColorReset))
 	}
 
-	// Priority 2: Missing source code
+	// Missing source code
 	missingSource := 0
 	var missingSourcePkgs []string
 	for _, result := range r.results {
@@ -632,17 +630,15 @@ func (r *Reporter) generateRecommendations() []string {
 		if len(missingSourcePkgs) > 0 {
 			examplePkgs = fmt.Sprintf(" (e.g., %s)", strings.Join(missingSourcePkgs, ", "))
 		}
-		recs = append(recs, fmt.Sprintf(
-			"%s[PRIORITY 2 - SHORT TERM]%s Verify %d package%s lacking public source code%s.\n"+
-				"   %sAction:%s Confirm these are from trusted publishers with established reputations.\n"+
-				"   Cannot audit code that isn't publicly available.\n"+
-				"   %sTimeline:%s Within 1 week",
+		areas = append(areas, fmt.Sprintf(
+			"%s[UNVERIFIABLE SOURCE]%s %d package%s lack public source code%s.\n"+
+				"   %sRisk:%s Published artifacts cannot be audited or compared to source.\n"+
+				"   This prevents independent verification of package contents.",
 			ColorYellow+ColorBold, ColorReset, missingSource, pluralize(missingSource), examplePkgs,
-			ColorBold, ColorReset,
 			ColorBold, ColorReset))
 	}
 
-	// Priority 3: Install-time execution
+	// Install-time execution
 	installScripts := 0
 	var installScriptPkgs []string
 	for _, result := range r.results {
@@ -658,19 +654,16 @@ func (r *Reporter) generateRecommendations() []string {
 		if len(installScriptPkgs) > 0 {
 			examplePkgs = fmt.Sprintf(" (e.g., %s)", strings.Join(installScriptPkgs, ", "))
 		}
-		recs = append(recs, fmt.Sprintf(
-			"%s[PRIORITY 3 - ONGOING]%s Monitor %d package%s with install-time scripts%s.\n"+
-				"   %sAction:%s Review scripts before updates for potentially dangerous operations:\n"+
-				"   • Network requests to unknown domains\n"+
-				"   • File system modifications outside package directories\n"+
-				"   • Execution of downloaded binaries\n"+
-				"   %sTimeline:%s Review before each dependency update",
+		areas = append(areas, fmt.Sprintf(
+			"%s[INSTALL-TIME EXECUTION]%s %d package%s execute code during installation%s.\n"+
+				"   %sRisk:%s Install scripts are a primary supply chain attack vector.\n"+
+				"   Compromised install scripts can execute arbitrary code before any\n"+
+				"   application-level security controls are in place.",
 			ColorYellow+ColorBold, ColorReset, installScripts, pluralize(installScripts), examplePkgs,
-			ColorBold, ColorReset,
 			ColorBold, ColorReset))
 	}
 
-	// Priority 4: Missing provenance
+	// Missing provenance
 	missingProvenance := 0
 	for _, result := range r.results {
 		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.Provenance.RiskPoints > 1 {
@@ -678,30 +671,16 @@ func (r *Reporter) generateRecommendations() []string {
 		}
 	}
 	if missingProvenance > 0 {
-		recs = append(recs, fmt.Sprintf(
-			"%s[PRIORITY 4 - STRATEGIC]%s Improve provenance for %d package%s.\n"+
-				"   %sAction:%s Prefer packages with:\n"+
-				"   • SLSA Level 2+ attestations (verifiable build process)\n"+
-				"   • Sigstore signatures (cryptographic verification)\n"+
-				"   • Reproducible builds (bit-for-bit verification)\n"+
-				"   %sTimeline:%s Consider during next major dependency review cycle",
-			ColorGreen+ColorBold, ColorReset, missingProvenance, pluralize(missingProvenance),
-			ColorBold, ColorReset,
+		areas = append(areas, fmt.Sprintf(
+			"%s[MISSING PROVENANCE]%s %d package%s lack build provenance verification.\n"+
+				"   %sRisk:%s Without SLSA attestations, Sigstore signatures, or reproducible\n"+
+				"   builds, there is no way to verify that published artifacts were produced\n"+
+				"   from the claimed source code by a trusted build system.",
+			ColorYellow+ColorBold, ColorReset, missingProvenance, pluralize(missingProvenance),
 			ColorBold, ColorReset))
 	}
 
-	// General best practice
-	if len(recs) > 0 {
-		recs = append(recs, fmt.Sprintf(
-			"%s[BEST PRACTICE]%s Establish continuous monitoring:\n"+
-				"   • Run Snyft scans on every dependency update\n"+
-				"   • Integrate into CI/CD pipeline\n"+
-				"   • Set up alerts for new HIGH risk packages\n"+
-				"   • Review supply chain security quarterly",
-			ColorCyan+ColorBold, ColorReset))
-	}
-
-	return recs
+	return areas
 }
 
 func centerText(text string, width int) string {

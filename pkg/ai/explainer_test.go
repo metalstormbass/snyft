@@ -81,10 +81,10 @@ func TestExplainer_HighRiskPackage(t *testing.T) {
 		t.Error("Expected prompt to reference event-stream for install script finding")
 	}
 
-	// Recommendation guidance should suggest BLOCK
+	// Risk assessment guidance should indicate HIGH RISK
 	guidance := explainer.getRecommendationGuidance(result.RiskLevel)
-	if !contains(guidance, "BLOCK") {
-		t.Error("Expected HIGH risk guidance to contain 'BLOCK'")
+	if !contains(guidance, "HIGH RISK") {
+		t.Error("Expected HIGH risk guidance to contain 'HIGH RISK'")
 	}
 }
 
@@ -181,8 +181,8 @@ func TestExplainer_LowRiskPackage(t *testing.T) {
 	}
 
 	guidance := explainer.getRecommendationGuidance(result.RiskLevel)
-	if !contains(guidance, "ALLOW") {
-		t.Error("Expected guidance to contain 'ALLOW'")
+	if !contains(guidance, "LOW RISK") {
+		t.Error("Expected guidance to contain 'LOW RISK'")
 	}
 }
 
@@ -448,17 +448,17 @@ func TestExplainer_StyleGuidance(t *testing.T) {
 		{
 			style:         "urgent",
 			riskLevel:     "HIGH",
-			shouldContain: []string{"URGENT", "critical", "immediate action"},
+			shouldContain: []string{"URGENT", "critical", "risk level"},
 		},
 		{
 			style:         "balanced",
 			riskLevel:     "MEDIUM",
-			shouldContain: []string{"BALANCED", "REVIEW", "objectively"},
+			shouldContain: []string{"BALANCED", "risk factors", "objectively"},
 		},
 		{
 			style:         "brief",
 			riskLevel:     "LOW",
-			shouldContain: []string{"BRIEF", "concise", "ALLOW"},
+			shouldContain: []string{"BRIEF", "concise", "risk signals"},
 		},
 	}
 
@@ -675,16 +675,16 @@ func TestExplainer_CriticalRiskLevel(t *testing.T) {
 	}
 
 	guidance := explainer.getRecommendationGuidance("CRITICAL")
-	if !contains(guidance, "BLOCK") {
-		t.Error("Expected CRITICAL guidance to contain 'BLOCK'")
+	if !contains(guidance, "HIGH RISK") {
+		t.Error("Expected CRITICAL guidance to contain 'HIGH RISK'")
 	}
 }
 
-// Test: Style and recommendation for unknown risk level
+// Test: Style and risk assessment for unknown risk level
 // Justification: Unknown risk levels should default to balanced analysis
 // Source: Defensive programming for risk classification
 // Methodology: Pass an unrecognized risk level, verify defaults
-// Result: Should default to balanced style with ALLOW recommendation
+// Result: Should default to balanced style with LOW RISK assessment
 func TestExplainer_UnknownRiskLevel(t *testing.T) {
 	explainer := NewExplainer(&ExplainerConfig{})
 
@@ -694,8 +694,8 @@ func TestExplainer_UnknownRiskLevel(t *testing.T) {
 	}
 
 	guidance := explainer.getRecommendationGuidance("UNKNOWN")
-	if !contains(guidance, "ALLOW") {
-		t.Error("Expected unknown risk guidance to default to 'ALLOW'")
+	if !contains(guidance, "LOW RISK") {
+		t.Error("Expected unknown risk guidance to default to 'LOW RISK'")
 	}
 }
 

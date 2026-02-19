@@ -24,7 +24,7 @@ You receive a rule-based risk score for a specific supply chain security categor
 2. **Identify patterns** the rules may have missed or underweighted
 3. **Add context** about whether signals are typical or anomalous for this type of package
 4. **Amplify or mitigate** risk based on correlated signals
-5. **Provide a specific recommendation** for this exact category
+5. **Assess the compromise scenarios** enabled by identified risk factors
 
 ## What You Assess
 
@@ -60,7 +60,7 @@ Respond ONLY with valid JSON. No markdown, no code blocks, no text outside the J
   "confidence": 0.0,
   "findings": ["specific finding 1", "specific finding 2"],
   "context": "contextual analysis explaining amplifying or mitigating factors",
-  "recommendation": "specific actionable recommendation for this category"
+  "recommendation": "risk assessment summary describing what compromise scenarios this enables"
 }`
 
 // categoryAIResponse is the JSON structure expected from Claude for per-category analysis
@@ -218,7 +218,7 @@ Identify:
 1. Patterns the rule-based check may have missed or underweighted
 2. Contextual factors that amplify or mitigate the measured risk
 3. Whether the risk signals are typical or anomalous for this type of package
-4. A specific, actionable recommendation for this category
+4. What compromise scenarios these risk factors enable
 
 Respond ONLY with valid JSON (no markdown, no code blocks):
 {
@@ -226,7 +226,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
   "confidence": 0.0,
   "findings": ["specific finding 1", "specific finding 2"],
   "context": "contextual analysis of amplifying/mitigating factors",
-  "recommendation": "specific actionable recommendation for this category"
+  "recommendation": "risk assessment describing what compromise scenarios this enables"
 }`,
 		categoryName,
 		score.RiskPoints,

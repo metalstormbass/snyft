@@ -177,9 +177,9 @@ func TestExecutiveExplanationPrompt(t *testing.T) {
 		t.Error("User prompt should request business impact section")
 	}
 
-	// Test that user prompt requests recommendations
-	if !strings.Contains(strings.ToLower(user), "recommendation") {
-		t.Error("User prompt should request recommendations")
+	// Test that user prompt requests risk context
+	if !strings.Contains(strings.ToLower(user), "risk") {
+		t.Error("User prompt should reference risk assessment")
 	}
 
 	// Test temperature for executive explanations (should be higher for creativity)
@@ -268,9 +268,9 @@ func TestPackageComparisonPrompt(t *testing.T) {
 		t.Error("User prompt should request relative risk ranking")
 	}
 
-	// Test that user prompt requests recommendations
-	if !strings.Contains(user, "Recommendations") {
-		t.Error("User prompt should request recommendations")
+	// Test that user prompt requests risk assessment
+	if !strings.Contains(user, "Risk Assessment") {
+		t.Error("User prompt should request risk assessment")
 	}
 }
 
@@ -380,9 +380,9 @@ func TestPromptSystemMessages(t *testing.T) {
 			mustContain: []string{
 				"stakeholder",
 				"Business Impact",
-				"Actionable",
+				"Risk-Focused",
 				"Executive Summary",
-				"Recommendations",
+				"Risk Context",
 			},
 			mustNotContain: []string{},
 		},
