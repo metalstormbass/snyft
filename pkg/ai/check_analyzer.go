@@ -358,7 +358,7 @@ func (ca *CheckAnalyzer) buildFullContext(packageName string, ecosystem models.E
 
 	// Libraries.io enrichment data (blast radius indicators)
 	if m.DependentsCount > 0 || m.DependentReposCount > 0 {
-		sb.WriteString(fmt.Sprintf("\n## Blast Radius (Libraries.io)\n\n"))
+		sb.WriteString("\n## Blast Radius (Libraries.io)\n\n")
 		sb.WriteString(fmt.Sprintf("Dependents (packages): %d\n", m.DependentsCount))
 		sb.WriteString(fmt.Sprintf("Dependent repos: %d\n", m.DependentReposCount))
 		if m.ContributionsCount > 0 {
