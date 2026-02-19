@@ -468,7 +468,7 @@ func TestMatchAgainstKnownAttacks(t *testing.T) {
 			respJSON, _ := json.Marshal(batchResp)
 			apiResp := makeAnthropicMessageResponse(fmt.Sprintf("%q", string(respJSON)))
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, apiResp)
+			_, _ = fmt.Fprint(w, apiResp)
 		}))
 		defer server.Close()
 
@@ -556,7 +556,7 @@ func TestMatchAgainstKnownAttacks(t *testing.T) {
 			batchResp := `{"matches":[{"attack_name":"event-stream (2018)","similarity_score":0.3,"confidence":0.8,"matching_indicators":[],"explanation":"Low similarity","severity":"LOW"}]}`
 			apiResp := makeAnthropicMessageResponse(fmt.Sprintf("%q", batchResp))
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, apiResp)
+			_, _ = fmt.Fprint(w, apiResp)
 		}))
 		defer server.Close()
 
@@ -604,7 +604,7 @@ func TestMatchAgainstKnownAttacks(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			callCount++
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"matches":[]}`)
+			_, _ = fmt.Fprint(w, `{"matches":[]}`)
 		}))
 		defer server.Close()
 
@@ -654,7 +654,7 @@ func TestMatchAgainstKnownAttacks(t *testing.T) {
 	t.Run("API errors return error", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
+			_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
 		}))
 		defer server.Close()
 
@@ -694,7 +694,7 @@ func TestMatchAgainstKnownAttacks(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiResp := makeAnthropicMessageResponse(`"{\"matches\":[]}"`)
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, apiResp)
+			_, _ = fmt.Fprint(w, apiResp)
 		}))
 		defer server.Close()
 

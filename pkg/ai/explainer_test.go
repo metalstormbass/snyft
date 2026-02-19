@@ -749,7 +749,7 @@ REVIEW before production deployment. Verify maintainer practices.
 ## Technical Details
 
 Top contributor accounts for 80% of commits.`
-		fmt.Fprintf(w, `{
+		_, _ = fmt.Fprintf(w, `{
 			"id": "msg_explain_123",
 			"type": "message",
 			"role": "assistant",
@@ -851,7 +851,7 @@ Top contributor accounts for 80% of commits.`
 func TestExplainer_ExplainRisk_APIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
 	}))
 	defer server.Close()
 
@@ -904,7 +904,7 @@ func TestExplainer_ExplainRisk_JSONResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		jsonResp := `{"summary":"High risk package.","key_risks":["Single maintainer","No provenance"],"business_impact":"Potential data breach","recommended_action":"BLOCK","technical_details":"Local publishing detected"}`
-		fmt.Fprintf(w, `{
+		_, _ = fmt.Fprintf(w, `{
 			"id": "msg_json_123",
 			"type": "message",
 			"role": "assistant",
@@ -967,7 +967,7 @@ func TestExplainer_ExtractTextContent(t *testing.T) {
 		t.Helper()
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{
+			_, _ = fmt.Fprintf(w, `{
 				"id": "msg_extract",
 				"type": "message",
 				"role": "assistant",
@@ -1041,7 +1041,7 @@ func TestExplainer_ExtractTextContent(t *testing.T) {
 func TestExplainer_GenerateQuickSummary_Mocked(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "msg_quick_123",
 			"type": "message",
 			"role": "assistant",
@@ -1102,7 +1102,7 @@ func TestExplainer_GenerateQuickSummary_Mocked(t *testing.T) {
 func TestExplainer_GenerateQuickSummary_APIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test"}}`)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test"}}`)
 	}))
 	defer server.Close()
 
@@ -1151,12 +1151,12 @@ func TestExplainer_BatchExplain_MixedResults(t *testing.T) {
 		if callCount%2 == 0 {
 			// Even calls fail
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test"}}`)
+			_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test"}}`)
 			return
 		}
 		// Odd calls succeed
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "msg_batch",
 			"type": "message",
 			"role": "assistant",
@@ -1227,7 +1227,7 @@ func TestExplainer_BatchExplain_MixedResults(t *testing.T) {
 func TestExplainer_BatchExplain_AllSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "msg_batch_ok",
 			"type": "message",
 			"role": "assistant",

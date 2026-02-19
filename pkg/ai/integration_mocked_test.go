@@ -20,7 +20,7 @@ func TestExplainer_Integration_Mocked(t *testing.T) {
 	cfg.APIKey = "test-key"
 	client, err := NewClient(cfg)
 	require.NoError(t, err)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	config := &ExplainerConfig{
 		Client:         client,
@@ -95,7 +95,7 @@ func TestExplainer_BatchExplain_Integration_Mocked(t *testing.T) {
 	cfg.APIKey = "test-key"
 	client, err := NewClient(cfg)
 	require.NoError(t, err)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	config := &ExplainerConfig{
 		Client: client,
@@ -229,7 +229,7 @@ func TestMatchAgainstKnownAttacks_EcosystemFilter_Mocked(t *testing.T) {
 	cfg.APIKey = "test-key"
 	client, err := NewClient(cfg)
 	require.NoError(t, err)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	req := AttackMatchRequest{
 		PackageName: "requests",
@@ -270,7 +270,7 @@ func TestMatchAgainstKnownAttacks_NoMatchingEcosystem_Mocked(t *testing.T) {
 	cfg.APIKey = "test-key"
 	client, err := NewClient(cfg)
 	require.NoError(t, err)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	req := AttackMatchRequest{
 		PackageName: "com.google.guava:guava",

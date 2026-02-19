@@ -740,7 +740,7 @@ func TestCreateMessage_CacheHit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "msg_cached_123",
 			"type": "message",
 			"role": "assistant",
@@ -816,12 +816,12 @@ func TestCreateMessage_RetrySuccess(t *testing.T) {
 		if callCount <= 2 {
 			// First two calls return retryable 500 error
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"temporary failure"}}`)
+			_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"temporary failure"}}`)
 			return
 		}
 		// Third call succeeds
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "msg_retry_success",
 			"type": "message",
 			"role": "assistant",
@@ -882,7 +882,7 @@ func TestCreateMessage_MaxRetriesExceeded(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"persistent failure"}}`)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"persistent failure"}}`)
 	}))
 	defer server.Close()
 
@@ -934,7 +934,7 @@ func TestCreateMessage_MaxRetriesExceeded(t *testing.T) {
 func TestCreateMessage_ContextCancelDuringRetry(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"fail"}}`)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"api_error","message":"fail"}}`)
 	}))
 	defer server.Close()
 
@@ -989,7 +989,7 @@ func TestCreateMessage_ContextCancelDuringRetry(t *testing.T) {
 func TestCreateMessage_RateLimiterContextCancel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "msg_rl_test",
 			"type": "message",
 			"role": "assistant",
@@ -1053,7 +1053,7 @@ func TestCreateMessage(t *testing.T) {
 	t.Run("successful request returns parsed message", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{
+			_, _ = fmt.Fprint(w, `{
 				"id": "msg_test_123",
 				"type": "message",
 				"role": "assistant",
@@ -1105,7 +1105,7 @@ func TestCreateMessage(t *testing.T) {
 		// Use 400 to avoid SDK-level retries (which slow the test)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
+			_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
 		}))
 		defer server.Close()
 
@@ -1162,11 +1162,11 @@ func TestCreateMessage(t *testing.T) {
 			// First call fails, second succeeds
 			if callCount == 1 {
 				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
+				_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test error"}}`)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{
+			_, _ = fmt.Fprint(w, `{
 				"id": "msg_test_456",
 				"type": "message",
 				"role": "assistant",

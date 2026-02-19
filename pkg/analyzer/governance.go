@@ -270,10 +270,10 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 
 	// Determine description based on risk level
 	var description string
-	switch {
-	case riskPoints == 0:
+	switch riskPoints {
+	case 0:
 		description = "Strong governance: security policy and responsive maintenance"
-	case riskPoints == 1:
+	case 1:
 		description = "Partial governance: security policy or responsive maintenance present"
 	default:
 		description = "Poor governance: no security policy or responsiveness signals"

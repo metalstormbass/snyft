@@ -80,7 +80,7 @@ func TestClient_ErrorHandling_ContextCancellation(t *testing.T) {
 
 	client, err := NewClient(cfg)
 	require.NoError(t, err)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Test rate limiter respects context cancellation when blocked
 	t.Run("rate limiter context cancel when blocked", func(t *testing.T) {
@@ -106,7 +106,7 @@ func TestClient_ErrorHandling_ContextCancellation(t *testing.T) {
 		cfg2.RateLimit = 1
 		client2, err := NewClient(cfg2)
 		require.NoError(t, err)
-		defer client2.Close()
+		defer func() { _ = client2.Close() }()
 
 		ctx := context.Background()
 
@@ -247,7 +247,7 @@ func TestClient_Concurrency(t *testing.T) {
 	cfg.APIKey = "test-key"
 	client, err := NewClient(cfg)
 	require.NoError(t, err)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	t.Run("concurrent rate limiter access", func(t *testing.T) {
 		done := make(chan bool, 10)
