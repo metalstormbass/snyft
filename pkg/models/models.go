@@ -301,10 +301,10 @@ type ProvenanceInfo struct {
 	BuildSystem          string   `json:"build_system,omitempty"`
 }
 
-// SupplyChainScore represents a 0-20 point supply chain security scoring rubric
+// SupplyChainScore represents a 0-22 point supply chain security scoring rubric
 type SupplyChainScore struct {
-	TotalScore    int                   `json:"total_score"`    // 0-20 points
-	RiskLevel     string                `json:"risk_level"`     // LOW (0-5), MEDIUM (6-14), HIGH (15+)
+	TotalScore    int                   `json:"total_score"`    // 0-22 points
+	RiskLevel     string                `json:"risk_level"`     // LOW (0-5), MEDIUM (6-16), HIGH (17+)
 	CategoryScores CategoryScores       `json:"category_scores"`
 }
 
@@ -320,6 +320,7 @@ type CategoryScores struct {
 	Governance         CategoryScore `json:"governance"`           // 0-2 pts: governance docs/responsiveness
 	ReleaseSecurity    CategoryScore `json:"release_security"`     // 0-2 pts: CI publishing/branch protection/signed tags
 	PackageMaturity    CategoryScore `json:"package_maturity"`     // 0-2 pts: package age/update frequency/staleness
+	CIPipelineSecurity CategoryScore `json:"ci_pipeline_security"` // 0-2 pts: CI config risks/unpinned actions/script injection/self-hosted
 }
 
 // CheckResult represents the outcome of an individual sub-check within a category.

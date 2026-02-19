@@ -400,12 +400,13 @@ func TestBuildFullContext(t *testing.T) {
 	expectedContent := []string{
 		// Package identity
 		"express", "npm",
-		// All 10 categories
+		// All 11 categories
 		"Publisher Control", "Ownership Changes", "Release Anomalies",
 		"Install Execution", "Dependency Sprawl", "Provenance",
 		"Health", "Governance", "Release Security", "Package Maturity",
+		"CI Pipeline Security",
 		// Score summary
-		"Total: 8/20", "MEDIUM",
+		"Total: 8/22", "MEDIUM",
 		// Risk factors
 		"No verifiable source code",
 		"Single maintainer",

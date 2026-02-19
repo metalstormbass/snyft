@@ -470,14 +470,13 @@ jobs:
 		t.Fatalf("Expected 3+ total CI risk signals for penalty, got %d", totalRiskCount)
 	}
 
-	// Step 2: Score release security
-	score := analyzer.scoreReleaseSecurity(result)
+	// Step 2: Score CI pipeline security (CI workflow risks are now in this dedicated category)
+	ciScore := analyzer.scoreCIPipelineSecurity(result)
 
-	// Without CI risks: 4 points → 0 risk points
-	// With CI risks (3+ signals): 4 - 1 penalty = 3 points → 1 risk point
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point from CI workflow penalty, got %d (evidence: %s)",
-			score.RiskPoints, score.Evidence)
+	// CI workflow risks detected → should have risk points
+	if ciScore.RiskPoints < 1 {
+		t.Errorf("Expected at least 1 risk point from CI workflow risks in CI Pipeline Security, got %d (evidence: %s)",
+			ciScore.RiskPoints, ciScore.Evidence)
 	}
 }
 

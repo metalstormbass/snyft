@@ -19,7 +19,7 @@ const deepAnalysisSystemPrompt = `You are a supply chain security analyst perfor
 
 ## Your Role
 
-You receive the COMPLETE analysis of a package — all 10 category scores, all metadata, all findings. The rule-based engine has already scored each category individually. Your job is to find what the rules MISSED:
+You receive the COMPLETE analysis of a package — all 11 category scores, all metadata, all findings. The rule-based engine has already scored each category individually. Your job is to find what the rules MISSED:
 
 1. **Compound risk patterns**: Combinations of weak signals that together indicate HIGH risk
    - Example: single maintainer + 2 years dormant + sudden release + no CI = classic account takeover pattern
@@ -207,7 +207,7 @@ func (ca *CheckAnalyzer) buildFullContext(packageName string, ecosystem models.E
 	// Rule-based scores overview
 	if result.SupplyChainScore != nil {
 		cs := result.SupplyChainScore.CategoryScores
-		sb.WriteString(fmt.Sprintf("## Rule-Based Scores (Total: %d/20, Risk Level: %s)\n\n",
+		sb.WriteString(fmt.Sprintf("## Rule-Based Scores (Total: %d/22, Risk Level: %s)\n\n",
 			result.SupplyChainScore.TotalScore, result.SupplyChainScore.RiskLevel))
 
 		categories := []struct {
@@ -224,6 +224,7 @@ func (ca *CheckAnalyzer) buildFullContext(packageName string, ecosystem models.E
 			{"Governance", cs.Governance},
 			{"Release Security", cs.ReleaseSecurity},
 			{"Package Maturity", cs.PackageMaturity},
+			{"CI Pipeline Security", cs.CIPipelineSecurity},
 		}
 
 		for _, cat := range categories {

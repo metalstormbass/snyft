@@ -300,7 +300,7 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 
 	// Supply chain score if available
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %d/20 points (%s%s%s risk)\n",
+		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %d/22 points (%s%s%s risk)\n",
 			riskColor, ColorReset,
 			ColorBold, ColorReset,
 			result.SupplyChainScore.TotalScore,
@@ -536,6 +536,7 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 		{"Governance", scores.Governance},
 		{"Release Security", scores.ReleaseSecurity},
 		{"Package Maturity", scores.PackageMaturity},
+		{"CI Pipeline Security", scores.CIPipelineSecurity},
 	}
 
 	// Table header
@@ -764,6 +765,31 @@ func (r *Reporter) generateRiskAreas() []string {
 				"   builds, there is no way to verify that published artifacts were produced\n"+
 				"   from the claimed source code by a trusted build system.",
 			ColorYellow+ColorBold, ColorReset, missingProvenance, pluralize(missingProvenance),
+			ColorBold, ColorReset))
+	}
+
+	// CI pipeline security issues
+	ciRisks := 0
+	var ciRiskPkgs []string
+	for _, result := range r.results {
+		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.CIPipelineSecurity.RiskPoints > 1 {
+			ciRisks++
+			if len(ciRiskPkgs) < 3 {
+				ciRiskPkgs = append(ciRiskPkgs, result.Dependency.Name)
+			}
+		}
+	}
+	if ciRisks > 0 {
+		examplePkgs := ""
+		if len(ciRiskPkgs) > 0 {
+			examplePkgs = fmt.Sprintf(" (e.g., %s)", strings.Join(ciRiskPkgs, ", "))
+		}
+		areas = append(areas, fmt.Sprintf(
+			"%s[CI PIPELINE SECURITY]%s %d package%s have critical CI/CD configuration issues%s.\n"+
+				"   %sRisk:%s Insecure CI configurations are a direct supply chain attack vector.\n"+
+				"   Unpinned actions can be hijacked, script injection enables remote code execution,\n"+
+				"   and self-hosted runners give attackers control over build environments.",
+			ColorYellow+ColorBold, ColorReset, ciRisks, pluralize(ciRisks), examplePkgs,
 			ColorBold, ColorReset))
 	}
 

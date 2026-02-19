@@ -490,7 +490,7 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 		result.Dependency.Ecosystem)
 
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Supply Chain Score:</span> %d/20 points</div>\n",
+		_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Supply Chain Score:</span> %d/22 points</div>\n",
 			result.SupplyChainScore.TotalScore)
 	}
 
@@ -530,6 +530,7 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 			{"Governance", result.SupplyChainScore.CategoryScores.Governance},
 			{"Release Security", result.SupplyChainScore.CategoryScores.ReleaseSecurity},
 			{"Package Maturity", result.SupplyChainScore.CategoryScores.PackageMaturity},
+			{"CI Pipeline Security", result.SupplyChainScore.CategoryScores.CIPipelineSecurity},
 		}
 
 		for _, cat := range categories {

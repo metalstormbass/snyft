@@ -340,7 +340,7 @@ Explain supply chain security risks in language that:
 
 ### How We Assess Risk
 
-"We evaluate 10 categories of supply chain security controls:
+"We evaluate 11 categories of supply chain security controls:
 1. Publisher Control (how easy is it to compromise the publisher?)
 2. Ownership Changes (recent suspicious transfers?)
 3. Release Anomalies (unusual activity patterns?)
@@ -350,7 +350,8 @@ Explain supply chain security risks in language that:
 7. Health (is the project actively maintained?)
 8. Governance (clear ownership and policies?)
 9. Release Security (automated, protected releases?)
-10. Package Maturity (is the package established and regularly maintained?)"
+10. Package Maturity (is the package established and regularly maintained?)
+11. CI Pipeline Security (is the CI/CD configuration secure?)"
 
 ### What We Don't Do
 
@@ -394,7 +395,7 @@ func NewExecutiveExplanationPrompt(packageName string, ecosystem models.Ecosyste
 	riskSummary := fmt.Sprintf("Risk Level: %s (Score: %d/100)", analysisResult.RiskLevel, analysisResult.RiskScore)
 
 	if analysisResult.SupplyChainScore != nil {
-		riskSummary += fmt.Sprintf("\nSupply Chain Risk: %s (%d/20 points)",
+		riskSummary += fmt.Sprintf("\nSupply Chain Risk: %s (%d/22 points)",
 			analysisResult.SupplyChainScore.RiskLevel,
 			analysisResult.SupplyChainScore.TotalScore)
 	}
@@ -423,7 +424,9 @@ func NewExecutiveExplanationPrompt(packageName string, ecosystem models.Ecosyste
 6. Provenance: %s (%d/2 risk points)
 7. Health: %s (%d/2 risk points)
 8. Governance: %s (%d/2 risk points)
-9. Release Security: %s (%d/2 risk points)`,
+9. Release Security: %s (%d/2 risk points)
+10. Package Maturity: %s (%d/2 risk points)
+11. CI Pipeline Security: %s (%d/2 risk points)`,
 			cs.PublisherControl.Description, cs.PublisherControl.RiskPoints,
 			cs.OwnershipChanges.Description, cs.OwnershipChanges.RiskPoints,
 			cs.ReleaseAnomalies.Description, cs.ReleaseAnomalies.RiskPoints,
@@ -433,6 +436,8 @@ func NewExecutiveExplanationPrompt(packageName string, ecosystem models.Ecosyste
 			cs.Health.Description, cs.Health.RiskPoints,
 			cs.Governance.Description, cs.Governance.RiskPoints,
 			cs.ReleaseSecurity.Description, cs.ReleaseSecurity.RiskPoints,
+			cs.PackageMaturity.Description, cs.PackageMaturity.RiskPoints,
+			cs.CIPipelineSecurity.Description, cs.CIPipelineSecurity.RiskPoints,
 		)
 	}
 

@@ -197,7 +197,7 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 	_, _ = fmt.Fprintf(w, "**Risk Level:** %s\n", result.RiskLevel)
 
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %d/20 points (%s risk)\n",
+		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %d/22 points (%s risk)\n",
 			result.SupplyChainScore.TotalScore,
 			result.SupplyChainScore.RiskLevel)
 	}
@@ -234,6 +234,7 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 			{"Governance", result.SupplyChainScore.CategoryScores.Governance},
 			{"Release Security", result.SupplyChainScore.CategoryScores.ReleaseSecurity},
 			{"Package Maturity", result.SupplyChainScore.CategoryScores.PackageMaturity},
+			{"CI Pipeline Security", result.SupplyChainScore.CategoryScores.CIPipelineSecurity},
 		}
 
 		for _, cat := range categories {
