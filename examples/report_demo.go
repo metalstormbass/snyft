@@ -153,7 +153,7 @@ func main() {
 
 		// Generate report
 		if err := reporter.Generate(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error generating %s report: %v\n", f.name, err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error generating %s report: %v\n", f.name, err)
 		}
 
 		fmt.Println()

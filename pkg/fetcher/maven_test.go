@@ -118,11 +118,11 @@ func TestEnrichFromPOM_ParentFallback(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/com/example/child-artifact/1.0.0/child-artifact-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
-		fmt.Fprint(w, artifactPOM)
+		_, _ = fmt.Fprint(w, artifactPOM)
 	})
 	mux.HandleFunc("/com/example/parent-pom/2.0.0/parent-pom-2.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/xml")
-		fmt.Fprint(w, parentPOM)
+		_, _ = fmt.Fprint(w, parentPOM)
 	})
 
 	srv := httptest.NewServer(mux)
@@ -179,7 +179,7 @@ func TestEnrichFromPOM_OwnSCMPreferred(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/com/example/my-lib/3.0.0/my-lib-3.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, artifactPOM)
+		_, _ = fmt.Fprint(w, artifactPOM)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Fail any unexpected request (e.g. parent POM fetch)
@@ -235,7 +235,7 @@ func TestEnrichFromPOM_MissingParentPOM(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/com/example/orphan/1.0.0/orphan-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, artifactPOM)
+		_, _ = fmt.Fprint(w, artifactPOM)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -293,7 +293,7 @@ func TestEnrichFromPOM_URLFallback(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/com/example/url-only/1.0.0/url-only-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, artifactPOM)
+		_, _ = fmt.Fprint(w, artifactPOM)
 	})
 
 	srv := httptest.NewServer(mux)
@@ -337,7 +337,7 @@ func TestEnrichFromPOM_URLIgnoredForNonRepoHost(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/com/example/marketing/1.0.0/marketing-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, artifactPOM)
+		_, _ = fmt.Fprint(w, artifactPOM)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -385,7 +385,7 @@ func TestEnrichFromPOM_IssueManagementFallback(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/com/example/issues-only/1.0.0/issues-only-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, artifactPOM)
+		_, _ = fmt.Fprint(w, artifactPOM)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -746,7 +746,7 @@ func TestEnrichFromPOM_SCMTakesPriorityOverURL(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/com/example/priority-test/1.0.0/priority-test-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, artifactPOM)
+		_, _ = fmt.Fprint(w, artifactPOM)
 	})
 
 	srv := httptest.NewServer(mux)
@@ -795,7 +795,7 @@ func TestEnrichFromPOM_GroupIdHeuristic(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/io/github/openfeign/feign-core/13.0/feign-core-13.0.pom", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, artifactPOM)
+		_, _ = fmt.Fprint(w, artifactPOM)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

@@ -77,7 +77,7 @@ func TestAnalyzeDeep_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		deepJSON := `{"risk_assessment":"This package has elevated compromise risk due to compound signals.","compound_risks":[{"pattern":"single maintainer + dormancy","risk_level":"HIGH","contributing":["1 maintainer","no commits in 6 months"],"explanation":"Classic account takeover setup"}],"behavior_findings":["Maintainer email uses free provider"],"missed_by_rules":["Download count suggests high-value target"],"confidence":0.85}`
-		fmt.Fprintf(w, `{
+		_, _ = fmt.Fprintf(w, `{
 			"id": "msg_test",
 			"type": "message",
 			"role": "assistant",
@@ -174,7 +174,7 @@ func TestAnalyzeDeep_Success(t *testing.T) {
 func TestAnalyzeDeep_APIErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test"}}`)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"invalid_request_error","message":"test"}}`)
 	}))
 	defer server.Close()
 
@@ -224,7 +224,7 @@ func TestAnalyzeDeep_MarkdownWrappedJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		wrappedJSON := "```json\n{\"risk_assessment\":\"Low risk.\",\"compound_risks\":[],\"behavior_findings\":[],\"missed_by_rules\":[],\"confidence\":0.7}\n```"
-		fmt.Fprintf(w, `{
+		_, _ = fmt.Fprintf(w, `{
 			"id": "msg_test",
 			"type": "message",
 			"role": "assistant",
@@ -272,7 +272,7 @@ func TestAnalyzeDeep_MarkdownWrappedJSON(t *testing.T) {
 func TestAnalyzeDeep_InvalidJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "msg_test",
 			"type": "message",
 			"role": "assistant",

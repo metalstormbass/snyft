@@ -242,11 +242,14 @@ func (a *Analyzer) scoreCIPipelineSecurity(result *models.AnalysisResult) models
 	// else: CI present with no/minimal issues = 0 risk points
 
 	// Determine description
-	description := "Secure CI pipeline: no configuration issues detected"
-	if riskPoints == 2 {
+	var description string
+	switch riskPoints {
+	case 2:
 		description = "Critical CI pipeline security issues: workflow configuration creates direct attack vectors"
-	} else if riskPoints == 1 {
+	case 1:
 		description = "CI pipeline has some security concerns: configuration risks detected"
+	default:
+		description = "Secure CI pipeline: no configuration issues detected"
 	}
 
 	return models.CategoryScore{

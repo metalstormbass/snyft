@@ -109,7 +109,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		ProgressWriter: progressWriter,
 	})
 
-	fmt.Fprintf(statusOut, "🔍 Scanning directory: %s\n", scanPath)
+	_, _ = fmt.Fprintf(statusOut, "🔍 Scanning directory: %s\n", scanPath)
 
 	// Parse manifest files
 	manifestCount, dependencies, err := parseManifests(scanPath, statusOut)
@@ -120,11 +120,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 	reporter.SetManifestCount(manifestCount)
 
 	if len(dependencies) == 0 {
-		fmt.Fprintln(statusOut, "⚠️  No dependencies found")
+		_, _ = fmt.Fprintln(statusOut, "⚠️  No dependencies found")
 		return nil
 	}
 
-	fmt.Fprintf(statusOut, "📦 Found %d dependencies across all manifests\n\n", len(dependencies))
+	_, _ = fmt.Fprintf(statusOut, "📦 Found %d dependencies across all manifests\n\n", len(dependencies))
 
 	// Configure AI if enabled
 	var aiConfig *ai.Config
@@ -155,7 +155,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 			if aiDisableRetry {
 				aiConfig.EnableRetry = false
 			}
-			fmt.Fprintf(statusOut, "🤖 AI analysis enabled (timeout: %v)\n", aiConfig.Timeout)
+			_, _ = fmt.Fprintf(statusOut, "🤖 AI analysis enabled (timeout: %v)\n", aiConfig.Timeout)
 		}
 	}
 
@@ -180,17 +180,17 @@ func parseManifests(dir string, statusOut *os.File) (int, []models.Dependency, e
 		return 0, nil, err
 	}
 
-	fmt.Fprintf(statusOut, "📄 Found %d manifest files\n", len(manifestFiles))
+	_, _ = fmt.Fprintf(statusOut, "📄 Found %d manifest files\n", len(manifestFiles))
 
 	// Parse each manifest
 	for _, file := range manifestFiles {
 		if verbose {
-			fmt.Fprintf(statusOut, "  Parsing: %s\n", file)
+			_, _ = fmt.Fprintf(statusOut, "  Parsing: %s\n", file)
 		}
 
 		deps, err := parser.ParseManifest(file)
 		if err != nil {
-			fmt.Fprintf(statusOut, "⚠️  Failed to parse %s: %v\n", file, err)
+			_, _ = fmt.Fprintf(statusOut, "⚠️  Failed to parse %s: %v\n", file, err)
 			continue
 		}
 
@@ -311,7 +311,7 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 
 	duration := time.Since(startTime)
 	reporter.ClearProgress()
-	fmt.Fprintf(statusOut, "✅ Analysis complete in %s\n\n", formatDuration(duration))
+	_, _ = fmt.Fprintf(statusOut, "✅ Analysis complete in %s\n\n", formatDuration(duration))
 
 	return results
 }

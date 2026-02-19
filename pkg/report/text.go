@@ -249,28 +249,28 @@ func (r *Reporter) printAIExecutiveSummary(w io.Writer) {
 		return
 	}
 
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  %s🤖 AI-Powered Risk Assessment%s\n", ColorBold+ColorCyan, ColorReset)
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "  %s🤖 AI-Powered Risk Assessment%s\n", ColorBold+ColorCyan, ColorReset)
+	_, _ = fmt.Fprintln(w)
 
 	// Summary
-	fmt.Fprintf(w, "  %s%s%s\n", ColorBold, executiveSummary.Summary, ColorReset)
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "  %s%s%s\n", ColorBold, executiveSummary.Summary, ColorReset)
+	_, _ = fmt.Fprintln(w)
 
 	// Key Risks
 	if len(executiveSummary.KeyRisks) > 0 {
-		fmt.Fprintf(w, "  %sKey Risks Identified:%s\n", ColorBold, ColorReset)
+		_, _ = fmt.Fprintf(w, "  %sKey Risks Identified:%s\n", ColorBold, ColorReset)
 		for _, risk := range executiveSummary.KeyRisks {
-			fmt.Fprintf(w, "    %s•%s %s\n", ColorRed, ColorReset, risk)
+			_, _ = fmt.Fprintf(w, "    %s•%s %s\n", ColorRed, ColorReset, risk)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 
 	// Business Impact
 	if executiveSummary.BusinessImpact != "" {
-		fmt.Fprintf(w, "  %sBusiness Impact:%s\n", ColorBold, ColorReset)
-		fmt.Fprintf(w, "  %s\n", executiveSummary.BusinessImpact)
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "  %sBusiness Impact:%s\n", ColorBold, ColorReset)
+		_, _ = fmt.Fprintf(w, "  %s\n", executiveSummary.BusinessImpact)
+		_, _ = fmt.Fprintln(w)
 	}
 
 	// Confidence
@@ -279,7 +279,7 @@ func (r *Reporter) printAIExecutiveSummary(w io.Writer) {
 	if confidencePct < 50 {
 		confidenceColor = ColorYellow
 	}
-	fmt.Fprintf(w, "  %sAI Confidence:%s %s%.0f%%%s\n",
+	_, _ = fmt.Fprintf(w, "  %sAI Confidence:%s %s%.0f%%%s\n",
 		ColorBold, ColorReset, confidenceColor, confidencePct, ColorReset)
 }
 
