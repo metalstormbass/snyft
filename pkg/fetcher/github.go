@@ -1103,41 +1103,26 @@ func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 	return hasSigning, verifiedCount, nil
 }
 
-// CheckSignedReleases checks if releases have GPG signatures
+// CheckSignedReleases checks if releases have GPG signatures.
+// Uses the cached getReleases helper which includes scraping fallback on rate limit.
 func (c *GitHubClient) CheckSignedReleases(repoURL string) (bool, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return false, err
 	}
 
-	url := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=10", c.baseURL, owner, repo)
-	req, err := http.NewRequest("GET", url, nil)
+	releases, err := c.getReleases(owner, repo)
 	if err != nil {
-		return false, err
-	}
-
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return false, nil
-	}
-
-	var releases []GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return false, err
+		return false, nil // Degrade gracefully
 	}
 
 	if len(releases) == 0 {
 		return false, nil
+	}
+
+	// Limit to last 10 releases
+	if len(releases) > 10 {
+		releases = releases[:10]
 	}
 
 	// Check for signature files (.asc, .sig) in release assets
@@ -1655,9 +1640,10 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit — return 0 so callers degrade gracefully
+		// Rate limit — return 0 with nil error so callers degrade gracefully
+		// rather than treating API unavailability as a risk signal
 		if shouldFallbackToScraping(nil, resp.StatusCode) {
-			return 0, fmt.Errorf("GitHub API rate limited: cannot check issue response time")
+			return 0, nil
 		}
 		return 0, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 	}
@@ -1860,6 +1846,8 @@ func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return false (unknown, not negative signal).
+		// The caller should not treat this as "not verified" risk signal.
 		return false
 	}
 
@@ -1947,6 +1935,11 @@ func (c *GitHubClient) GetUserAccountCreatedDate(username string) (time.Time, er
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return zero time so callers degrade gracefully
+		// rather than treating unavailable data as a risk signal
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return time.Time{}, nil
+		}
 		return time.Time{}, fmt.Errorf("GitHub API returned %d for user %s", resp.StatusCode, username)
 	}
 

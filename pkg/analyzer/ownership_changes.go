@@ -239,10 +239,12 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 
 		switch {
 		case repoAge < 0.5 && len(result.Metadata.Maintainers) <= 1:
-			// Very new single-maintainer package: cannot verify ownership stability
-			riskPoints = 2
+			// Very new single-maintainer package: no ownership transfer evidence found.
+			// Score as moderate (1) not max (2) — being new is not evidence of compromise.
+			// Publisher Control already scores single-maintainer risk separately.
+			riskPoints = 1
 			evidenceParts = append(evidenceParts,
-				fmt.Sprintf("Repository %.1f years old, single maintainer (cannot verify ownership history)", repoAge))
+				fmt.Sprintf("Repository %.1f years old, single maintainer (no ownership transfer detected, limited history)", repoAge))
 		case repoAge < 1.0:
 			riskPoints = 1
 			evidenceParts = append(evidenceParts,

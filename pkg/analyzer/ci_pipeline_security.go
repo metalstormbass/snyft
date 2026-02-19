@@ -71,17 +71,19 @@ func (a *Analyzer) scoreCIPipelineSecurity(result *models.AnalysisResult) models
 			Detail: fmt.Sprintf("CI system(s) detected: %s", ciList),
 		})
 	} else {
-		evidence = append(evidence, "No CI/CD system detected (packages may be built and published from developer machines)")
+		evidence = append(evidence, "No CI/CD system detected in repository")
 		checks = append(checks, models.CheckResult{
 			Name:   "CI system detection",
 			Status: "FAIL",
 			Detail: "No CI/CD system detected in repository",
 		})
-		// No CI = high risk, return early with max risk
+		// No CI detected = moderate risk (1 point). Many legitimate packages
+		// (especially smaller or ecosystem-native packages) don't use CI.
+		// Only assign max risk (2) when CI exists but has dangerous configuration.
 		return models.CategoryScore{
 			Score:       0,
-			RiskPoints:  2,
-			Description: "No CI/CD system detected: builds and releases are unverified",
+			RiskPoints:  1,
+			Description: "No CI/CD system detected",
 			Evidence:    strings.Join(evidence, "; ") + ciSource,
 			Verified:    verified,
 			Methodology: ciMethodology,

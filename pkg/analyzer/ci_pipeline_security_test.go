@@ -26,8 +26,10 @@ func TestScoreCIPipelineSecurity_NoCI(t *testing.T) {
 
 	score := analyzer.scoreCIPipelineSecurity(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for no CI, got %d", score.RiskPoints)
+	// No CI detected = moderate risk (1 point), not max risk.
+	// Absence of CI is not evidence of compromise — many legitimate packages don't use CI.
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for no CI (moderate, not max), got %d", score.RiskPoints)
 	}
 	if score.Score != 0 {
 		t.Errorf("Expected score 0 for no CI, got %d", score.Score)

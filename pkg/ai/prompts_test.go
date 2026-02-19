@@ -155,14 +155,14 @@ func TestExecutiveExplanationPrompt(t *testing.T) {
 	prompt := NewExecutiveExplanationPrompt("test-package", models.EcosystemPyPI, analysisResult, "Engineering Manager")
 
 	// Test system prompt includes stakeholder communication principles
-	if !strings.Contains(strings.ToLower(prompt.SystemPrompt), "business impact") {
-		t.Error("System prompt should mention business impact")
+	if !strings.Contains(strings.ToLower(prompt.SystemPrompt), "business context") {
+		t.Error("System prompt should mention business context")
 	}
 	if !strings.Contains(prompt.SystemPrompt, "stakeholder") {
 		t.Error("System prompt should mention stakeholders")
 	}
-	if !strings.Contains(strings.ToLower(prompt.SystemPrompt), "actionable") {
-		t.Error("System prompt should emphasize actionable recommendations")
+	if !strings.Contains(strings.ToLower(prompt.SystemPrompt), "evidence") {
+		t.Error("System prompt should emphasize evidence-based findings")
 	}
 
 	_, user := prompt.Render()
@@ -172,9 +172,9 @@ func TestExecutiveExplanationPrompt(t *testing.T) {
 		t.Error("User prompt should include target audience")
 	}
 
-	// Test that user prompt requests business impact
-	if !strings.Contains(strings.ToLower(user), "business impact") {
-		t.Error("User prompt should request business impact section")
+	// Test that user prompt requests business context
+	if !strings.Contains(strings.ToLower(user), "business context") {
+		t.Error("User prompt should request business context section")
 	}
 
 	// Test that user prompt requests risk context
@@ -379,10 +379,10 @@ func TestPromptSystemMessages(t *testing.T) {
 			systemPrompt: ExecutiveExplanationSystemPrompt,
 			mustContain: []string{
 				"stakeholder",
-				"Business Impact",
-				"Risk-Focused",
+				"Business Context",
+				"Finding-Focused",
 				"Executive Summary",
-				"Risk Context",
+				"Finding Context",
 			},
 			mustNotContain: []string{},
 		},

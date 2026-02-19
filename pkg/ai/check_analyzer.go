@@ -15,63 +15,57 @@ import (
 // recognition, behavioral anomaly detection, and compound risk identification.
 // The AI receives ALL data at once to find holistic insights the per-category
 // rule-based engine misses by design.
-const deepAnalysisSystemPrompt = `You are a supply chain security analyst performing deep behavioral analysis.
+const deepAnalysisSystemPrompt = `You are a supply chain security analyst reviewing the results of an automated scan.
 
 ## Your Role
 
-You receive the COMPLETE analysis of a package — all 11 category scores, all metadata, all findings. The rule-based engine has already scored each category individually. Your job is to find what the rules MISSED:
+You receive the COMPLETE analysis of a package — all 11 category scores, all metadata, all findings. The rule-based engine has already scored each category individually. Your job is to:
 
-1. **Compound risk patterns**: Combinations of weak signals that together indicate HIGH risk
-   - Example: single maintainer + 2 years dormant + sudden release + no CI = classic account takeover pattern
-   - Example: ownership transfer + new install scripts + removed tests = potential malicious acquisition
+1. **Identify compound patterns from ACTUAL findings**: When multiple rule-based findings occur together, note whether they form a known attack pattern
+   - Example: IF single maintainer AND 2+ years dormant AND sudden release were ALL actually found, note this matches the account takeover pattern from Ohm et al. (2020)
+   - ONLY cite patterns where ALL contributing signals were actually detected — never infer missing data
 
-2. **Behavioral anomalies in maintainer/process**:
-   - Does the maintainer behavior pattern look consistent with legitimate development?
-   - Are there signs of account compromise, social engineering, or hostile takeover?
-   - Does the release pattern match normal software development cadence?
+2. **Note factual observations about the data**:
+   - Summarize what was actually found, not what might happen
+   - If data is missing or unavailable, say so — do not treat missing data as a risk signal
 
-3. **Insights rules cannot detect**:
-   - Contextual interpretation (e.g., "a 10-year-old package with 1M downloads and 1 maintainer is a bigger takeover target than a new package with 1 maintainer")
-   - Ecosystem-specific norms (e.g., "no CI is unusual for packages with >1M downloads in npm")
-   - Temporal correlations (e.g., "ownership changed 2 weeks before a major release")
+3. **Provide contextual interpretation of actual findings**:
+   - Example: "This package has 1M weekly downloads and a single maintainer" — factual observation from data
+   - Example: "No CI was detected despite 50+ contributors" — factual observation about data inconsistency
 
-## What You DO NOT Do
+## Critical Rules
 
+- ONLY reference data that is actually present in the findings below
+- NEVER speculate about risks not supported by the data (no "could", "might", "potentially")
+- If a data point was not checked or is unavailable, say "not assessed" — do NOT assume worst case
+- Do NOT infer intent — only describe what the data shows
 - Do NOT simply restate or paraphrase the rule-based findings
 - Do NOT track CVEs or known vulnerabilities
 - Do NOT recommend fixes or best practices
-- Do NOT analyze code quality
-
-## Academic Foundation
-
-- "Backstabber's Knife Collection" (Ohm et al., 2020) — 90% of supply chain attacks target maintainer accounts
-- "Small World with High Risks" (Zimmermann et al., 2019) — dependency network compromise propagation
-- SLSA Framework — build integrity requirements
-- OSSF Scorecard — automated security health metrics
 
 ## Output Format
 
 Respond ONLY with valid JSON. No markdown, no code blocks, no text outside the JSON object.
 
 {
-  "risk_assessment": "1-3 sentence holistic assessment of this package's compromise likelihood",
+  "risk_assessment": "1-3 sentence factual summary of what the scan found",
   "compound_risks": [
     {
       "pattern": "human-readable pattern name",
       "risk_level": "HIGH|MEDIUM|LOW",
-      "contributing": ["signal 1", "signal 2", "signal 3"],
-      "explanation": "why this combination is concerning"
+      "contributing": ["signal 1 (actually found)", "signal 2 (actually found)"],
+      "explanation": "why these co-occurring findings match a documented pattern"
     }
   ],
-  "behavior_findings": ["behavioral anomaly 1", "behavioral anomaly 2"],
-  "missed_by_rules": ["insight 1 that rules cannot detect", "insight 2"],
+  "behavior_findings": ["factual observation about the data"],
+  "missed_by_rules": ["cross-cutting factual observation rules scored separately"],
   "confidence": 0.0
 }
 
 IMPORTANT:
-- If you find NO compound risks or anomalies beyond what rules already caught, say so honestly with an empty array. Do NOT fabricate findings.
-- Only report genuine cross-cutting patterns. Quality over quantity.
-- confidence should reflect data quality: 0.9 if you have rich metadata, 0.5 if data is sparse.`
+- If you find NO compound patterns beyond what rules already caught, return empty arrays. Do NOT fabricate findings.
+- Every entry in compound_risks MUST reference only signals that were actually detected in the data.
+- confidence should reflect data completeness: 0.9 if metadata is comprehensive, 0.5 if many fields are missing.`
 
 // deepAnalysisResponse is the JSON structure expected from Claude for deep analysis
 type deepAnalysisResponse struct {
@@ -115,16 +109,16 @@ func (ca *CheckAnalyzer) AnalyzeDeep(ctx context.Context, packageName string, ec
 	// Build the complete context: all categories, all metadata, all findings
 	fullContext := ca.buildFullContext(packageName, ecosystem, result)
 
-	userPrompt := fmt.Sprintf(`Perform deep behavioral analysis of this package's supply chain risk profile. All rule-based scoring is already complete — your job is to find what the rules MISSED.
+	userPrompt := fmt.Sprintf(`Review the following complete scan results and identify any cross-cutting patterns from the ACTUAL findings.
 
 %s
 
-Identify:
-1. COMPOUND risk patterns: combinations of signals that together indicate higher risk than any single signal
-2. BEHAVIORAL anomalies: patterns in maintainer or process behavior that are inconsistent with legitimate development
-3. CONTEXTUAL insights: things that require holistic judgment rather than individual category scoring
+Based ONLY on the data above:
+1. COMPOUND patterns: Do any of the actual findings co-occur in ways that match documented supply chain attack patterns?
+2. DATA observations: What factual observations can be made from the combination of findings?
+3. CROSS-CUTTING insights: Do any findings from different categories interact meaningfully?
 
-If there are no genuine compound risks beyond what the rules already found, say so. Do NOT fabricate findings.
+If the rule-based findings already captured everything relevant, return empty arrays. Do NOT invent findings not supported by the data above.
 
 Respond ONLY with valid JSON (no markdown, no code blocks).`, fullContext)
 

@@ -29,7 +29,9 @@ func NewOSSFClient() *OSSFClient {
 	}
 }
 
-// GetScorecard fetches the OpenSSF Scorecard for a repository
+// GetScorecard fetches the OpenSSF Scorecard for a repository.
+// Returns nil (not error) on rate limit so callers degrade gracefully
+// rather than treating API unavailability as a risk signal.
 func (c *OSSFClient) GetScorecard(repoURL string) (*OSSFScorecard, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -41,7 +43,8 @@ func (c *OSSFClient) GetScorecard(repoURL string) (*OSSFScorecard, error) {
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch OSSF scorecard: %w", err)
+		// Network error — return nil so callers degrade gracefully
+		return nil, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -50,6 +53,11 @@ func (c *OSSFClient) GetScorecard(repoURL string) (*OSSFScorecard, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or other API errors — return nil so callers degrade gracefully
+		// rather than treating API unavailability as a risk signal
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("OSSF API returned status %d", resp.StatusCode)
 	}
 

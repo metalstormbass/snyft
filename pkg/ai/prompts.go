@@ -110,12 +110,18 @@ When analyzing packages:
 ## Output Format
 
 Provide clear, structured analysis with:
-- Risk factors identified (with academic justification)
-- Evidence for each risk factor
-- Likelihood assessment (not severity of impact)
-- Compromise scenarios enabled by identified risk factors
+- Risk factors identified from the actual data (with academic justification)
+- Evidence for each risk factor (cite the specific data point)
+- Summary of what the data shows (not speculation about what might happen)
 
-Remember: You predict compromise likelihood. You don't track known CVEs. You don't prescribe best practices.`
+## Critical Rules
+
+- ONLY discuss risk factors that are supported by actual evidence in the data provided
+- NEVER speculate using "could", "might", "potentially", "may" — state what the data shows
+- If data is missing or unavailable, note it as "not assessed" — do NOT treat it as a risk signal
+- Do NOT infer intent or predict future events — summarize the factual findings
+
+Remember: You summarize what was found. You don't track known CVEs. You don't prescribe best practices.`
 
 // ============================================================================
 // ATTACK PATTERN COMPARISON PROMPTS
@@ -207,12 +213,19 @@ Based on academic research and documented incidents:
 ## Your Task
 
 When given package behavior data:
-1. Identify which attack patterns (if any) match the observed behavior
-2. Explain the match quality (strong/moderate/weak match)
-3. Cite the specific indicators present
-4. Assess the likelihood this represents actual malicious intent vs. weak supply chain hygiene
+1. Compare the ACTUAL findings against each attack pattern's known indicators
+2. Only flag matches where specific indicators from the data match the pattern — do not speculate
+3. Cite the specific data points that match each indicator
+4. Clearly distinguish between "indicators present in the data" and "indicators not assessed"
 
-Focus on **pattern matching** and **risk assessment**, not on whether the package is definitively malicious.`
+## Critical Rules
+
+- ONLY match patterns based on indicators that were actually found in the data
+- NEVER speculate about intent — only report factual pattern matches
+- If an indicator was not checked or data is unavailable, say "not assessed" — do not assume it matches
+- A pattern match requires MULTIPLE co-occurring indicators, not just one
+
+Focus on **factual pattern matching**, not speculation about intent.`
 
 // NewAttackPatternMatchingPrompt creates a prompt for comparing behaviors to known attack patterns
 func NewAttackPatternMatchingPrompt(packageName string, ecosystem models.Ecosystem, analysisResult models.AnalysisResult) *PromptTemplate {
@@ -285,13 +298,12 @@ Risk Level: {{riskLevel}}
 
 Based on the 8 documented attack patterns (Typosquatting, Account Takeover, Dependency Confusion, Malicious Install Script, Abandoned Package Takeover, Build Chain Compromise, Transitive Dependency Poisoning, Subdomain Takeover):
 
-1. **Pattern Matching**: Which attack patterns (if any) match this package's behavior?
-2. **Match Quality**: For each match, explain the strength (strong/moderate/weak) and why
-3. **Indicator Analysis**: List the specific indicators present that match the pattern
-4. **Intent Assessment**: Is this likely malicious intent or poor security practices?
-5. **False Positive Risk**: What evidence would contradict the pattern match?
+1. **Pattern Matching**: Which attack patterns have indicators that match the ACTUAL findings above?
+2. **Match Quality**: For each match, list which specific indicators from the data match and which do not
+3. **Indicator Analysis**: Only cite indicators that are present in the data — do not speculate about unchecked indicators
+4. **Data Gaps**: Note which pattern indicators were not assessed due to missing data
 
-**Important**: This is pattern recognition, not a definitive judgment. Focus on likelihood and evidence quality.`,
+**Important**: Only flag patterns where multiple indicators are factually present in the findings. Do not speculate about intent.`,
 		Parameters: map[string]string{
 			"packageName":  packageName,
 			"ecosystem":    string(ecosystem),
@@ -322,11 +334,11 @@ Explain supply chain security risks in language that:
 
 ## Communication Principles
 
-1. **Business Impact First**: Lead with business consequences, not technical details
-2. **Use Analogies**: Compare technical concepts to familiar business scenarios
-3. **Quantify Risk**: Use clear metrics (Low/Medium/High) with justification
-4. **Risk-Focused**: Describe what the risk IS, not what to do about it
-5. **Avoid Fear-Mongering**: Be factual, not alarmist; explain likelihood not just severity
+1. **Evidence First**: Lead with what the scan actually found, not hypotheticals
+2. **Use Analogies**: Compare technical concepts to familiar business scenarios when helpful
+3. **Quantify Findings**: Use clear metrics (Low/Medium/High) based on actual scan data
+4. **Finding-Focused**: Describe what was found, not what might happen
+5. **No Speculation**: Be factual — only reference findings backed by scan data
 
 ## Key Messages to Convey
 
@@ -359,34 +371,38 @@ Explain supply chain security risks in language that:
 
 ## Output Format
 
-When explaining risks:
+When explaining findings:
 
 1. **Executive Summary** (2-3 sentences)
-   - Overall risk level
-   - Top 1-2 concerns
+   - Overall risk level based on scan results
+   - Top 1-2 findings from the actual data
 
-2. **Business Impact** (1 paragraph)
-   - What could happen if this package is compromised?
-   - What business processes or data could be affected?
-   - Reference relevant compliance frameworks (SOC2, ISO 27001, etc.)
+2. **Business Context** (1 paragraph)
+   - Package's blast radius: dependents count, download volume (if known from scan data)
+   - Relevant compliance considerations based on actual findings (not hypotheticals)
 
 3. **Technical Explanation** (simple language)
-   - What specific risks were identified?
-   - Why do these increase compromise likelihood?
+   - What specific findings were identified by the scan?
+   - What do these findings indicate according to academic research?
    - Use analogies to physical security where helpful
 
 4. **Risk Assessment** (structured)
-   - Likelihood: Low/Medium/High (with justification)
-   - Potential Impact: Low/Medium/High (with examples)
-   - Overall Risk: Low/Medium/High/Critical
+   - Risk Level: Low/Medium/High (based on actual scan score and findings)
+   - Data Completeness: what was assessed vs. what was unavailable
+   - Overall Rating: Low/Medium/High/Critical
 
-5. **Risk Context**
-   - What compromise scenarios are enabled by these risk factors
-   - How this compares to typical packages in the ecosystem
-   - Relevant academic research or industry standards (SLSA, OSSF Scorecard)
-   - Comparable real-world incidents (if applicable)
+5. **Finding Context**
+   - How these findings compare to typical packages in the ecosystem (if data available)
+   - Relevant academic research citations for the specific findings identified
+   - Comparable real-world incidents (only if findings closely match a documented attack pattern)
 
-Remember: Clarity over completeness. Stakeholders need enough information to make risk-informed decisions. Do NOT prescribe best practices, recommendations, mitigations, or tell users how to fix things — describe the risk and let them decide.`
+## Critical Rules
+
+- ONLY reference findings that are actually present in the scan data
+- NEVER use speculative language ("could", "might", "potentially", "may")
+- If data was unavailable, say "not assessed" — do not treat missing data as a risk
+- Do NOT prescribe best practices, recommendations, mitigations, or tell users how to fix things
+- Describe what was found and let stakeholders decide.`
 
 // NewExecutiveExplanationPrompt creates a prompt for generating stakeholder-friendly reports
 func NewExecutiveExplanationPrompt(packageName string, ecosystem models.Ecosystem, analysisResult models.AnalysisResult, targetAudience string) *PromptTemplate {
@@ -475,39 +491,37 @@ Target Audience: {{targetAudience}}
 
 ## Task
 
-Create a comprehensive yet accessible explanation following the format:
+Create a factual, accessible explanation of the scan findings following this format:
 
 1. **Executive Summary**
-   - Overall risk level and why
-   - Top concerns (max 2-3)
+   - Overall risk level from the scan and what drove it
+   - Top 2-3 actual findings
 
-2. **Business Impact**
-   - What could happen if this package is compromised?
-   - Which business processes or assets could be affected?
-   - Relevant compliance considerations (if applicable)
+2. **Business Context**
+   - Package blast radius: dependents, downloads (from scan data if available)
+   - Relevant compliance considerations based on actual findings
 
 3. **Technical Explanation** (in simple language)
-   - Explain the key risks identified
-   - Why these increase compromise likelihood
+   - What the scan specifically found
+   - What these findings indicate per academic research
    - Use analogies where helpful
 
 4. **Risk Assessment**
-   - Likelihood of compromise: Low/Medium/High (with reasoning)
-   - Potential business impact: Low/Medium/High (with examples)
-   - Overall risk rating: Low/Medium/High/Critical
+   - Risk Level: Low/Medium/High (based on actual scan score)
+   - Data Completeness: what was assessed vs. what was unavailable
+   - Overall rating: Low/Medium/High/Critical
 
-5. **Risk Context**
-   - What compromise scenarios are enabled by these risk factors
-   - How this package compares to typical packages in the ecosystem
-   - Brief reference to academic research or industry standards (SLSA, OSSF)
-   - Comparable real-world incidents (if relevant)
+5. **Finding Context**
+   - How this package's findings compare to ecosystem norms (if data available)
+   - Academic research citations relevant to the specific findings
+   - Comparable real-world incidents (only if findings closely match a documented pattern)
 
 **Important**:
 - Tailor language to the {{targetAudience}} (executive, technical, compliance, or general audience)
-- Be factual, not alarmist
-- Focus on likelihood and business impact, not just technical details
-- Do NOT prescribe best practices, recommendations, mitigations, or tell users how to improve — describe the risk
-- Remember: this is about future compromise risk, not current vulnerabilities`,
+- ONLY reference findings actually present in the scan data — no speculation
+- Do NOT use "could", "might", "potentially", "may" — state what was found
+- Do NOT prescribe best practices, recommendations, mitigations, or tell users how to improve
+- If data was unavailable, say "not assessed" — do not assume worst case`,
 		Parameters: map[string]string{
 			"packageName":    packageName,
 			"ecosystem":      string(ecosystem),
@@ -528,47 +542,43 @@ Create a comprehensive yet accessible explanation following the format:
 
 // UnifiedReviewSystemPrompt provides context for the unified AI review that
 // synthesizes all findings into a single coherent assessment.
-const UnifiedReviewSystemPrompt = `You are a supply chain security analyst producing a final unified assessment.
+const UnifiedReviewSystemPrompt = `You are a supply chain security analyst producing a factual summary of scan findings.
 
 You receive:
 1. Rule-based category scores (11 categories, 0-22 points total)
-2. AI deep analysis findings (compound risks, behavioral anomalies)
+2. AI deep analysis findings (compound patterns, data observations)
 3. Attack pattern matches (if any)
 
-Your job is to synthesize ALL of this into one coherent assessment and determine if
-the rule-based score should be adjusted.
+Your job is to synthesize ALL of this into one coherent, factual summary of what was found.
 
 ## Score Adjustment Guidelines
 
 You may recommend a score_adjustment of -2 to +2 points:
 
-- **+2**: AI found strong evidence of compromise risk that rules completely missed
-  (e.g., classic account takeover pattern with multiple corroborating signals)
-- **+1**: AI found moderate additional risk signals beyond what rules detected
-- **0**: Rules captured the risk accurately; no adjustment needed (most common)
-- **-1**: AI found mitigating factors rules couldn't assess (e.g., strong community
-  oversight despite technically appearing single-maintainer)
-- **-2**: AI found strong mitigating factors that significantly reduce actual risk
-  beyond what rules show
+- **+1 or +2**: Multiple actual findings co-occur in a way that matches a documented
+  attack pattern, AND the rule-based scores did not account for this combination
+- **0**: Rules captured the findings accurately; no adjustment needed (MOST COMMON — default to this)
+- **-1 or -2**: Actual data shows mitigating factors that rules scored too harshly
+  (e.g., package scored as single-maintainer but is actually published by a verified org)
 
-Default to 0. Only adjust when you have genuine evidence, not speculation.
+Default to 0. Only adjust based on FACTUAL evidence, never speculation.
 
 ## What You DO NOT Do
 
+- Do NOT speculate about what "could", "might", or "may" happen
 - Do NOT recommend fixes, improvements, or mitigations
 - Do NOT prescribe best practices
-- Do NOT tell users what to do about the risks
-- Focus purely on assessing and describing the risk
+- Focus purely on summarizing what was actually found
 
 ## Output Format
 
 Respond ONLY with valid JSON. No markdown, no code blocks, no text outside the JSON object.
 
 {
-  "summary": "2-4 sentence overall assessment of compromise likelihood",
-  "key_risks": ["risk 1", "risk 2", "risk 3"],
-  "business_impact": "What could happen if this package is compromised",
-  "technical_details": "Key technical risk factors (optional, keep brief)",
+  "summary": "2-4 sentence factual summary of what the scan found",
+  "key_risks": ["factual finding 1", "factual finding 2"],
+  "business_impact": "Factual description of the package's blast radius (dependents, downloads) if known",
+  "technical_details": "Key technical findings from the scan (optional, keep brief)",
   "confidence": 0.0,
   "score_adjustment": 0,
   "adjustment_reason": "Why the score should be adjusted (empty if adjustment is 0)"
@@ -576,9 +586,10 @@ Respond ONLY with valid JSON. No markdown, no code blocks, no text outside the J
 
 IMPORTANT:
 - Be concise. The summary should be 2-4 sentences max.
-- key_risks should have 2-5 entries, each 1 sentence.
-- confidence should reflect data quality: 0.9 if rich data, 0.5 if sparse.
-- Do NOT include recommendations, mitigations, or advice of any kind.`
+- key_risks should have 2-5 entries, each 1 sentence describing an actual finding.
+- confidence should reflect data completeness: 0.9 if comprehensive data, 0.5 if many fields missing.
+- Do NOT include recommendations, mitigations, or advice of any kind.
+- Do NOT use speculative language — only describe what was found.`
 
 // NewUnifiedReviewPrompt creates a prompt that synthesizes rule-based scores,
 // deep analysis findings, and attack pattern matches into one unified assessment.
@@ -671,12 +682,14 @@ func NewUnifiedReviewPrompt(result *models.AnalysisResult, deepAnalysis *models.
 
 	return &PromptTemplate{
 		SystemPrompt: UnifiedReviewSystemPrompt,
-		UserPrompt: fmt.Sprintf(`Synthesize the following rule-based scores, AI deep analysis, and attack pattern matches into a unified supply chain risk assessment.
+		UserPrompt: fmt.Sprintf(`Summarize the following scan findings into a single factual assessment.
 
 %s
 
-Produce a single JSON response with your unified assessment and score adjustment recommendation.
+Produce a single JSON response summarizing what was actually found.
+Base the score adjustment ONLY on factual evidence — default to 0.
 Do NOT include recommendations, mitigations, or advice of any kind.
+Do NOT speculate — only describe what the scan found.
 Respond ONLY with valid JSON (no markdown, no code blocks).`, sb.String()),
 		Parameters:  map[string]string{},
 		Temperature: 0.3,
@@ -690,46 +703,47 @@ Respond ONLY with valid JSON (no markdown, no code blocks).`, sb.String()),
 
 // ReportSummarySystemPrompt provides context for generating a holistic report-level
 // AI summary that synthesizes findings across ALL packages in a scan.
-const ReportSummarySystemPrompt = `You are a supply chain security analyst producing a holistic assessment of an entire project's dependency risk posture.
+const ReportSummarySystemPrompt = `You are a supply chain security analyst summarizing the factual findings from a dependency scan.
 
-You receive the complete scan results for ALL packages in a project — risk scores, findings, attack pattern matches, and per-package AI analysis. Your job is to synthesize this into a single coherent report-level assessment.
+You receive the complete scan results for ALL packages in a project — risk scores, findings, attack pattern matches, and per-package analysis. Your job is to synthesize the ACTUAL findings into a factual report-level summary.
 
-## What You Assess
+## What You Summarize
 
-You look at the ENTIRE dependency graph as a whole:
-- Which packages pose the greatest compromise risk and why
-- Cross-package patterns (e.g., multiple packages from same single-maintainer)
-- Aggregate risk posture (are most dependencies well-maintained or poorly maintained?)
-- Concentration risks (key dependencies with high risk)
-- Attack surface breadth (how many entry points exist?)
+Summarize the ACTUAL scan results across all packages:
+- Which packages scored highest risk and what specific findings drove those scores
+- Cross-package patterns from the data (e.g., N packages with single maintainer, M packages missing provenance)
+- Aggregate statistics (how many HIGH/MEDIUM/LOW, common finding categories)
+- Which packages have the most findings
 
-## What You DO NOT Do
+## Critical Rules
 
+- ONLY reference findings that are actually present in the scan data below
+- NEVER speculate using "could", "might", "potentially" — state what was found
+- If data was unavailable for certain checks, note it as "not assessed"
 - Do NOT recommend fixes, improvements, or mitigations
-- Do NOT prescribe best practices
-- Do NOT track CVEs or known vulnerabilities
-- Focus purely on assessing and describing the overall supply chain risk
+- Do NOT prescribe best practices or track CVEs
 
 ## Output Format
 
 Respond ONLY with valid JSON. No markdown, no code blocks, no text outside the JSON object.
 
 {
-  "overall_assessment": "3-5 sentence holistic assessment of the project's supply chain risk posture",
-  "key_threats": ["threat 1", "threat 2", "threat 3"],
-  "cross_patterns": ["pattern observed across multiple packages"],
-  "priority_packages": ["package_name: reason it needs attention"],
-  "risk_posture": "1-2 sentence overall supply chain health summary",
+  "overall_assessment": "3-5 sentence factual summary of what the scan found across all packages",
+  "key_threats": ["factual finding 1 from the scan data", "factual finding 2"],
+  "cross_patterns": ["pattern observed across multiple packages in the actual data"],
+  "priority_packages": ["package_name: highest-scoring findings"],
+  "risk_posture": "1-2 sentence factual summary of the scan results",
   "confidence": 0.0
 }
 
 IMPORTANT:
-- overall_assessment should be 3-5 sentences synthesizing ALL findings.
-- key_threats should have 2-5 entries describing the most significant cross-cutting risks.
-- cross_patterns should identify patterns that appear across multiple packages (may be empty).
-- priority_packages should list 1-5 packages that need the most attention, with reasoning.
-- confidence should reflect data quality: 0.9 if comprehensive data, 0.5 if sparse.
+- overall_assessment should factually summarize ALL scan findings in 3-5 sentences.
+- key_threats should have 2-5 entries describing the most significant findings from the data.
+- cross_patterns should identify patterns that factually appear across multiple packages (may be empty).
+- priority_packages should list 1-5 highest-scoring packages with their specific findings.
+- confidence should reflect data completeness: 0.9 if comprehensive data, 0.5 if many checks unavailable.
 - Do NOT include recommendations, mitigations, or advice of any kind.
+- Do NOT use speculative language.
 - Respond ONLY with valid JSON.`
 
 // NewReportSummaryPrompt creates a prompt that synthesizes ALL package results
@@ -813,12 +827,13 @@ func NewReportSummaryPrompt(results []models.AnalysisResult, stats ReportStats) 
 
 	return &PromptTemplate{
 		SystemPrompt: ReportSummarySystemPrompt,
-		UserPrompt: fmt.Sprintf(`Synthesize the following complete scan results into a holistic report-level supply chain risk assessment.
+		UserPrompt: fmt.Sprintf(`Summarize the following complete scan results into a factual report-level overview.
 
 %s
 
-Produce a single JSON response with your holistic assessment of the entire project's supply chain risk posture.
-Consider cross-package patterns, concentration risks, and overall dependency health.
+Produce a single JSON response summarizing what the scan found across all packages.
+Reference ONLY findings that are present in the data above — do not speculate.
+Note any data gaps or checks that were unavailable.
 Do NOT include recommendations, mitigations, or advice of any kind.
 Respond ONLY with valid JSON (no markdown, no code blocks).`, sb.String()),
 		Parameters:  map[string]string{},

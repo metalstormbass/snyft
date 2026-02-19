@@ -314,9 +314,10 @@ func TestScoreOwnershipChanges_HighRisk_NewPackageSingleMaintainer(t *testing.T)
 
 	score := analyzer.scoreOwnershipChanges(result)
 
-	// Very new package (<0.5y) with single maintainer → age heuristic → risk=2
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for new package single maintainer, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	// Very new package (<0.5y) with single maintainer → age heuristic → risk=1
+	// (No actual ownership transfer evidence — being new alone is not max risk)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for new package single maintainer (no transfer evidence), got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 }
 
@@ -1157,8 +1158,10 @@ func TestScoreInstallExecution_HighRisk_MultipleScripts(t *testing.T) {
 
 	score := analyzer.scoreInstallExecution(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for multiple scripts, got %d", score.RiskPoints)
+	// Multiple benign scripts (no dangerous patterns) → 1 risk point, not 2.
+	// Only dangerous content warrants max risk.
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for multiple benign scripts, got %d", score.RiskPoints)
 	}
 
 	if score.Score != 0 {
@@ -1891,15 +1894,15 @@ func TestScoreOwnershipChanges_ScoreFieldConsistency(t *testing.T) {
 			expectedScore: 1,
 		},
 		{
-			name: "Very new single maintainer - risk 2, score 0",
+			name: "Very new single maintainer - risk 1, score 1",
 			result: &models.AnalysisResult{
 				Metadata: models.PackageMetadata{
 					RepoCreatedAt: time.Now().AddDate(0, -2, 0), // 2 months
 					Maintainers:   []string{"solo-dev"},
 				},
 			},
-			expectedRisk:  2,
-			expectedScore: 0,
+			expectedRisk:  1,
+			expectedScore: 1,
 		},
 	}
 
