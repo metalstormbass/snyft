@@ -1,6 +1,6 @@
 # Snyft Check Audit Report
 
-Generated: 2026-02-18 (updated from 2026-02-17)
+Generated: 2026-02-19 (updated for PR #128 refactor)
 
 This document audits all scoring categories for checks that consistently return zero findings. Each issue is classified as **Broken** (data never flows correctly), **Stub** (not yet implemented), **Fixed** (resolved), or **Working**.
 
@@ -48,7 +48,7 @@ Logic is structurally sound. Defaults to 1 risk point (`Verified: false`) when n
 
 **Status:** OPEN
 
-**File:** `pkg/analyzer/analyzer.go:208-217`
+**File:** `pkg/analyzer/install_execution.go`
 
 The `setup.py` analysis is gated behind `if repoURL != ""`. Packages without a repo URL — common for small packages — never have `setup.py` analyzed.
 
@@ -58,7 +58,7 @@ The `setup.py` analysis is gated behind `if repoURL != ""`. Packages without a r
 
 `metadata.HasInstallScripts = true` is now set whenever a `pom.xml` is found, regardless of whether dangerous patterns are detected. This makes the 1-risk-point path for "single benign install script" reachable for Maven packages.
 
-**File changed:** `pkg/analyzer/analyzer.go`
+**File changed:** `pkg/analyzer/install_execution.go`
 
 ---
 
@@ -68,7 +68,7 @@ The `setup.py` analysis is gated behind `if repoURL != ""`. Packages without a r
 
 **Status:** OPEN
 
-**File:** `pkg/analyzer/analyzer.go:401-403`
+**File:** `pkg/analyzer/dependency_sprawl.go`
 
 `analyzeDependencySprawl` returns immediately when `dep.Source == ""`. When scanning a package by name (the typical CLI usage), `dep.Source` is always empty. **Lock file analysis is effectively always skipped.**
 
@@ -123,35 +123,58 @@ Packages with CI/CD pipelines but no formal provenance attestations now receive 
 
 ---
 
-## Category 7: Health — PARTIALLY FIXED
+## Category 7: Health — REFACTORED
+
+### Refactored: Simplified to bus factor + review oversight
+
+**Status:** REFACTORED (PR #128)
+
+Health scoring was simplified to two components focused on compromise resistance:
+- **Bus factor**: Single contributor = single point of compromise (>= 3 earns a point)
+- **Review oversight**: Branch protection + required reviewers, or >= 75% PR review rate
+
+CI quality scoring was **removed entirely** — it measures code correctness, not compromise resistance. This resolves the previous GitLab/Bitbucket CI quality issue by elimination.
+
+**File:** `pkg/analyzer/health.go`
 
 ### Bug: PR stats stubs for GitLab/Bitbucket
 
-**Status:** OPEN
+**Status:** OPEN (still affects review oversight component)
 
-**File:** `pkg/fetcher/gitlab.go:616-620`, `pkg/fetcher/bitbucket.go:574-576`
+**File:** `pkg/fetcher/gitlab.go`, `pkg/fetcher/bitbucket.go`
 
-`GetPullRequestStats` returns empty `PRStats{}` for both platforms. `CodeReviewRate`, `RequiredReviewers`, and `HasBranchProtection` are always zero/false.
+`GetPullRequestStats` returns empty `PRStats{}` for both platforms. `CodeReviewRate`, `RequiredReviewers`, and `HasBranchProtection` are always zero/false. This means GitLab/Bitbucket packages cannot earn the review oversight point.
 
 **Recommendation:** Implement basic GitLab MR stats via `/projects/{id}/merge_requests` API. Implement Bitbucket PR stats via `/repositories/{owner}/{slug}/pullrequests` API.
 
-### Fixed: CI quality threshold lowered so GitLab/Bitbucket can earn CI point
+### Added: Ecosystem-aware maintainer handling
 
-**Status:** FIXED
+**Status:** WORKING
 
-The CI quality scoring threshold was lowered from >= 7 to >= 3. Since `AnalyzeCIQuality` returns a base `QualityScore = 5` when CI is found for GitLab/Bitbucket, these platforms can now earn the CI health point. CI presence (quality >= 3 or `HasCI` flag) is treated as a meaningful supply chain signal.
+Maven Central does not expose maintainer lists. The health check now uses `EcosystemCapabilities` to avoid penalizing Maven packages for "zero maintainers" when the data is simply unavailable.
 
 ---
 
-## Category 8: Governance — PARTIALLY FIXED
+## Category 8: Governance — REFACTORED
+
+### Refactored: Sharpened to SECURITY.md only + responsiveness
+
+**Status:** REFACTORED (PR #128)
+
+Governance was sharpened to focus only on checks that prevent compromise:
+- **Security Policy (0-1 pt)**: SECURITY.md presence (or OSSF Security-Policy >= 5) — indicates a vulnerability disclosure process
+- **Responsiveness (0-1 pt)**: Fast issue response (<= 14 days) or branch protection
+- **Override**: Archived repos and abandoned packages (> 180 days inactive) always get 2 risk
+
+CONTRIBUTING.md, CODE_OF_CONDUCT.md, and CODEOWNERS checks were **removed** — documentation presence doesn't prevent compromise.
+
+**File:** `pkg/analyzer/governance.go`
 
 ### Fixed: Governance file checks no longer fail under rate limiting
 
 **Status:** FIXED
 
-Governance file checks (`SECURITY.md`, `CONTRIBUTING.md`, `CODEOWNERS`, `CODE_OF_CONDUCT.md`) previously used full GET requests via `GetFileContent`, which exhausted the GitHub API rate limit (60 req/hr unauthenticated) by the time governance scoring ran. All file checks would fail silently as "file not found", causing a constant 0/2 score.
-
-Now uses efficient cached HEAD requests via `FileExistsInRepo`, with a `raw.githubusercontent.com` CDN fallback when rate-limited. The `fileExists` cache no longer poisons entries from 403/429 responses.
+SECURITY.md checks use efficient cached HEAD requests via `FileExistsInRepo`, with a `raw.githubusercontent.com` CDN fallback when rate-limited.
 
 **Files changed:** `pkg/fetcher/github.go`, `pkg/analyzer/governance.go`
 
@@ -173,7 +196,7 @@ Issue response time analysis is behind a `gitClient.GetPlatformName() == "GitHub
 
 **Status:** MITIGATED (OSSF fallback added)
 
-**File:** `pkg/analyzer/analyzer.go:465-468`, `pkg/analyzer/release_security.go`
+**File:** `pkg/analyzer/release_security.go`
 
 `HasAutomatedReleases` checks if any GitHub releases exist — not whether they are CI-driven. Manual releases satisfy this check, defeating the intent of "CI publishing." **Mitigated:** OSSF Scorecard "Packaging" check is now used as a fallback when `HasReleaseProcess` is false, which specifically evaluates automated packaging pipelines.
 
@@ -200,7 +223,7 @@ Any package hosted on GitLab or Bitbucket is biased toward higher risk scores, t
 **Remaining affected categories for GitLab/Bitbucket:**
 - ~~PublisherControl: signing always marked absent (+0.5)~~ → **FIXED** (now treated as unchecked)
 - ~~Provenance: always max risk (+2)~~ → **PARTIALLY FIXED** (checks CI config for cosign/sigstore/SLSA)
-- Health: PR stats absent ~~, CI quality capped at 5/10~~ → **CI quality FIXED** (threshold lowered to >= 3)
+- Health: PR stats absent (CI quality scoring **removed** — not compromise-relevant)
 - Governance: issue response time unavailable
 - ReleaseSecurity: branch protection always false
 
@@ -220,7 +243,7 @@ Any package hosted on GitLab or Bitbucket is biased toward higher risk scores, t
 | ~~P3~~ | ~~Provenance~~ | ~~PyPI has_sig deprecated~~ | **FIXED** (PEP 740 attestations) |
 | P0 | Dependency Sprawl | `dep.Source` always empty → lock file always skipped | OPEN |
 | P1 | Ownership Changes | PyPI `Uploader` field doesn't exist | OPEN |
-| P2 | Health | GitLab/Bitbucket PR stubs | OPEN (CI quality **FIXED**) |
+| P2 | Health | GitLab/Bitbucket PR stubs (affects review oversight) | OPEN (CI quality **removed**) |
 | P2 | Governance | Issue response only for GitHub | OPEN |
 | ~~P2~~ | ~~Release Security~~ | ~~`HasReleaseProcess` too broad~~ | **MITIGATED** (OSSF Packaging fallback) |
 | ~~P2~~ | ~~Release Security~~ | ~~GitLab/Bitbucket branch protection stubs~~ | **MITIGATED** (OSSF fallbacks for all 4 components) |
