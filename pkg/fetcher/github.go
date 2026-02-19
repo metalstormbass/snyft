@@ -1825,13 +1825,6 @@ func (c *GitHubClient) scrapeIsOrganization(owner string) (bool, string) {
 	doc.Find("nav a[data-tab='people']").Each(func(_ int, _ *goquery.Selection) {
 		isOrg = true
 	})
-	// Also check for the org profile header
-	doc.Find("h1.h2.lh-condensed").Each(func(_ int, s *goquery.Selection) {
-		if !isOrg {
-			// Orgs typically have their display name here
-		}
-	})
-
 	name := owner
 	doc.Find("h1.h2.lh-condensed, span[itemprop='name']").First().Each(func(_ int, s *goquery.Selection) {
 		if text := strings.TrimSpace(s.Text()); text != "" {
