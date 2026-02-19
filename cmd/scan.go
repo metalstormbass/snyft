@@ -254,29 +254,26 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 		a = analyzer.NewAnalyzer(analyzer.WithAIDisabled())
 	}
 
-	// When AI is enabled, start a heartbeat ticker that refreshes the progress
-	// spinner every 500ms. Without this, the progress bar appears frozen during
-	// long AI API calls.
+	// Start a heartbeat ticker that refreshes the progress spinner every 500ms.
+	// Without this, the progress bar appears frozen during long network calls
+	// (registry APIs, git platform lookups, AI analysis) and looks like a hang.
 	done := make(chan struct{})
-	if aiConfig != nil {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		go func() {
-			for {
-				select {
-				case <-ticker.C:
-					mu.Lock()
-					if currentPkg != "" {
-						suffix := " [AI analyzing]"
-						reporter.ShowProgress(completed, len(deps), currentPkg+suffix)
-					}
-					mu.Unlock()
-				case <-done:
-					ticker.Stop()
-					return
+	ticker := time.NewTicker(500 * time.Millisecond)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				mu.Lock()
+				if currentPkg != "" {
+					reporter.ShowProgress(completed, len(deps), currentPkg)
 				}
+				mu.Unlock()
+			case <-done:
+				ticker.Stop()
+				return
 			}
-		}()
-	}
+		}
+	}()
 
 	// Start workers
 	for w := 0; w < numWorkers; w++ {
