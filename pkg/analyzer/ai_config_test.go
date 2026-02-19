@@ -77,9 +77,9 @@ func TestNewAnalyzer_WithEmptyAPIKey(t *testing.T) {
 }
 
 // TestNewAnalyzer_DefaultBehavior verifies default behavior without options
+// AI must be opt-in only: NewAnalyzer() without options must NOT auto-enable AI
+// even if CLAUDE_API_KEY or ANTHROPIC_API_KEY environment variables are set.
 func TestNewAnalyzer_DefaultBehavior(t *testing.T) {
-	// Ensure no API key in environment for this test
-	// (In real environment, it might be set, so we just verify the analyzer is created)
 	a := NewAnalyzer()
 
 	// Verify analyzer is properly initialized
@@ -96,7 +96,13 @@ func TestNewAnalyzer_DefaultBehavior(t *testing.T) {
 		t.Error("Expected GitHub client to be initialized")
 	}
 
-	// AI state depends on environment, so we don't assert it here
+	// AI must be disabled by default - it is opt-in via --ai flag
+	if a.aiEnabled {
+		t.Error("Expected AI to be disabled by default (AI is opt-in only)")
+	}
+	if a.claudeClient != nil {
+		t.Error("Expected Claude client to be nil by default (AI is opt-in only)")
+	}
 }
 
 // TestNewAnalyzer_MultipleOptions verifies that multiple options can be applied
