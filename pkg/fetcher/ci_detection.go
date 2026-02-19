@@ -34,7 +34,38 @@ var knownCIPlatforms = []ciPlatformConfig{
 		Name:         "GitHub Actions",
 		HostedBy:     "GitHub",
 		IsSelfHosted: false, // default; individual workflows may use self-hosted runners
-		ConfigFiles:  []string{".github/workflows"},
+		// The directory path (.github/workflows) works via the GitHub Contents API
+		// but NOT via the raw.githubusercontent.com fallback (which only serves files).
+		// When the API is rate-limited, detection falls back to raw URLs, so we also
+		// list common workflow filenames. DetectCISystems skips remaining paths once
+		// a platform is detected, so only one HEAD request succeeds in practice.
+		ConfigFiles: []string{
+			".github/workflows",
+			".github/workflows/ci.yml",
+			".github/workflows/ci.yaml",
+			".github/workflows/build.yml",
+			".github/workflows/build.yaml",
+			".github/workflows/test.yml",
+			".github/workflows/test.yaml",
+			".github/workflows/tests.yml",
+			".github/workflows/tests.yaml",
+			".github/workflows/main.yml",
+			".github/workflows/main.yaml",
+			".github/workflows/release.yml",
+			".github/workflows/release.yaml",
+			".github/workflows/publish.yml",
+			".github/workflows/publish.yaml",
+			".github/workflows/deploy.yml",
+			".github/workflows/deploy.yaml",
+			".github/workflows/lint.yml",
+			".github/workflows/lint.yaml",
+			".github/workflows/node.js.yml",
+			".github/workflows/go.yml",
+			".github/workflows/rust.yml",
+			".github/workflows/python-publish.yml",
+			".github/workflows/codeql.yml",
+			".github/workflows/codeql-analysis.yml",
+		},
 	},
 	{
 		Name:         "GitLab CI",
@@ -82,7 +113,14 @@ var knownCIPlatforms = []ciPlatformConfig{
 		Name:         "Forgejo Actions",
 		HostedBy:     "Forgejo",
 		IsSelfHosted: false,
-		ConfigFiles:  []string{".forgejo/workflows", ".gitea/workflows"},
+		ConfigFiles: []string{
+			".forgejo/workflows",
+			".forgejo/workflows/ci.yml",
+			".forgejo/workflows/ci.yaml",
+			".gitea/workflows",
+			".gitea/workflows/ci.yml",
+			".gitea/workflows/ci.yaml",
+		},
 	},
 	{
 		Name:         "Woodpecker CI",

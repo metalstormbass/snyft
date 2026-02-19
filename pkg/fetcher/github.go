@@ -243,20 +243,18 @@ func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
 	}
 
 	var ciSystems []string
+	detected := make(map[string]bool)
 
 	for _, entry := range ExtendedCIConfigFiles() {
+		// Skip remaining config files once a platform is already detected.
+		// GitHub Actions lists ~16 fallback paths (directory + common filenames)
+		// but only the first match matters. This avoids unnecessary API/HEAD calls.
+		if detected[entry.Name] {
+			continue
+		}
 		if c.fileExists(owner, repo, entry.Path) {
-			// Avoid duplicates (multiple config files for the same platform)
-			alreadyAdded := false
-			for _, existing := range ciSystems {
-				if existing == entry.Name {
-					alreadyAdded = true
-					break
-				}
-			}
-			if !alreadyAdded {
-				ciSystems = append(ciSystems, entry.Name)
-			}
+			detected[entry.Name] = true
+			ciSystems = append(ciSystems, entry.Name)
 		}
 	}
 

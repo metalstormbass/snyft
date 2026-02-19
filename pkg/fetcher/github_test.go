@@ -1479,3 +1479,194 @@ func TestCheckFileViaRawURL_FindsFileOnMain(t *testing.T) {
 	// that triggers the fallback.
 	_ = client // Method tested via integration tests
 }
+
+// Test: DetectCISystems finds GitHub Actions via individual workflow files when directory check fails
+// Justification: The GitHub API can fail for directory paths (.github/workflows) when rate-limited,
+//                as the raw.githubusercontent.com fallback only serves files, not directories.
+//                Without fallback to specific workflow filenames, the most common CI system
+//                in the OSS ecosystem (GitHub Actions) goes undetected under rate limiting.
+// Source: SLSA Build L3 requirements - https://slsa.dev/spec/v1.0/levels
+//         "Backstabber's Knife Collection" (Ohm et al., 2020) - CI pipeline compromise
+// Methodology: Mock GitHub API returning 404 for directory, 200 for specific workflow file
+// Result: GitHub Actions detected even when directory check fails
+func TestDetectCISystems_GitHubActionsFileFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		// Directory check fails (simulates rate-limit fallback failure for directories)
+		if strings.HasSuffix(path, "/contents/.github/workflows") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// Specific workflow file succeeds (simulates common CI file present)
+		if strings.HasSuffix(path, "/contents/.github/workflows/ci.yml") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	ciSystems, err := client.DetectCISystems("https://github.com/expressjs/express")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, ci := range ciSystems {
+		if ci == "GitHub Actions" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("GitHub Actions not detected via fallback workflow file; got %v", ciSystems)
+	}
+}
+
+// Test: DetectCISystems skips remaining config files once a platform is detected
+// Justification: GitHub Actions now lists ~16 fallback paths (directory + common filenames).
+//                Without the skip optimization, each path triggers a HEAD request even after
+//                the first match, wasting API rate limit budget.
+// Source: GitHub API rate limiting documentation
+// Methodology: Count HEAD requests to the mock server; verify only one request per platform
+// Result: Only 1 request for GitHub Actions (first match stops further probing)
+func TestDetectCISystems_SkipsAlreadyDetectedPlatform(t *testing.T) {
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		path := r.URL.Path
+		// First GitHub Actions path (.github/workflows) succeeds
+		if strings.HasSuffix(path, "/contents/.github/workflows") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// .travis.yml also exists
+		if strings.HasSuffix(path, "/contents/.travis.yml") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	ciSystems, err := client.DetectCISystems("https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should detect both platforms
+	if len(ciSystems) < 2 {
+		t.Errorf("expected at least 2 CI systems, got %v", ciSystems)
+	}
+
+	// Count how many GitHub Actions paths were checked — should be exactly 1
+	// because the directory check succeeds and remaining GHA paths are skipped.
+	// Total requests = 1 (GHA directory) + N (other CI platforms)
+	// Without the skip optimization, it would be 1 + 15 (GHA files) + N
+	totalGHAPaths := 0
+	for _, entry := range ExtendedCIConfigFiles() {
+		if entry.Name == "GitHub Actions" {
+			totalGHAPaths++
+		}
+	}
+
+	// The request count should be significantly less than the total number of
+	// config files because all GitHub Actions fallbacks are skipped.
+	totalPossible := len(ExtendedCIConfigFiles())
+	saved := totalPossible - int(requestCount.Load())
+	if saved < totalGHAPaths-1 {
+		t.Errorf("skip optimization not working: made %d requests out of %d possible (expected to save at least %d GitHub Actions fallback checks)",
+			requestCount.Load(), totalPossible, totalGHAPaths-1)
+	}
+}
+
+// Test: DetectCISystems detects GitHub Actions via codeql.yml when common CI files absent
+// Justification: Some packages (e.g., lodash) have GitHub Actions only for security scanning
+//                (codeql.yml) with no CI/build workflow files like ci.yml or build.yml.
+//                The fallback list must include codeql.yml to avoid false negatives.
+// Source: OSSF Scorecard methodology - CI detection
+// Methodology: Mock API returning 404 for directory and common CI files, 200 for codeql.yml
+// Result: GitHub Actions detected even when only codeql.yml is present
+func TestDetectCISystems_GitHubActionsViaCodeQL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/contents/.github/workflows/codeql.yml") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	ciSystems, err := client.DetectCISystems("https://github.com/lodash/lodash")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, ci := range ciSystems {
+		if ci == "GitHub Actions" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("GitHub Actions not detected via codeql.yml fallback; got %v", ciSystems)
+	}
+}
+
+// Test: DetectCISystems does not produce duplicate entries when multiple GHA files exist
+// Justification: A repo may have both .github/workflows (directory) and individual workflow
+//                files. The skip optimization must prevent duplicate "GitHub Actions" entries.
+// Source: Internal correctness requirement
+// Methodology: Mock API returning 200 for directory path, verify single entry
+// Result: Exactly one "GitHub Actions" entry in results
+func TestDetectCISystems_NoDuplicateGitHubActions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return 200 for the directory check
+		if strings.HasSuffix(r.URL.Path, "/contents/.github/workflows") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	ciSystems, err := client.DetectCISystems("https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	count := 0
+	for _, ci := range ciSystems {
+		if ci == "GitHub Actions" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 GitHub Actions entry, got %d in %v", count, ciSystems)
+	}
+}
