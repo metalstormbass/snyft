@@ -5,7 +5,7 @@ Snyft supports optional AI-powered analysis using the Claude API for advanced su
 ## What AI Provides
 
 1. **Attack Pattern Matching** - Compares package behavior against 8 documented supply chain attack patterns (typosquatting, account takeover, dependency confusion, malicious install scripts, abandoned package takeover, build chain compromise, transitive dependency poisoning, subdomain takeover)
-2. **Executive Summaries** - Stakeholder-friendly risk explanations with business impact and recommendations
+2. **Executive Summaries** - Stakeholder-friendly risk explanations with business impact and key risk areas
 3. **Per-Category Analysis** - AI-generated insights for each of the 10 scoring categories
 
 AI is **opt-in** and must be enabled with the `--ai` flag.
