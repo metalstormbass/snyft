@@ -65,7 +65,8 @@ func (c *GitLabClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		// Network error — try scraping fallback
+		return c.scrapeRepositoryInfo(instance, owner, repo)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -220,7 +221,8 @@ func (c *GitLabClient) DetectCISystems(repoURL string) ([]string, error) {
 	return ciSystems, nil
 }
 
-// HasAutomatedReleases checks if the repository has automated releases
+// HasAutomatedReleases checks if the repository has automated releases.
+// Returns false (not error) when rate-limited — degrades gracefully.
 func (c *GitLabClient) HasAutomatedReleases(repoURL string) (bool, error) {
 	owner, repo, instance, err := parseGitLabURL(repoURL)
 	if err != nil {
@@ -246,7 +248,7 @@ func (c *GitLabClient) HasAutomatedReleases(repoURL string) (bool, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -262,7 +264,8 @@ func (c *GitLabClient) HasAutomatedReleases(repoURL string) (bool, error) {
 	return len(releases) > 0, nil
 }
 
-// GetReleaseHistory fetches detailed release history for a repository
+// GetReleaseHistory fetches detailed release history for a repository.
+// Returns empty list when rate-limited — degrades gracefully.
 func (c *GitLabClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRelease, error) {
 	// Note: Returning GitHubRelease for interface compatibility
 	// In a production system, we'd want a common Release type
@@ -295,6 +298,10 @@ func (c *GitLabClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRel
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return empty list so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return []GitHubRelease{}, nil
+		}
 		return nil, fmt.Errorf("GitLab API returned %d", resp.StatusCode)
 	}
 
@@ -317,7 +324,8 @@ func (c *GitLabClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRel
 	return releases, nil
 }
 
-// GetCommitActivity fetches recent commit activity for a repository
+// GetCommitActivity fetches recent commit activity for a repository.
+// Returns empty list when rate-limited — degrades gracefully.
 func (c *GitLabClient) GetCommitActivity(repoURL string, since time.Time) ([]GitHubCommit, error) {
 	owner, repo, instance, err := parseGitLabURL(repoURL)
 	if err != nil {
@@ -349,6 +357,10 @@ func (c *GitLabClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return empty list so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return []GitHubCommit{}, nil
+		}
 		return nil, fmt.Errorf("GitLab API returned %d", resp.StatusCode)
 	}
 
@@ -376,7 +388,8 @@ func (c *GitLabClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 	return commits, nil
 }
 
-// GetFileContent fetches the content of a file from a GitLab repository
+// GetFileContent fetches the content of a file from a GitLab repository.
+// Falls back to scraping the raw file URL when the API is rate-limited.
 func (c *GitLabClient) GetFileContent(repoURL, filePath string) (string, error) {
 	owner, repo, instance, err := parseGitLabURL(repoURL)
 	if err != nil {
@@ -403,11 +416,16 @@ func (c *GitLabClient) GetFileContent(repoURL, filePath string) (string, error) 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		// Network error — try raw URL fallback
+		return c.getFileContentViaRawURL(instance, owner, repo, filePath)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or auth errors — try raw URL fallback
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.getFileContentViaRawURL(instance, owner, repo, filePath)
+		}
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
 	}
 
@@ -417,6 +435,29 @@ func (c *GitLabClient) GetFileContent(repoURL, filePath string) (string, error) 
 	}
 
 	return string(body), nil
+}
+
+// getFileContentViaRawURL fetches file content from the GitLab raw file endpoint.
+// GitLab serves raw files at /{owner}/{repo}/-/raw/{branch}/{path} which may
+// bypass API rate limits.
+func (c *GitLabClient) getFileContentViaRawURL(instance, owner, repo, path string) (string, error) {
+	for _, branch := range []string{"main", "master"} {
+		rawURL := fmt.Sprintf("https://%s/%s/%s/-/raw/%s/%s", instance, owner, repo, branch, path)
+		resp, err := c.httpClient.Get(rawURL)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				continue
+			}
+			return string(body), nil
+		}
+		_ = resp.Body.Close()
+	}
+	return "", fmt.Errorf("file not found via raw URL: %s", path)
 }
 
 // GetProvenanceInfo checks for various provenance indicators in a GitLab repository.
@@ -537,7 +578,8 @@ func (c *GitLabClient) CheckSignedReleases(repoURL string) (bool, error) {
 	return false, ErrDataUnavailable
 }
 
-// GetCommitStats fetches commit distribution to calculate bus factor
+// GetCommitStats fetches commit distribution to calculate bus factor.
+// Returns nil when rate-limited — degrades gracefully.
 func (c *GitLabClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	owner, repo, instance, err := parseGitLabURL(repoURL)
 	if err != nil {
@@ -568,6 +610,10 @@ func (c *GitLabClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return nil so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("GitLab API returned %d", resp.StatusCode)
 	}
 
@@ -632,7 +678,8 @@ func (c *GitLabClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 	return quality, nil
 }
 
-// fileExists checks if a file exists in the repository
+// fileExists checks if a file exists in the repository.
+// Falls back to the raw file URL when the API is rate-limited.
 func (c *GitLabClient) fileExists(instance, owner, repo, path string) bool {
 	baseURL := c.baseURL
 	if instance != "gitlab.com" {
@@ -658,7 +705,37 @@ func (c *GitLabClient) fileExists(instance, owner, repo, path string) bool {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode == http.StatusOK {
+		return true
+	}
+
+	// Rate limit — try raw URL fallback
+	if shouldFallbackToScraping(nil, resp.StatusCode) {
+		return c.checkFileViaRawURL(instance, owner, repo, path)
+	}
+
+	return false
+}
+
+// checkFileViaRawURL checks if a file exists by requesting the raw file URL.
+// GitLab serves raw files at /{owner}/{repo}/-/raw/{branch}/{path}.
+func (c *GitLabClient) checkFileViaRawURL(instance, owner, repo, path string) bool {
+	for _, branch := range []string{"main", "master"} {
+		rawURL := fmt.Sprintf("https://%s/%s/%s/-/raw/%s/%s", instance, owner, repo, branch, path)
+		req, err := http.NewRequest("HEAD", rawURL, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return true
+		}
+	}
+	return false
 }
 
 // GitLab API response structures

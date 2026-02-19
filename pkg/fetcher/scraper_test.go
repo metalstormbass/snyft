@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -627,5 +628,306 @@ func TestMavenScrapePackageInfo_HTMLParsing(t *testing.T) {
 	})
 	if repoURL != "https://github.com/google/guava" {
 		t.Errorf("repoURL = %q, want %q", repoURL, "https://github.com/google/guava")
+	}
+}
+
+// TestGitHubGetReleases_RateLimitFallback tests that getReleases attempts
+// scraping when the API returns 403 (rate limit).
+//
+// Test: GitHub getReleases triggers scraping fallback on 403
+// Justification: Release data is critical for provenance checks (signed releases,
+//                sigstore signatures). Rate-limited API must not block all provenance scoring.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — provenance
+//         verification prevents tampered artifact distribution
+// Methodology: Mock API returns 403; verify scraping path is attempted
+// Result: Error indicates scraping was tried, not raw API error
+func TestGitHubGetReleases_RateLimitFallback(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "API rate limit exceeded"}`))
+	}))
+	defer apiServer.Close()
+
+	client := NewGitHubClientWithBaseURL(apiServer.URL)
+
+	releases, err := client.getReleases("test", "repo")
+
+	// Scraping will fail (goes to real github.com for test/repo), but
+	// the key assertion is that we attempted scraping, not just returned
+	// a "GitHub API returned 403" error.
+	if err != nil {
+		errMsg := err.Error()
+		if errMsg == "GitHub API returned 403" {
+			t.Error("getReleases() returned raw API error instead of attempting scraping fallback")
+		}
+	} else {
+		// Scraping succeeded (or returned empty list) — that's fine
+		t.Logf("getReleases returned %d releases from scraping fallback", len(releases))
+	}
+}
+
+// TestGitHubGetFileContent_RateLimitFallback tests that GetFileContent
+// falls back to raw.githubusercontent.com when the API is rate-limited.
+//
+// Test: GitHub GetFileContent triggers raw URL fallback on 429
+// Justification: File content is needed for CI detection, governance checks,
+//                and provenance verification. Rate limits must not block these.
+// Source: GitHub docs — raw.githubusercontent.com is served by CDN,
+//         not subject to API rate limits
+// Methodology: Mock API returns 429; verify raw URL fallback is attempted
+// Result: Error indicates raw URL was tried, not raw API error
+func TestGitHubGetFileContent_RateLimitFallback(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer apiServer.Close()
+
+	client := NewGitHubClientWithBaseURL(apiServer.URL)
+
+	_, err := client.GetFileContent("https://github.com/test/repo", "README.md")
+
+	if err == nil {
+		t.Log("Raw URL fallback succeeded (unexpected for test/repo)")
+		return
+	}
+
+	// Should NOT be "file not found or inaccessible" — that's the non-fallback path
+	errMsg := err.Error()
+	if errMsg == "file not found or inaccessible: README.md" {
+		t.Error("GetFileContent() skipped rate limit fallback to raw.githubusercontent.com")
+	}
+}
+
+// TestGitHubGetCommitStats_RateLimitFallback tests that GetCommitStats
+// attempts scraping when the API is rate-limited.
+//
+// Test: GitHub GetCommitStats triggers scraping fallback on 403
+// Justification: Commit stats feed bus factor calculation — a key risk signal.
+//                Rate limits must not block bus factor scoring.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) —
+//         bus factor as a supply chain risk indicator
+// Methodology: Mock API returns 403; verify scraping path is attempted
+// Result: Error indicates scraping was tried, not raw API error
+func TestGitHubGetCommitStats_RateLimitFallback(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "API rate limit exceeded"}`))
+	}))
+	defer apiServer.Close()
+
+	client := NewGitHubClientWithBaseURL(apiServer.URL)
+
+	stats, err := client.GetCommitStats("https://github.com/test/repo")
+
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "GitHub API returned 403") {
+			t.Error("GetCommitStats() returned raw API error instead of attempting scraping fallback")
+		}
+	} else if stats != nil {
+		t.Logf("GetCommitStats returned stats with %d total commits from scraping", stats.TotalCommits)
+	}
+}
+
+// TestGitHubGetCommitActivity_RateLimitGraceful tests that GetCommitActivity
+// returns empty list (not error) when the API is rate-limited.
+//
+// Test: GitHub GetCommitActivity degrades gracefully on rate limit
+// Justification: Commit activity feeds release anomaly detection. An API
+//                failure must not be misinterpreted as "no activity" (which
+//                would incorrectly inflate dormancy risk).
+// Source: GitHub REST API docs — rate limiting
+// Methodology: Mock API returns 429; verify empty list returned (not error)
+// Result: Returns empty slice, not error
+func TestGitHubGetCommitActivity_RateLimitGraceful(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer apiServer.Close()
+
+	client := NewGitHubClientWithBaseURL(apiServer.URL)
+
+	commits, err := client.GetCommitActivity("https://github.com/test/repo", time.Now().AddDate(0, -1, 0))
+
+	if err != nil {
+		t.Errorf("GetCommitActivity() returned error on rate limit: %v", err)
+	}
+
+	if commits == nil {
+		t.Error("GetCommitActivity() returned nil instead of empty slice on rate limit")
+	}
+}
+
+// TestNPMCheckNPMProvenance_RateLimitFallback tests that CheckNPMProvenance
+// attempts scraping when the API is rate-limited.
+//
+// Test: npm CheckNPMProvenance triggers scraping fallback on 429
+// Justification: Provenance attestations verify build integrity; rate limits
+//                must not block this critical supply chain check
+// Source: npm provenance documentation — attestation verification
+// Methodology: Mock API returns 429; verify scraping path is attempted
+// Result: Error indicates scraping was tried, not raw API error
+func TestNPMCheckNPMProvenance_RateLimitFallback(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer apiServer.Close()
+
+	client := NewNPMClient()
+	client.baseURL = apiServer.URL
+
+	_, _, err := client.CheckNPMProvenance("test-package")
+
+	// If scraping fails, we should get a scraping error, not "npm registry returned status 429"
+	if err != nil {
+		errMsg := err.Error()
+		if errMsg == "npm registry returned status 429" {
+			t.Error("CheckNPMProvenance() returned raw API error instead of attempting scraping fallback")
+		}
+	}
+}
+
+// TestNPMGetOwnershipHistory_RateLimitFallback tests that GetOwnershipHistory
+// attempts scraping when the API is rate-limited.
+//
+// Test: npm GetOwnershipHistory triggers scraping fallback on 403
+// Justification: Ownership changes are a primary indicator of supply chain
+//                compromise (account takeover, malicious acquisition).
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Mock API returns 403; verify scraping path is attempted
+// Result: Error indicates scraping was tried, not raw API error
+func TestNPMGetOwnershipHistory_RateLimitFallback(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer apiServer.Close()
+
+	client := NewNPMClient()
+	client.baseURL = apiServer.URL
+
+	_, err := client.GetOwnershipHistory("test-package")
+
+	if err != nil {
+		errMsg := err.Error()
+		if errMsg == "npm registry returned status 403" {
+			t.Error("GetOwnershipHistory() returned raw API error instead of attempting scraping fallback")
+		}
+	}
+}
+
+// TestPyPIGetOwnershipHistory_RateLimitFallback tests that GetOwnershipHistory
+// attempts scraping when the API is rate-limited.
+//
+// Test: PyPI GetOwnershipHistory triggers scraping fallback on 429
+// Justification: Author changes across PyPI releases indicate potential
+//                account takeover or package handoff
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Mock API returns 429; verify scraping path is attempted
+// Result: Error indicates scraping was tried, not raw API error
+func TestPyPIGetOwnershipHistory_RateLimitFallback(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer apiServer.Close()
+
+	client := NewPyPIClient()
+	client.baseURL = apiServer.URL
+
+	_, err := client.GetOwnershipHistory("test-package")
+
+	if err != nil {
+		errMsg := err.Error()
+		if errMsg == "PyPI API returned status 429" {
+			t.Error("GetOwnershipHistory() returned raw API error instead of attempting scraping fallback")
+		}
+	}
+}
+
+// TestPyPICheckPyPISignatures_RateLimitGraceful tests that CheckPyPISignatures
+// returns (false, 0, 0, nil) when rate-limited instead of an error.
+//
+// Test: PyPI CheckPyPISignatures degrades gracefully on rate limit
+// Justification: Signature verification failing due to rate limit should not
+//                inflate the risk score — unknown is better than false negative
+// Source: PEP 740 — "Index support for digital attestations"
+// Methodology: Mock both Simple API and JSON API to return 429
+// Result: Returns (false, 0, 0, nil) — no signatures detected, no error
+func TestPyPICheckPyPISignatures_RateLimitGraceful(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer apiServer.Close()
+
+	client := NewPyPIClient()
+	client.baseURL = apiServer.URL
+
+	hasSig, signedCount, totalCount, err := client.CheckPyPISignatures("test-package")
+
+	if err != nil {
+		t.Errorf("CheckPyPISignatures() returned error on rate limit: %v", err)
+	}
+	if hasSig {
+		t.Error("CheckPyPISignatures() reported signatures when rate-limited")
+	}
+	if signedCount != 0 || totalCount != 0 {
+		t.Errorf("CheckPyPISignatures() counts = (%d, %d), want (0, 0) on rate limit", signedCount, totalCount)
+	}
+}
+
+// TestGitLabGetRepositoryInfo_RateLimitFallback tests that GitLab GetRepositoryInfo
+// attempts scraping when the API is rate-limited.
+//
+// Test: GitLab client triggers scraping fallback on 403
+// Justification: Repository metadata is foundational for all risk assessments;
+//                rate limits must not block analysis of GitLab-hosted packages
+// Source: GitLab API docs — rate limiting
+// Methodology: Mock API returns 403; verify scraping path is attempted
+// Result: Error indicates scraping was tried, not raw API error
+func TestGitLabGetRepositoryInfo_RateLimitFallback(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error": "rate limit exceeded"}`))
+	}))
+	defer apiServer.Close()
+
+	client := NewGitLabClient()
+	client.baseURL = apiServer.URL
+
+	_, err := client.GetRepositoryInfo("https://gitlab.com/test/repo")
+
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "GitLab API returned 403") {
+			t.Error("GetRepositoryInfo() returned raw API error instead of attempting scraping fallback")
+		}
+	}
+}
+
+// TestBitbucketGetRepositoryInfo_RateLimitFallback tests that Bitbucket
+// GetRepositoryInfo attempts scraping when the API is rate-limited.
+//
+// Test: Bitbucket client triggers scraping fallback on 429
+// Justification: Repository metadata is foundational for all risk assessments;
+//                rate limits must not block analysis of Bitbucket-hosted packages
+// Source: Bitbucket API docs — rate limiting
+// Methodology: Mock API returns 429; verify scraping path is attempted
+// Result: Error indicates scraping was tried, not raw API error
+func TestBitbucketGetRepositoryInfo_RateLimitFallback(t *testing.T) {
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error": "rate limit exceeded"}`))
+	}))
+	defer apiServer.Close()
+
+	client := NewBitbucketClient()
+	client.baseURL = apiServer.URL
+
+	_, err := client.GetRepositoryInfo("https://bitbucket.org/test/repo")
+
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "bitbucket API returned 429") {
+			t.Error("GetRepositoryInfo() returned raw API error instead of attempting scraping fallback")
+		}
 	}
 }

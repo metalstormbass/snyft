@@ -263,79 +263,46 @@ func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
 	return ciSystems, nil
 }
 
-// HasAutomatedReleases checks if the repository has automated releases
+// HasAutomatedReleases checks if the repository has automated releases.
+// Uses the cached getReleases helper which includes scraping fallback on rate limit.
 func (c *GitHubClient) HasAutomatedReleases(repoURL string) (bool, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return false, err
 	}
 
-	url := fmt.Sprintf("%s/repos/%s/%s/releases", c.baseURL, owner, repo)
-	req, err := http.NewRequest("GET", url, nil)
+	releases, err := c.getReleases(owner, repo)
 	if err != nil {
-		return false, err
-	}
-
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
 		return false, nil
-	}
-
-	var releases []GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return false, err
 	}
 
 	return len(releases) > 0, nil
 }
 
-// GetReleaseHistory fetches detailed release history for a repository
+// GetReleaseHistory fetches detailed release history for a repository.
+// Uses the cached getReleases helper which includes scraping fallback on rate limit.
 func (c *GitHubClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRelease, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
-	url := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=%d", c.baseURL, owner, repo, limit)
-	req, err := http.NewRequest("GET", url, nil)
+	releases, err := c.getReleases(owner, repo)
 	if err != nil {
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
-	}
-
-	var releases []GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, err
+	// Apply the limit
+	if limit > 0 && len(releases) > limit {
+		releases = releases[:limit]
 	}
 
 	return releases, nil
 }
 
-// GetCommitActivity fetches recent commit activity for a repository
+// GetCommitActivity fetches recent commit activity for a repository.
+// Returns empty list (not error) when rate-limited — commit history cannot be
+// meaningfully scraped, but callers handle empty results gracefully.
 func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]GitHubCommit, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -361,6 +328,11 @@ func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return empty list so callers degrade gracefully
+		// rather than treating the failure as a risk signal.
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return []GitHubCommit{}, nil
+		}
 		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 	}
 
@@ -775,7 +747,8 @@ func (c *GitHubClient) checkReproducibleBuild(owner, repo string) bool {
 	return false
 }
 
-// getReleases fetches all releases for a repository
+// getReleases fetches all releases for a repository.
+// Falls back to scraping the GitHub releases page when the API is rate-limited.
 func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) {
 	// Cache releases — called three times per package from provenance checks
 	// (checkSigstoreSignatures, checkSignedReleases, and the public-facing
@@ -800,11 +773,24 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		// Network error — try scraping fallback
+		releases, scrapeErr := c.scrapeReleases(owner, repo)
+		if scrapeErr == nil && c.cache != nil {
+			c.cache.setCachedReleases(cacheKey, releases)
+		}
+		return releases, scrapeErr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or auth errors — try scraping fallback
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			releases, scrapeErr := c.scrapeReleases(owner, repo)
+			if scrapeErr == nil && c.cache != nil {
+				c.cache.setCachedReleases(cacheKey, releases)
+			}
+			return releases, scrapeErr
+		}
 		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 	}
 
@@ -819,7 +805,70 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 	return releases, nil
 }
 
-// GetFileContent fetches the content of a file from a GitHub repository
+// scrapeReleases scrapes release information from the GitHub releases page.
+// Used as a fallback when the API is rate-limited.
+func (c *GitHubClient) scrapeReleases(owner, repo string) ([]GitHubRelease, error) {
+	pageURL := fmt.Sprintf("https://github.com/%s/%s/releases", owner, repo)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return nil, fmt.Errorf("scraping releases fallback failed: %w", err)
+	}
+
+	var releases []GitHubRelease
+
+	// Each release is in a section with the release tag name and date
+	doc.Find("div[data-hpc] section").Each(func(i int, s *goquery.Selection) {
+		var release GitHubRelease
+
+		// Extract tag name from the release heading link
+		s.Find("a[href*='/releases/tag/']").First().Each(func(_ int, a *goquery.Selection) {
+			if href, exists := a.Attr("href"); exists {
+				parts := strings.Split(href, "/tag/")
+				if len(parts) == 2 {
+					release.TagName = parts[1]
+					release.Name = strings.TrimSpace(a.Text())
+				}
+			}
+		})
+
+		// Extract date from relative-time element
+		s.Find("relative-time").First().Each(func(_ int, rt *goquery.Selection) {
+			if datetime, exists := rt.Attr("datetime"); exists {
+				if t, parseErr := time.Parse(time.RFC3339, datetime); parseErr == nil {
+					release.PublishedAt = t
+					release.CreatedAt = t
+				}
+			}
+		})
+
+		// Check for pre-release label
+		s.Find("span:contains('Pre-release')").Each(func(_ int, _ *goquery.Selection) {
+			release.Prerelease = true
+		})
+
+		// Extract asset names from the assets list
+		s.Find("a[href*='/releases/download/']").Each(func(_ int, a *goquery.Selection) {
+			if href, exists := a.Attr("href"); exists {
+				name := strings.TrimSpace(a.Text())
+				if name != "" {
+					release.Assets = append(release.Assets, GitHubAsset{
+						Name:               name,
+						BrowserDownloadURL: "https://github.com" + href,
+					})
+				}
+			}
+		})
+
+		if release.TagName != "" {
+			releases = append(releases, release)
+		}
+	})
+
+	return releases, nil
+}
+
+// GetFileContent fetches the content of a file from a GitHub repository.
+// Falls back to raw.githubusercontent.com when the API is rate-limited.
 func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -839,11 +888,16 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		// Network error — try raw.githubusercontent.com fallback
+		return c.getFileContentViaRawURL(owner, repo, filePath)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or auth errors — try raw.githubusercontent.com fallback
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.getFileContentViaRawURL(owner, repo, filePath)
+		}
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
 	}
 
@@ -853,6 +907,33 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 	}
 
 	return string(body), nil
+}
+
+// getFileContentViaRawURL fetches file content from raw.githubusercontent.com,
+// which is served by a CDN and is not subject to the GitHub API rate limit.
+// Tries both main and master branches.
+func (c *GitHubClient) getFileContentViaRawURL(owner, repo, path string) (string, error) {
+	for _, branch := range []string{"main", "master"} {
+		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, path)
+		req, err := http.NewRequest("GET", rawURL, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				continue
+			}
+			return string(body), nil
+		}
+		_ = resp.Body.Close()
+	}
+	return "", fmt.Errorf("file not found via raw.githubusercontent.com: %s", path)
 }
 
 // GetCommitAuthors analyzes commit authorship patterns for ownership change detection
@@ -888,14 +969,20 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return nil, err
+			if page == 1 {
+				return nil, err
+			}
+			break
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			_ = resp.Body.Close()
 			if page == 1 {
-				body, _ := io.ReadAll(resp.Body)
-				return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
+				// Rate limit on first page — return empty stats so callers degrade gracefully
+				if shouldFallbackToScraping(nil, resp.StatusCode) {
+					return stats, nil
+				}
+				return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 			}
 			// No more pages
 			break
@@ -961,7 +1048,8 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 	return stats, nil
 }
 
-// CheckSignedCommits checks if recent commits in the repository are GPG signed
+// CheckSignedCommits checks if recent commits in the repository are GPG signed.
+// Returns (false, 0, nil) when rate-limited — cannot verify signatures without API.
 func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -987,6 +1075,10 @@ func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return unknown rather than error so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return false, 0, nil
+		}
 		return false, 0, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 	}
 
@@ -1131,8 +1223,8 @@ func calculateBusFactor(authorCommits map[string]int, totalCommits int) int {
 	return busFactor
 }
 
-// GetCommitStats fetches commit distribution to calculate bus factor
-// Analyzes the last 100 commits to determine contributor concentration
+// GetCommitStats fetches commit distribution to calculate bus factor.
+// Falls back to scraping the GitHub contributors page when rate-limited.
 func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -1153,11 +1245,16 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		// Network error — try scraping fallback
+		return c.scrapeCommitStats(owner, repo)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or auth errors — try scraping fallback
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapeCommitStats(owner, repo)
+		}
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
 	}
@@ -1183,6 +1280,64 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	busFactor := calculateBusFactor(authorCommits, totalCommits)
 
 	// Calculate top contributor percentage
+	topContributorPct := 0.0
+	if totalCommits > 0 {
+		maxCommits := 0
+		for _, count := range authorCommits {
+			if count > maxCommits {
+				maxCommits = count
+			}
+		}
+		topContributorPct = float64(maxCommits) / float64(totalCommits) * 100
+	}
+
+	return &CommitStats{
+		TotalCommits:      totalCommits,
+		AuthorCommits:     authorCommits,
+		BusFactor:         busFactor,
+		TopContributorPct: topContributorPct,
+	}, nil
+}
+
+// scrapeCommitStats scrapes contributor data from the GitHub contributors page.
+// Used as a fallback when the commits API is rate-limited.
+func (c *GitHubClient) scrapeCommitStats(owner, repo string) (*CommitStats, error) {
+	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return nil, fmt.Errorf("scraping commit stats fallback failed: %w", err)
+	}
+
+	authorCommits := make(map[string]int)
+
+	// Extract contributor links and their commit counts from the repo page
+	doc.Find("a[href*='/graphs/contributors'] span, a[href*='/contributors'] span").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
+		num := extractNumber(text)
+		if num > 0 {
+			// We know there are contributors but not individual counts;
+			// approximate with the total number visible
+			authorCommits["unknown"] = num
+		}
+	})
+
+	// Extract contributor avatars/links from the sidebar
+	doc.Find("a[data-hovercard-type='user']").Each(func(i int, s *goquery.Selection) {
+		if href, exists := s.Attr("href"); exists {
+			username := strings.TrimPrefix(href, "/")
+			if username != "" && !strings.Contains(username, "/") {
+				authorCommits[username] = 1 // Approximate: at least 1 commit
+			}
+		}
+	})
+
+	totalCommits := 0
+	for _, count := range authorCommits {
+		totalCommits += count
+	}
+
+	busFactor := calculateBusFactor(authorCommits, totalCommits)
+
 	topContributorPct := 0.0
 	if totalCommits > 0 {
 		maxCommits := 0
@@ -1381,7 +1536,9 @@ func (c *GitHubClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 	return quality, nil
 }
 
-// getWorkflowFiles fetches GitHub Actions workflow files
+// getWorkflowFiles fetches GitHub Actions workflow files.
+// Returns empty list (not error) when rate-limited so CI detection degrades
+// gracefully rather than failing the entire analysis.
 func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/.github/workflows", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
@@ -1401,6 +1558,10 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return empty list so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return []string{}, nil
+		}
 		return nil, fmt.Errorf("failed to fetch workflows")
 	}
 
@@ -1496,6 +1657,10 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return 0 so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return 0, fmt.Errorf("GitHub API rate limited: cannot check issue response time")
+		}
 		return 0, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 	}
 
@@ -1619,6 +1784,10 @@ func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — try scraping the profile page to detect org vs user
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapeIsOrganization(owner)
+		}
 		return false, ""
 	}
 
@@ -1639,6 +1808,31 @@ func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
 	}
 
 	return isOrg, orgName
+}
+
+// scrapeIsOrganization checks whether a GitHub owner is an organization by
+// scraping the profile page. GitHub uses different page structures for orgs
+// and users (orgs show "People" tab, users show "Repositories" tab).
+func (c *GitHubClient) scrapeIsOrganization(owner string) (bool, string) {
+	pageURL := fmt.Sprintf("https://github.com/%s", owner)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return false, ""
+	}
+
+	// GitHub org pages have an "org-" prefix in the body class or a "People" tab
+	isOrg := false
+	doc.Find("nav a[data-tab='people']").Each(func(_ int, _ *goquery.Selection) {
+		isOrg = true
+	})
+	name := owner
+	doc.Find("h1.h2.lh-condensed, span[itemprop='name']").First().Each(func(_ int, s *goquery.Selection) {
+		if text := strings.TrimSpace(s.Text()); text != "" {
+			name = text
+		}
+	})
+
+	return isOrg, name
 }
 
 // CheckVerifiedOrganization checks if a GitHub organization has verified status

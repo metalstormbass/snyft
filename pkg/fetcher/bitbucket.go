@@ -57,7 +57,8 @@ func (c *BitbucketClient) GetRepositoryInfo(repoURL string) (*models.RepositoryI
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		// Network error — try scraping fallback
+		return c.scrapeRepositoryInfo(owner, repo)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -246,7 +247,8 @@ func (c *BitbucketClient) HasAutomatedReleases(repoURL string) (bool, error) {
 	return len(tagsResp.Values) > 0, nil
 }
 
-// GetReleaseHistory fetches tag history (Bitbucket doesn't have releases like GitHub)
+// GetReleaseHistory fetches tag history (Bitbucket doesn't have releases like GitHub).
+// Returns empty list when rate-limited — degrades gracefully.
 func (c *BitbucketClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRelease, error) {
 	owner, repo, err := parseBitbucketURL(repoURL)
 	if err != nil {
@@ -271,6 +273,10 @@ func (c *BitbucketClient) GetReleaseHistory(repoURL string, limit int) ([]GitHub
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return empty list so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return []GitHubRelease{}, nil
+		}
 		return nil, fmt.Errorf("bitbucket API returned %d", resp.StatusCode)
 	}
 
@@ -293,7 +299,8 @@ func (c *BitbucketClient) GetReleaseHistory(repoURL string, limit int) ([]GitHub
 	return releases, nil
 }
 
-// GetCommitActivity fetches recent commit activity
+// GetCommitActivity fetches recent commit activity.
+// Returns empty list when rate-limited — degrades gracefully.
 func (c *BitbucketClient) GetCommitActivity(repoURL string, since time.Time) ([]GitHubCommit, error) {
 	owner, repo, err := parseBitbucketURL(repoURL)
 	if err != nil {
@@ -318,6 +325,10 @@ func (c *BitbucketClient) GetCommitActivity(repoURL string, since time.Time) ([]
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return empty list so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return []GitHubCommit{}, nil
+		}
 		return nil, fmt.Errorf("bitbucket API returned %d", resp.StatusCode)
 	}
 
@@ -347,7 +358,8 @@ func (c *BitbucketClient) GetCommitActivity(repoURL string, since time.Time) ([]
 	return commits, nil
 }
 
-// GetFileContent fetches the content of a file from a Bitbucket repository
+// GetFileContent fetches the content of a file from a Bitbucket repository.
+// Falls back to trying common branch names when the API is rate-limited.
 func (c *BitbucketClient) GetFileContent(repoURL, filePath string) (string, error) {
 	owner, repo, err := parseBitbucketURL(repoURL)
 	if err != nil {
@@ -357,7 +369,8 @@ func (c *BitbucketClient) GetFileContent(repoURL, filePath string) (string, erro
 	// Get default branch first
 	repoInfo, err := c.GetRepositoryInfo(repoURL)
 	if err != nil {
-		return "", err
+		// If GetRepositoryInfo fails (rate limited), try common branches directly
+		return c.getFileContentViaRawURL(owner, repo, filePath)
 	}
 
 	branch := repoInfo.DefaultBranch
@@ -379,11 +392,15 @@ func (c *BitbucketClient) GetFileContent(repoURL, filePath string) (string, erro
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return c.getFileContentViaRawURL(owner, repo, filePath)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — try raw URL fallback with common branches
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.getFileContentViaRawURL(owner, repo, filePath)
+		}
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
 	}
 
@@ -393,6 +410,29 @@ func (c *BitbucketClient) GetFileContent(repoURL, filePath string) (string, erro
 	}
 
 	return string(body), nil
+}
+
+// getFileContentViaRawURL fetches file content by trying common branch names
+// via the Bitbucket src endpoint. Used when rate-limited and default branch is unknown.
+func (c *BitbucketClient) getFileContentViaRawURL(owner, repo, path string) (string, error) {
+	for _, branch := range []string{"main", "master"} {
+		apiURL := fmt.Sprintf("%s/repositories/%s/%s/src/%s/%s",
+			c.baseURL, owner, repo, branch, path)
+		resp, err := c.httpClient.Get(apiURL)
+		if err != nil {
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				continue
+			}
+			return string(body), nil
+		}
+		_ = resp.Body.Close()
+	}
+	return "", fmt.Errorf("file not found: %s", path)
 }
 
 // GetProvenanceInfo checks for various provenance indicators in a Bitbucket repository.
@@ -506,7 +546,8 @@ func (c *BitbucketClient) CheckSignedReleases(repoURL string) (bool, error) {
 	return false, ErrDataUnavailable
 }
 
-// GetCommitStats fetches commit distribution
+// GetCommitStats fetches commit distribution.
+// Returns nil when rate-limited — degrades gracefully.
 func (c *BitbucketClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	owner, repo, err := parseBitbucketURL(repoURL)
 	if err != nil {
@@ -531,6 +572,10 @@ func (c *BitbucketClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit — return nil so callers degrade gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("bitbucket API returned %d", resp.StatusCode)
 	}
 
@@ -589,30 +634,39 @@ func (c *BitbucketClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (
 	return quality, nil
 }
 
-// fileExists checks if a file exists in the repository
+// fileExists checks if a file exists in the repository.
+// Tries both main and master branches. Falls back to trying the other branch
+// on rate limit.
 func (c *BitbucketClient) fileExists(owner, repo, path string) bool {
-	// Get default branch first (simplified - assumes master/main)
-	branch := "master"
+	for _, branch := range []string{"master", "main"} {
+		apiURL := fmt.Sprintf("%s/repositories/%s/%s/src/%s/%s",
+			c.baseURL, owner, repo, branch, path)
 
-	apiURL := fmt.Sprintf("%s/repositories/%s/%s/src/%s/%s",
-		c.baseURL, owner, repo, branch, path)
+		req, err := http.NewRequest("HEAD", apiURL, nil)
+		if err != nil {
+			continue
+		}
 
-	req, err := http.NewRequest("HEAD", apiURL, nil)
-	if err != nil {
-		return false
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			return true
+		}
+
+		// Rate limit — stop trying to avoid hammering the API
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return false
+		}
 	}
-
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	return resp.StatusCode == http.StatusOK
+	return false
 }
 
 // Bitbucket API response structures
