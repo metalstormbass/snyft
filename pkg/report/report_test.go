@@ -283,6 +283,155 @@ func TestExtractCriticalIssuesPriority(t *testing.T) {
 	}
 }
 
+// Test: Progress bar writes to ProgressWriter, not report Writer, for non-text formats
+// Justification: When using HTML/JSON/markdown output, progress must not corrupt the
+//                structured output on stdout. Progress must go to a separate writer
+//                (stderr in production) so users see analysis progress without
+//                interfering with piped output.
+// Source: Supply chain analysis UX requirement - users must see progress during slow
+//         AI-enriched scans to know the tool hasn't hung
+// Methodology: Configure reporter with separate Writer and ProgressWriter, verify
+//              progress output goes only to ProgressWriter
+// Result: Progress bar output appears in ProgressWriter; report Writer is untouched
+func TestProgressBarUsesProgressWriter(t *testing.T) {
+	t.Run("Progress goes to ProgressWriter not report Writer", func(t *testing.T) {
+		reportBuf := &bytes.Buffer{}
+		progressBuf := &bytes.Buffer{}
+
+		reporter := NewReporter(Config{
+			Format:         FormatHTML,
+			Writer:         reportBuf,
+			ProgressWriter: progressBuf,
+			ShowProgress:   true,
+		})
+
+		reporter.ShowProgress(1, 5, "express@4.17.1")
+		reporter.ShowProgress(2, 5, "lodash@4.17.21")
+
+		// Progress should be in progressBuf, not reportBuf
+		if progressBuf.Len() == 0 {
+			t.Error("Expected progress output in ProgressWriter, got nothing")
+		}
+		if reportBuf.Len() != 0 {
+			t.Errorf("Expected no progress in report Writer, got %d bytes", reportBuf.Len())
+		}
+
+		// Progress should contain the package name
+		progressOutput := progressBuf.String()
+		if !strings.Contains(progressOutput, "lodash") {
+			t.Error("Progress output should contain package name 'lodash'")
+		}
+	})
+
+	t.Run("ClearProgress uses ProgressWriter", func(t *testing.T) {
+		reportBuf := &bytes.Buffer{}
+		progressBuf := &bytes.Buffer{}
+
+		reporter := NewReporter(Config{
+			Format:         FormatHTML,
+			Writer:         reportBuf,
+			ProgressWriter: progressBuf,
+			ShowProgress:   true,
+		})
+
+		reporter.ClearProgress()
+
+		if progressBuf.Len() == 0 {
+			t.Error("ClearProgress should write to ProgressWriter")
+		}
+		if reportBuf.Len() != 0 {
+			t.Error("ClearProgress should not write to report Writer")
+		}
+	})
+
+	t.Run("ProgressWriter defaults to Writer when nil", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+
+		reporter := NewReporter(Config{
+			Format:       FormatText,
+			Writer:       buf,
+			ShowProgress: true,
+		})
+
+		reporter.ShowProgress(1, 3, "react@18.2.0")
+
+		if buf.Len() == 0 {
+			t.Error("When ProgressWriter is nil, progress should go to Writer")
+		}
+	})
+}
+
+// Test: Progress bar shows for HTML format with ShowProgress enabled
+// Justification: Non-text output formats need visible progress especially with
+//                AI analysis which can be slow. Without progress, users think the
+//                tool is hung during AI API calls.
+// Source: User report of missing progress bar with --ai --format html
+// Methodology: Verify ShowProgress produces output even for HTML format when enabled
+// Result: Progress bar contains spinner, percentage, and package name
+func TestProgressBarShowsForHTMLFormat(t *testing.T) {
+	progressBuf := &bytes.Buffer{}
+	htmlBuf := &bytes.Buffer{}
+
+	reporter := NewReporter(Config{
+		Format:         FormatHTML,
+		Writer:         htmlBuf,
+		ProgressWriter: progressBuf,
+		ShowProgress:   true,
+	})
+
+	reporter.ShowProgress(3, 10, "express@4.17.1")
+
+	output := progressBuf.String()
+
+	// Should contain percentage
+	if !strings.Contains(output, "30%") {
+		t.Error("Progress bar should show 30% for 3/10")
+	}
+
+	// Should contain package name
+	if !strings.Contains(output, "express") {
+		t.Error("Progress bar should show package name")
+	}
+
+	// Should contain count
+	if !strings.Contains(output, "(3/10)") {
+		t.Error("Progress bar should show count (3/10)")
+	}
+
+	// HTML output should be empty (progress not mixed in)
+	if htmlBuf.Len() != 0 {
+		t.Error("Progress should not be written to HTML output writer")
+	}
+}
+
+// Test: Progress bar does not write when ShowProgress is false
+// Justification: Disabling progress must produce zero output to avoid
+//                corrupting piped or redirected structured output
+// Source: Defensive test for ShowProgress guard
+// Methodology: Call ShowProgress and ClearProgress with ShowProgress=false
+// Result: Both ProgressWriter and Writer remain empty
+func TestProgressBarDisabledProducesNoOutput(t *testing.T) {
+	reportBuf := &bytes.Buffer{}
+	progressBuf := &bytes.Buffer{}
+
+	reporter := NewReporter(Config{
+		Format:         FormatHTML,
+		Writer:         reportBuf,
+		ProgressWriter: progressBuf,
+		ShowProgress:   false,
+	})
+
+	reporter.ShowProgress(1, 5, "express@4.17.1")
+	reporter.ClearProgress()
+
+	if progressBuf.Len() != 0 {
+		t.Error("Progress should not write when ShowProgress is false")
+	}
+	if reportBuf.Len() != 0 {
+		t.Error("Report writer should not receive progress when ShowProgress is false")
+	}
+}
+
 // Test: extractCriticalIssues respects maxIssues limit
 // Justification: Executive summary should be concise, showing top N issues only
 // Source: User requirements for top 3-5 critical issues

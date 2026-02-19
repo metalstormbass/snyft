@@ -36,10 +36,11 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 // Config holds configuration for report generation
 type Config struct {
-	Format      Format
-	Verbose     bool
-	Writer      io.Writer
-	ShowProgress bool
+	Format         Format
+	Verbose        bool
+	Writer         io.Writer
+	ShowProgress   bool
+	ProgressWriter io.Writer // Where to write progress output; defaults to Writer if nil
 }
 
 // Reporter handles report generation
@@ -67,6 +68,9 @@ type ScanStats struct {
 func NewReporter(config Config) *Reporter {
 	if config.Writer == nil {
 		config.Writer = os.Stdout
+	}
+	if config.ProgressWriter == nil {
+		config.ProgressWriter = config.Writer
 	}
 	return &Reporter{
 		config:     config,
@@ -172,7 +176,7 @@ func (r *Reporter) ShowProgress(current, total int, packageName string) {
 		pkgDisplay,
 	)
 
-	_, _ = fmt.Fprint(r.config.Writer, progressLine)
+	_, _ = fmt.Fprint(r.config.ProgressWriter, progressLine)
 }
 
 // formatProgressDuration formats a duration for display in progress bar
@@ -190,7 +194,7 @@ func (r *Reporter) ClearProgress() {
 	if !r.config.ShowProgress {
 		return
 	}
-	_, _ = fmt.Fprintf(r.config.Writer, "\r\033[K")
+	_, _ = fmt.Fprintf(r.config.ProgressWriter, "\r\033[K")
 }
 
 // truncate truncates a string to the specified length
