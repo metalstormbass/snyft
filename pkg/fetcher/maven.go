@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type MavenClient struct {
 	httpClient *http.Client
 	baseURL    string
 	searchURL  string
+	depsDevURL string // base URL for deps.dev API (default: https://api.deps.dev)
 }
 
 // MavenPackage represents package information from Maven Central
@@ -40,8 +42,9 @@ func NewMavenClient() *MavenClient {
 			// Maven Central's APIs typically respond in < 1 second
 			Timeout: 10 * time.Second,
 		},
-		baseURL:   "https://repo1.maven.org/maven2",
-		searchURL: "https://search.maven.org/solrsearch/select",
+		baseURL:    "https://repo1.maven.org/maven2",
+		searchURL:  "https://search.maven.org/solrsearch/select",
+		depsDevURL: "https://api.deps.dev",
 	}
 }
 
@@ -56,26 +59,32 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	groupID := parts[0]
 	artifactID := parts[1]
 
+	var pkg *MavenPackage
+
 	// PRIMARY: Try direct maven-metadata.xml access (faster and more reliable)
-	pkg, err := c.getPackageInfoDirect(groupID, artifactID)
-	if err == nil {
-		return pkg, nil
+	var err error
+	pkg, err = c.getPackageInfoDirect(groupID, artifactID)
+	if err != nil {
+		// FALLBACK 1: Try Solr search API
+		pkg, err = c.getPackageInfoViaSearch(groupID, artifactID)
+	}
+	if err != nil {
+		// FALLBACK 2: Try scraping mvnrepository.com
+		var scrapeErr error
+		pkg, scrapeErr = c.scrapeMavenPackageInfo(packageName)
+		if scrapeErr != nil {
+			return nil, fmt.Errorf("failed to fetch package info: %w", err)
+		}
 	}
 
-	// FALLBACK 1: Try Solr search API
-	pkg, err = c.getPackageInfoViaSearch(groupID, artifactID)
-	if err == nil {
-		return pkg, nil
+	// If no repository URL was found via POM-based strategies, try deps.dev
+	// as a cross-ecosystem fallback.  The deps.dev API is free and unauthenticated.
+	// Source: https://docs.deps.dev/api/v3/
+	if pkg.RepositoryURL == "" {
+		_ = c.enrichFromDepsDev(pkg)
 	}
 
-	// FALLBACK 2: Try scraping mvnrepository.com
-	pkg, scrapeErr := c.scrapeMavenPackageInfo(packageName)
-	if scrapeErr == nil {
-		return pkg, nil
-	}
-
-	// All methods failed
-	return nil, fmt.Errorf("failed to fetch package info: %w", err)
+	return pkg, nil
 }
 
 // getPackageInfoDirect fetches package info using direct maven-metadata.xml access
@@ -203,7 +212,12 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 		return err
 	}
 
-	// Extract SCM URL
+	// Repository URL resolution — cascading fallback chain.
+	// Each strategy is tried only when all previous strategies failed.
+	// The order reflects confidence: SCM > POM <url> > issueManagement >
+	// parent POM > groupId heuristic > Apache/Eclipse platform fallbacks.
+
+	// 1. SCM URL (highest confidence — explicitly declared source control)
 	if pom.SCM.URL != "" {
 		pkg.RepositoryURL = normalizeSCMURL(pom.SCM.URL)
 	} else if pom.SCM.Connection != "" {
@@ -212,9 +226,23 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 		pkg.RepositoryURL = normalizeSCMURL(raw)
 	}
 
-	// Multi-module Maven projects often store SCM only in the parent POM.
-	// If no SCM was found locally, fetch the parent POM and check there.
-	// Source: Maven POM reference — <scm> is inherited from parent.
+	// 2. POM <url> element — many projects set this to their GitHub page
+	//    even when <scm> is missing or malformed.  Only accept URLs that
+	//    point to a recognised git hosting provider.
+	if pkg.RepositoryURL == "" && pom.URL != "" && isSourceRepoHost(pom.URL) {
+		pkg.RepositoryURL = normalizeSCMURL(pom.URL)
+	}
+
+	// 3. Issue tracker URL — strip /issues suffix to derive repo URL.
+	if pkg.RepositoryURL == "" {
+		if derived := repoFromIssueURL(pom.IssueManagement.URL); derived != "" {
+			pkg.RepositoryURL = derived
+		}
+	}
+
+	// 4. Parent POM — multi-module Maven projects often store SCM only
+	//    in the root/parent POM.
+	//    Source: Maven POM reference — <scm> is inherited from parent.
 	if pkg.RepositoryURL == "" &&
 		pom.Parent.GroupID != "" &&
 		pom.Parent.ArtifactID != "" &&
@@ -222,9 +250,17 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 		_ = c.enrichFromParentPOM(pkg, pom.Parent.GroupID, pom.Parent.ArtifactID, pom.Parent.Version)
 	}
 
-	// Apache fallback: if no SCM URL was found and the groupId starts with
-	// "org.apache.", construct a likely Apache Gitbox URL from the artifactId.
-	// Source: https://gitbox.apache.org/repos/asf/
+	// 5. GroupId-to-repository heuristic — io.github.*, com.github.*, etc.
+	//    Sonatype requires domain ownership verification for these prefixes.
+	//    Source: https://central.sonatype.org/publish/requirements/coordinates/
+	if pkg.RepositoryURL == "" {
+		if derived := deriveRepoFromGroupID(pkg.GroupID, pkg.ArtifactID); derived != "" {
+			pkg.RepositoryURL = derived
+		}
+	}
+
+	// 6. Apache Gitbox fallback for org.apache.* packages.
+	//    Source: https://gitbox.apache.org/repos/asf/
 	if pkg.RepositoryURL == "" && strings.HasPrefix(pkg.GroupID, "org.apache.") {
 		pkg.RepositoryURL = "https://gitbox.apache.org/repos/asf/" + pkg.ArtifactID + ".git"
 	}
@@ -296,10 +332,16 @@ type MavenSearchDoc struct {
 
 // Maven POM structure (simplified)
 type MavenPOM struct {
-	XMLName  xml.Name       `xml:"project"`
-	Parent   MavenParent    `xml:"parent"`
-	SCM      MavenSCM       `xml:"scm"`
-	Licenses []MavenLicense `xml:"licenses>license"`
+	XMLName         xml.Name              `xml:"project"`
+	Parent          MavenParent           `xml:"parent"`
+	URL             string                `xml:"url"`
+	SCM             MavenSCM              `xml:"scm"`
+	IssueManagement MavenIssueManagement  `xml:"issueManagement"`
+	Licenses        []MavenLicense        `xml:"licenses>license"`
+}
+
+type MavenIssueManagement struct {
+	URL string `xml:"url"`
 }
 
 type MavenParent struct {
@@ -410,6 +452,64 @@ func (c *MavenClient) VerifySourceAvailability(packageName, version string, repo
 	return result
 }
 
+// repoFromIssueURL tries to derive a repository URL from an issue tracker
+// URL by stripping common suffixes like "/issues", "/-/issues", "/jira", etc.
+func repoFromIssueURL(issueURL string) string {
+	if issueURL == "" || !isSourceRepoHost(issueURL) {
+		return ""
+	}
+	trimmed := strings.TrimRight(issueURL, "/")
+	for _, suffix := range []string{"/issues", "/-/issues"} {
+		if strings.HasSuffix(trimmed, suffix) {
+			return normalizeSCMURL(strings.TrimSuffix(trimmed, suffix))
+		}
+	}
+	return ""
+}
+
+// deriveRepoFromGroupID infers a repository URL from well-known groupId
+// patterns.  Sonatype's Central Repository requires domain ownership
+// verification for io.github.*, com.github.*, io.gitlab.*, io.bitbucket.*
+// prefixes, so these heuristics are high-confidence.
+// Source: https://central.sonatype.org/publish/requirements/coordinates/
+func deriveRepoFromGroupID(groupID, artifactID string) string {
+	parts := strings.Split(groupID, ".")
+
+	type mapping struct {
+		prefix   []string
+		template string // %s = username, %s = artifactID
+	}
+	mappings := []mapping{
+		{[]string{"io", "github"}, "https://github.com/%s/%s"},
+		{[]string{"com", "github"}, "https://github.com/%s/%s"},
+		{[]string{"io", "gitlab"}, "https://gitlab.com/%s/%s"},
+		{[]string{"io", "bitbucket"}, "https://bitbucket.org/%s/%s"},
+	}
+
+	for _, m := range mappings {
+		if len(parts) > len(m.prefix) {
+			match := true
+			for i, p := range m.prefix {
+				if parts[i] != p {
+					match = false
+					break
+				}
+			}
+			if match {
+				username := parts[len(m.prefix)]
+				return fmt.Sprintf(m.template, username, artifactID)
+			}
+		}
+	}
+
+	// Eclipse Foundation projects are mirrored on GitHub.
+	if len(parts) >= 2 && parts[0] == "org" && parts[1] == "eclipse" {
+		return "https://github.com/eclipse/" + artifactID
+	}
+
+	return ""
+}
+
 // normalizeSCMURL trims SCM URLs to the canonical repository root.
 // Some POM files contain extra path segments after the owner/repo portion
 // (e.g. "https://github.com/mapstruct/mapstruct/mapstruct/"). Keeping these
@@ -479,10 +579,14 @@ func (c *MavenClient) scrapeMavenPackageInfo(packageName string) (*MavenPackage,
 		}
 	})
 
-	// Extract repository URL (often shows GitHub link)
-	doc.Find("a[href*='github.com']").Each(func(i int, s *goquery.Selection) {
-		if href, exists := s.Attr("href"); exists && pkg.RepositoryURL == "" {
-			pkg.RepositoryURL = href
+	// Extract repository URL — check all known git hosting providers,
+	// not just GitHub.
+	doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
+		if pkg.RepositoryURL != "" {
+			return
+		}
+		if href, exists := s.Attr("href"); exists && isSourceRepoHost(href) {
+			pkg.RepositoryURL = normalizeSCMURL(href)
 		}
 	})
 
@@ -496,5 +600,93 @@ func (c *MavenClient) scrapeMavenPackageInfo(packageName string) (*MavenPackage,
 	})
 
 	return pkg, nil
+}
+
+// enrichFromDepsDev queries Google's deps.dev API for the source repository
+// URL.  deps.dev aggregates metadata from Maven Central and normalises POM
+// fields, so it often succeeds even when our own POM parsing finds nothing.
+// The API is free, unauthenticated, and globally replicated on Google Cloud.
+// Source: https://docs.deps.dev/api/v3/
+func (c *MavenClient) enrichFromDepsDev(pkg *MavenPackage) error {
+	version := pkg.LatestVersion
+	if version == "" {
+		return fmt.Errorf("no version available for deps.dev lookup")
+	}
+
+	// deps.dev expects the package name URL-encoded (colons → %3A, dots → %2E, etc.)
+	pkgEncoded := url.PathEscape(pkg.GroupID + ":" + pkg.ArtifactID)
+	versionEncoded := url.PathEscape(version)
+
+	depsDevBase := c.depsDevURL
+	if depsDevBase == "" {
+		depsDevBase = "https://api.deps.dev"
+	}
+
+	apiURL := fmt.Sprintf("%s/v3/systems/maven/packages/%s/versions/%s",
+		depsDevBase, pkgEncoded, versionEncoded)
+
+	resp, err := c.httpClient.Get(apiURL)
+	if err != nil {
+		return fmt.Errorf("deps.dev request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("deps.dev returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read deps.dev response: %w", err)
+	}
+
+	var depsResp depsDevVersionResponse
+	if err := json.Unmarshal(body, &depsResp); err != nil {
+		return fmt.Errorf("failed to parse deps.dev response: %w", err)
+	}
+
+	// First try links with label "SOURCE_REPO" — these are raw URLs.
+	for _, link := range depsResp.Links {
+		if link.Label == "SOURCE_REPO" && link.URL != "" {
+			pkg.RepositoryURL = normalizeSCMURL(link.URL)
+			return nil
+		}
+	}
+
+	// Fall back to relatedProjects with relationType "SOURCE_REPO" —
+	// these use a normalised project key like "github.com/owner/repo".
+	for _, rp := range depsResp.RelatedProjects {
+		if rp.RelationType == "SOURCE_REPO" && rp.ProjectKey.ID != "" {
+			// Project key is in format "github.com/owner/repo" — add https://
+			repoURL := "https://" + rp.ProjectKey.ID
+			if isSourceRepoHost(repoURL) {
+				pkg.RepositoryURL = normalizeSCMURL(repoURL)
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("no SOURCE_REPO found in deps.dev response")
+}
+
+// deps.dev API response types (only the fields we need)
+type depsDevVersionResponse struct {
+	Links           []depsDevLink           `json:"links"`
+	RelatedProjects []depsDevRelatedProject `json:"relatedProjects"`
+}
+
+type depsDevLink struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+type depsDevRelatedProject struct {
+	ProjectKey         depsDevProjectKey `json:"projectKey"`
+	RelationType       string            `json:"relationType"`
+	RelationProvenance string            `json:"relationProvenance"`
+}
+
+type depsDevProjectKey struct {
+	ID string `json:"id"`
 }
 
