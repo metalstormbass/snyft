@@ -3,7 +3,6 @@ package ai
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/metalstormbass/snyft/pkg/models"
 )
@@ -28,117 +27,6 @@ func TestPromptTemplateRender(t *testing.T) {
 	expected := "Hello Alice, your age is 30."
 	if user != expected {
 		t.Errorf("Expected user prompt: %s, got: %s", expected, user)
-	}
-}
-
-// TestSemanticAnalysisPrompt tests the creation of semantic analysis prompts
-func TestSemanticAnalysisPrompt(t *testing.T) {
-	metadata := models.PackageMetadata{
-		RepoStars:           100,
-		RepoForks:           20,
-		RepoLastCommit:      time.Now().AddDate(0, -1, 0), // 1 month ago
-		HasCI:               true,
-		HasInstallScripts:   false,
-		HasSLSAAttestation:  true,
-		HasSigstoreSignature: false,
-		BusFactor:           3,
-		CodeReviewRate:      85.0,
-		HasBranchProtection: true,
-		RequiredReviewers:   2,
-	}
-
-	findings := []models.Finding{
-		{
-			Severity:    "HIGH",
-			Category:    "Single Maintainer",
-			Description: "Package has only one maintainer",
-			Check:       "Maintainer Count Check",
-		},
-		{
-			Severity:    "MEDIUM",
-			Category:    "No Provenance",
-			Description: "Package lacks cryptographic provenance",
-			Check:       "Provenance Check",
-		},
-	}
-
-	prompt := NewSemanticAnalysisPrompt("test-package", models.EcosystemNPM, metadata, findings)
-
-	// Test that system prompt includes key concepts
-	if !strings.Contains(prompt.SystemPrompt, "supply chain") {
-		t.Error("System prompt should mention supply chain")
-	}
-	if !strings.Contains(prompt.SystemPrompt, "compromise likelihood") {
-		t.Error("System prompt should mention compromise likelihood")
-	}
-	if !strings.Contains(prompt.SystemPrompt, "Backstabber's Knife Collection") {
-		t.Error("System prompt should reference academic research")
-	}
-	if strings.Contains(prompt.SystemPrompt, "CVE") && !strings.Contains(prompt.SystemPrompt, "DO NOT") {
-		t.Error("System prompt should explicitly exclude CVE tracking")
-	}
-
-	// Test that user prompt can be rendered
-	system, user := prompt.Render()
-	if system == "" || user == "" {
-		t.Error("Rendered prompts should not be empty")
-	}
-
-	// Test that rendered prompt includes package name
-	if !strings.Contains(user, "test-package") {
-		t.Error("User prompt should include package name")
-	}
-
-	// Test that findings are included
-	if !strings.Contains(user, "Single Maintainer") {
-		t.Error("User prompt should include findings")
-	}
-
-	// Test temperature and max tokens
-	if prompt.Temperature != 0.3 {
-		t.Errorf("Expected temperature 0.3 for semantic analysis, got: %f", prompt.Temperature)
-	}
-	if prompt.MaxTokens != 2000 {
-		t.Errorf("Expected max tokens 2000, got: %d", prompt.MaxTokens)
-	}
-}
-
-// TestCodePatternAnalysisPrompt tests the creation of code pattern analysis prompts
-func TestCodePatternAnalysisPrompt(t *testing.T) {
-	scriptContent := `
-#!/bin/bash
-curl -sL https://example.com/install.sh | bash
-npm install -g some-package
-`
-
-	prompt := NewCodePatternAnalysisPrompt("postinstall", scriptContent)
-
-	_, user := prompt.Render()
-
-	// Test that system prompt includes risk factors
-	if !strings.Contains(prompt.SystemPrompt, "supply chain") {
-		t.Error("System prompt should mention supply chain")
-	}
-
-	// Test that user prompt includes script content
-	if !strings.Contains(user, scriptContent) {
-		t.Error("User prompt should include script content")
-	}
-
-	// Test that user prompt mentions key risk patterns
-	if !strings.Contains(user, "Network Access Patterns") {
-		t.Error("User prompt should mention network access patterns")
-	}
-	if !strings.Contains(user, "File System Operations") {
-		t.Error("User prompt should mention file system operations")
-	}
-	if !strings.Contains(user, "Obfuscation Techniques") {
-		t.Error("User prompt should mention obfuscation techniques")
-	}
-
-	// Test temperature for code analysis (should be very low)
-	if prompt.Temperature != 0.2 {
-		t.Errorf("Expected temperature 0.2 for code analysis, got: %f", prompt.Temperature)
 	}
 }
 
@@ -392,8 +280,6 @@ func TestGetPromptDescription(t *testing.T) {
 		promptType  PromptType
 		shouldContain string
 	}{
-		{PromptTypeSemanticAnalysis, "metadata"},
-		{PromptTypeCodePatternAnalysis, "install-time"},
 		{PromptTypeAttackPatternMatch, "attack patterns"},
 		{PromptTypeExecutiveExplanation, "stakeholder"},
 		{PromptTypePackageComparison, "multiple packages"},
@@ -555,16 +441,21 @@ func TestAcademicReferences(t *testing.T) {
 // TestPromptParameterization tests that all templates properly parameterize
 func TestPromptParameterization(t *testing.T) {
 	// Test that templates don't leave unreplaced placeholders after rendering
-	metadata := models.PackageMetadata{
-		RepoStars:     100,
-		RepoLastCommit: time.Now(),
+	analysisResult := models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "test-pkg",
+			Version:   "1.0.0",
+			Ecosystem: models.EcosystemNPM,
+		},
+		RiskLevel:   "MEDIUM",
+		RiskScore:   50,
+		RiskFactors: []string{"test factor"},
+		Findings: []models.Finding{
+			{Severity: "HIGH", Category: "Test", Description: "Test finding"},
+		},
 	}
 
-	findings := []models.Finding{
-		{Severity: "HIGH", Category: "Test", Description: "Test finding"},
-	}
-
-	prompt := NewSemanticAnalysisPrompt("test-pkg", models.EcosystemNPM, metadata, findings)
+	prompt := NewAttackPatternMatchingPrompt("test-pkg", models.EcosystemNPM, analysisResult)
 	_, user := prompt.Render()
 
 	// Should not contain any unreplaced {{placeholders}}

@@ -1558,16 +1558,24 @@ func TestMFAUnchecked_PersonalAccount_NeutralImpact(t *testing.T) {
 // Source: OSSF Scorecard - maintainer identity is required for assessment
 // Methodology: Set MaintainerCount=0, SingleMaintainer=false, verify +0.5 risk contribution
 // Result: 0.5 (no maintainer data) + 0.5 (no signing) = 1.0 → MEDIUM (1 point)
+// Test: Zero maintainers on ecosystem with maintainer list = MEDIUM risk
+// Justification: Ecosystem-aware scoring distinguishes "data unavailable" from
+//                "zero maintainers confirmed". When the ecosystem exposes maintainer
+//                data (npm, PyPI) but returns 0, this is an unverifiable ownership signal.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Call calculateRiskScore with 0 maintainers on npm ecosystem
+// Result: MEDIUM risk (0.6 base score from unverifiable ownership)
 func TestZeroMaintainers_CalculateRiskScore_ModerateRisk(t *testing.T) {
 	analysis := &PublisherControlAnalysis{
 		MaintainerCount:  0,
 		SingleMaintainer: false,
+		Ecosystem:        models.EcosystemNPM, // npm exposes maintainer lists
 	}
 	analysis.calculateRiskScore()
 
-	// 0.5 (no maintainer data) + 0.5 (no signing) = 1.0 → MEDIUM
+	// 0.6 (no maintainer data, ecosystem exposes list) → MEDIUM
 	if analysis.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point (MEDIUM) for zero maintainers, got %d (evidence: %s)",
+		t.Errorf("Expected 1 risk point (MEDIUM) for zero maintainers on npm, got %d (evidence: %s)",
 			analysis.RiskPoints, analysis.Evidence)
 	}
 	if analysis.RiskLevel != "MEDIUM" {

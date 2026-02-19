@@ -527,6 +527,9 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 			{"Dependency Sprawl", result.SupplyChainScore.CategoryScores.DependencySprawl},
 			{"Provenance", result.SupplyChainScore.CategoryScores.Provenance},
 			{"Health", result.SupplyChainScore.CategoryScores.Health},
+			{"Governance", result.SupplyChainScore.CategoryScores.Governance},
+			{"Release Security", result.SupplyChainScore.CategoryScores.ReleaseSecurity},
+			{"Package Maturity", result.SupplyChainScore.CategoryScores.PackageMaturity},
 		}
 
 		for _, cat := range categories {
@@ -638,56 +641,6 @@ func (r *Reporter) printHTMLPackageAIAnalysis(w io.Writer, aiAnalysis *models.AI
 				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #28a745; margin-top: 8px;\">")
 				_, _ = fmt.Fprintf(w, "              <strong>Mitigation:</strong> %s", html.EscapeString(pattern.MitigationAdvice))
 				_, _ = fmt.Fprintln(w, "            </div>")
-			}
-
-			_, _ = fmt.Fprintln(w, "          </div>")
-		}
-
-		_, _ = fmt.Fprintln(w, "        </div>")
-	}
-
-	// Semantic Findings
-	if len(aiAnalysis.SemanticFindings) > 0 && r.config.Verbose {
-		_, _ = fmt.Fprintln(w, "        <div style=\"margin-top: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 15px; border-radius: 5px;\">")
-		_, _ = fmt.Fprintln(w, "          <h4 style=\"color: white; margin-top: 0;\">🤖 AI-Detected Code Patterns</h4>")
-
-		for _, finding := range aiAnalysis.SemanticFindings {
-			bgColor := "#fff9e6"
-			if finding.Severity == "HIGH" || finding.Severity == "CRITICAL" {
-				bgColor = "#ffe6e6"
-			}
-
-			_, _ = fmt.Fprintf(w, "          <div style=\"background: %s; padding: 12px; margin: 10px 0; border-radius: 5px; border-left: 4px solid #ffc107;\">\n", bgColor)
-			_, _ = fmt.Fprintf(w, "            <div style=\"font-weight: bold; margin-bottom: 5px;\">\n")
-			_, _ = fmt.Fprintf(w, "              <span style=\"color: #dc3545;\">[%s]</span> %s\n",
-				html.EscapeString(finding.Severity), html.EscapeString(finding.Type))
-			_, _ = fmt.Fprintln(w, "            </div>")
-
-			if finding.Description != "" {
-				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 13px; color: #666; margin: 5px 0;\">%s</div>\n",
-					html.EscapeString(finding.Description))
-			}
-
-			confidencePct := finding.Confidence * 100
-			_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 5px;\">Confidence: %.0f%%</div>\n", confidencePct)
-
-			if finding.FilePath != "" {
-				location := finding.FilePath
-				if finding.LineNumber > 0 {
-					location = fmt.Sprintf("%s:%d", location, finding.LineNumber)
-				}
-				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 5px;\">Location: <code>%s</code></div>\n",
-					html.EscapeString(location))
-			}
-
-			if finding.Evidence != "" {
-				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #666; margin-top: 5px;\">Evidence: %s</div>\n",
-					html.EscapeString(finding.Evidence))
-			}
-
-			if finding.RiskExplanation != "" {
-				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #dc3545; margin-top: 5px;\">Risk: %s</div>\n",
-					html.EscapeString(finding.RiskExplanation))
 			}
 
 			_, _ = fmt.Fprintln(w, "          </div>")

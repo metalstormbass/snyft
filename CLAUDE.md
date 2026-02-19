@@ -2,9 +2,11 @@
 
 ## Core Mission
 
-**Snyft identifies the likelihood that software packages could be compromised.**
+**Snyft answers one question: "What is the risk that this library gets compromised?"**
 
-This is NOT a CVE tracker. This is NOT a vulnerability scanner.
+Every feature, every check, every test must serve this question. If it doesn't help assess the likelihood of supply chain compromise, it doesn't belong here.
+
+This is NOT a CVE tracker. This is NOT a vulnerability scanner. This is NOT a best practices advisor.
 
 ## What We Assess
 
@@ -27,6 +29,8 @@ Snyft evaluates **supply chain risk factors** that indicate a package's suscepti
 ❌ Reference CVE databases
 ❌ Look up existing security advisories
 ❌ Compare against vulnerability feeds
+❌ Recommend or enforce best practices
+❌ Provide security hardening guidance
 
 ### What We DO
 
@@ -102,23 +106,44 @@ Each category scores 0-2 points:
 
 ### When Adding Features
 
-Ask: "Does this help identify compromise likelihood?"
+Ask: **"Does this help answer whether this library could be compromised?"**
 
-**Good additions:**
-- Detecting typosquatting patterns
-- Identifying account takeover signals
-- Measuring bus factor
-- Verifying build reproducibility
-- Checking for install-time code execution
+If the answer is no, don't build it.
 
-**Out of scope:**
+**Good additions** (directly assess compromise risk):
+- Detecting typosquatting patterns → attacker impersonation
+- Identifying account takeover signals → compromised publisher
+- Measuring bus factor → single point of failure for takeover
+- Verifying build reproducibility → tampered artifacts
+- Checking for install-time code execution → direct compromise vector
+- Parsing CI/CD configs → release pipeline integrity
+- Checking governance files → project health signals
+
+**Out of scope** (does not assess compromise risk):
 - Scanning code for SQL injection
 - Looking up known CVEs
 - Checking dependency versions against advisories
 - Static code analysis for bugs
 - License compliance checking
+- Recommending best practices or security guidelines
+- Telling users how to fix or improve their packages
+- Code quality metrics unrelated to supply chain integrity
 
 ### When Writing Tests
+
+**The single guiding principle: every test must validate that we correctly assess supply chain compromise risk.** Tests should verify that the tool accurately answers "could this package be compromised?" — not that code runs without errors, not that APIs return data, not that formatting looks right.
+
+**Bad tests** (do NOT write these):
+- Tests that only check API connectivity or response parsing
+- Tests that verify output formatting without tying it to risk assessment
+- Tests that cover code paths just for coverage numbers
+- Tests that validate internal plumbing unrelated to compromise detection
+
+**Good tests** validate risk signals:
+- "A package with 1 maintainer scores higher risk than one with 5"
+- "A package with a recent ownership transfer is flagged"
+- "A dormant package that suddenly publishes triggers an anomaly"
+- "An API failure does NOT incorrectly inflate the risk score"
 
 **Every test must include:**
 ```go
@@ -152,6 +177,8 @@ Ask: "Does this help identify compromise likelihood?"
 - Implying we find CVEs
 - Suggesting we scan for vulnerabilities
 - Comparing to traditional vulnerability scanners
+- Framing output as best practice recommendations
+- Suggesting how to fix or improve identified risks
 
 **Correct framing:**
 > "Snyft identifies packages with high supply chain risk - helping you avoid compromised dependencies before they become a problem."
@@ -240,12 +267,13 @@ The `doc-keeper` agent monitors this automatically.
 
 If uncertain about whether something fits the project scope, ask:
 
-1. "Does this help identify compromise likelihood?"
+1. **"Does this help answer: what is the risk that this library gets compromised?"**
 2. "Is this about supply chain integrity?"
 3. "Are we looking at future risk or past vulnerabilities?"
 
+If the answer to #1 is no → out of scope.
 If the answer to #3 is "past vulnerabilities" → out of scope.
 
 ---
 
-**Remember: We predict compromise likelihood. We don't track known CVEs.**
+**The only question that matters: "What is the risk that this library gets compromised?" Everything we build must serve that question. We don't track CVEs. We don't prescribe best practices. We assess compromise likelihood.**

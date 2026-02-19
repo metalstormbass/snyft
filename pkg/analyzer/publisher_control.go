@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,6 +66,9 @@ type PublisherControlAnalysis struct {
 	MFAEnforced bool   `json:"mfa_enforced"` // true if org-level MFA is required
 	MFAChecked  bool   `json:"mfa_checked"`  // true if we successfully determined MFA status
 
+	// Ecosystem context for scoring
+	Ecosystem             models.Ecosystem `json:"ecosystem,omitempty"`
+
 	// Overall risk assessment
 	RiskPoints            int    `json:"risk_points"`  // 0-2 points
 	RiskLevel             string `json:"risk_level"`   // HIGH, MEDIUM, LOW
@@ -115,6 +119,7 @@ func (a *Analyzer) AnalyzePublisherControl(result *models.AnalysisResult, repoUR
 		MaintainerEmails: result.Metadata.Maintainers,
 		SingleMaintainer: len(result.Metadata.Maintainers) == 1,
 		PackagesPerMaintainer: make(map[string]int),
+		Ecosystem: result.Dependency.Ecosystem,
 	}
 
 	// Get git platform client
@@ -178,12 +183,10 @@ func (a *Analyzer) AnalyzePublisherControl(result *models.AnalysisResult, repoUR
 // - Personal account with personal email = HIGH RISK
 func (analysis *PublisherControlAnalysis) checkOrganizationOwnership(gitClient fetcher.GitPlatformClient, repoURL string) {
 	// Parse repository URL to get owner
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(repoURL, "https://"), "http://"), "/")
-	if len(parts) < 3 {
+	owner, _, err := fetcher.ParseRepoURL(repoURL)
+	if err != nil {
 		return
 	}
-
-	owner := parts[1]
 
 	// Check if owner is an organization (via GitHub API)
 	// GitHub API: GET /users/{username} returns "type": "Organization" or "User"
@@ -418,19 +421,27 @@ func (analysis *PublisherControlAnalysis) checkPackageConcentration(npmClient *f
 // - Partial signing: MEDIUM RISK (some verification)
 // - All signed: LOW RISK (strong identity verification)
 func (analysis *PublisherControlAnalysis) checkSigningPractices(gitClient fetcher.GitPlatformClient, repoURL string) {
-	// Check signed commits
+	// Check signed commits.
+	// ErrDataUnavailable means the platform does not expose signature data;
+	// leave defaults (false/0) so scoring treats signing as unknown rather than absent.
 	hasSigned, count, err := gitClient.CheckSignedCommits(repoURL)
 	if err == nil {
 		analysis.SigningChecked = true
 		analysis.HasSignedCommits = hasSigned
 		analysis.SignedCommitCount = count
+	} else if !errors.Is(err, fetcher.ErrDataUnavailable) {
+		// Real error (not just platform limitation) - leave defaults
+		_ = err
 	}
 
-	// Check signed releases
+	// Check signed releases.
+	// ErrDataUnavailable means the platform does not expose release signature data.
 	hasSignedReleases, err := gitClient.CheckSignedReleases(repoURL)
 	if err == nil {
 		analysis.SigningChecked = true
 		analysis.HasSignedReleases = hasSignedReleases
+	} else if !errors.Is(err, fetcher.ErrDataUnavailable) {
+		_ = err
 	}
 }
 
@@ -454,11 +465,10 @@ func (analysis *PublisherControlAnalysis) checkMFAEnforcement(gitClient fetcher.
 	analysis.MFAEnforced = false
 
 	// Extract owner from repo URL
-	parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(repoURL, "https://"), "http://"), "/")
-	if len(parts) < 3 {
+	owner, _, err := fetcher.ParseRepoURL(repoURL)
+	if err != nil {
 		return
 	}
-	owner := parts[1]
 	if owner == "" {
 		return
 	}
@@ -523,12 +533,26 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 
 	// Factor 1: Maintainer count (CRITICAL - highest weight)
 	// Single maintainer is an automatic HIGH concern
+	//
+	// Ecosystem-aware interpretation: some registries (e.g. Maven Central) do not
+	// expose maintainer lists at all. A zero maintainer count in those ecosystems
+	// means "data unavailable", not "no maintainers". We assign 1 risk point
+	// (unknown/moderate) instead of worst-case.
+	// Source: Maven Central REST API docs — no owner/maintainer endpoint exists
+	caps := models.GetEcosystemCapabilities(analysis.Ecosystem)
 	if analysis.MaintainerCount == 0 {
-		// No maintainer data available - cannot assess control
-		// Justification: Unknown ownership = unverifiable risk, treated as concerning
-		// Raised to 0.8 so that zero-maintainer packages score at least MEDIUM
-		riskScore += 0.8
-		evidenceParts = append(evidenceParts, "no maintainer data (unverifiable)")
+		if !caps.HasMaintainerList {
+			// Ecosystem does not expose maintainer data — treat as unknown, not worst-case
+			riskScore += 0.3
+			evidenceParts = append(evidenceParts,
+				fmt.Sprintf("Maintainer count unavailable (%s does not expose this data)", analysis.Ecosystem))
+		} else {
+			// Ecosystem exposes maintainer data but none found — cannot assess control
+			// Justification: Unknown ownership = unverifiable risk, treated as concerning
+			// 0.6 ensures this reaches at least MEDIUM risk threshold
+			riskScore += 0.6
+			evidenceParts = append(evidenceParts, "no maintainer data (unverifiable)")
+		}
 	} else if analysis.SingleMaintainer {
 		riskScore += 1.0
 		evidenceParts = append(evidenceParts, "single maintainer (CRITICAL)")
@@ -633,7 +657,8 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	// Single maintainer alone (bare username, no repo) = 1.0 → MEDIUM
 	// Single maintainer + signing = 1.0 - 0.2 = 0.8 → MEDIUM
 	// 2-3 maintainers + personal email = 0.3 + 0.3 = 0.6 → MEDIUM
-	// 0 maintainers = 0.8 → MEDIUM
+	// 0 maintainers (ecosystem exposes list) = 0.6 → MEDIUM
+	// 0 maintainers (ecosystem doesn't expose) = 0.3 → LOW
 	// 4+ maintainers + org email = 0.0 → LOW
 	// 4+ maintainers + org email + signing = 0.0 - 0.2 = 0 → LOW
 	if riskScore >= 1.3 {

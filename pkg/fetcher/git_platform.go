@@ -1,11 +1,18 @@
 package fetcher
 
 import (
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/models"
 )
+
+// ErrDataUnavailable indicates that a platform does not support this data query.
+// Scoring functions should treat this as "unknown" (moderate risk) rather than
+// "worst case" (maximum risk). This prevents non-GitHub platforms from receiving
+// artificially inflated risk scores due to unimplemented API methods.
+var ErrDataUnavailable = errors.New("data unavailable for this platform")
 
 // GitPlatformClient defines the interface that all git hosting platforms must implement
 // This allows the analyzer to work with GitHub, GitLab, Bitbucket, and other platforms uniformly
@@ -192,56 +199,13 @@ func removePrefix(s, prefix string) string {
 	return s
 }
 
-// containsAny checks if a string contains any of the provided substrings
+// containsAny checks if a string contains any of the provided substrings (case-insensitive)
 func containsAny(s string, substrs []string) bool {
+	sLower := strings.ToLower(s)
 	for _, substr := range substrs {
-		if stringContains(s, substr) {
+		if strings.Contains(sLower, strings.ToLower(substr)) {
 			return true
 		}
 	}
 	return false
-}
-
-// stringContains checks if a string contains a substring (case-insensitive)
-func stringContains(s, substr string) bool {
-	// Simple case-insensitive check
-	sLower := stringToLower(s)
-	substrLower := stringToLower(substr)
-	return stringIndexOf(sLower, substrLower) >= 0
-}
-
-// stringToLower converts a string to lowercase
-func stringToLower(s string) string {
-	result := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c = c + ('a' - 'A')
-		}
-		result[i] = c
-	}
-	return string(result)
-}
-
-// stringIndexOf returns the index of substr in s, or -1 if not found
-func stringIndexOf(s, substr string) int {
-	if len(substr) == 0 {
-		return 0
-	}
-	if len(substr) > len(s) {
-		return -1
-	}
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			if s[i+j] != substr[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
 }

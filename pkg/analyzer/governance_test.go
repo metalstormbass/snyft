@@ -316,12 +316,6 @@ func TestGovernanceMetrics_ZeroValueSemantics(t *testing.T) {
 	if metrics.HasSecurityPolicy {
 		t.Error("Zero value should have HasSecurityPolicy=false")
 	}
-	if metrics.HasContributing {
-		t.Error("Zero value should have HasContributing=false")
-	}
-	if metrics.HasCodeOwners {
-		t.Error("Zero value should have HasCodeOwners=false")
-	}
 	if metrics.AvgIssueResponseDays != 0 {
 		t.Errorf("Zero value should have AvgIssueResponseDays=0, got %f", metrics.AvgIssueResponseDays)
 	}
@@ -345,8 +339,6 @@ func TestGovernanceMetrics_ZeroValueSemantics(t *testing.T) {
 func TestGovernanceMetrics_WellGovernedPackage(t *testing.T) {
 	metrics := GovernanceMetrics{
 		HasSecurityPolicy:     true,
-		HasContributing:       true,
-		HasCodeOwners:         true,
 		AvgIssueResponseDays:  3.5, // Fast response (<7 days)
 		RecentActivityGap:     10.0,
 		HasAbandonmentPattern: false,
@@ -355,12 +347,6 @@ func TestGovernanceMetrics_WellGovernedPackage(t *testing.T) {
 
 	if !metrics.HasSecurityPolicy {
 		t.Error("Expected HasSecurityPolicy=true for well-governed package")
-	}
-	if !metrics.HasContributing {
-		t.Error("Expected HasContributing=true")
-	}
-	if !metrics.HasCodeOwners {
-		t.Error("Expected HasCodeOwners=true")
 	}
 	if metrics.AvgIssueResponseDays > 7 {
 		t.Errorf("Fast response should be <=7 days, got %f", metrics.AvgIssueResponseDays)
@@ -742,17 +728,14 @@ func TestScoreGovernance_CategoryScoreStructure_ArchivedFast(t *testing.T) {
 	}
 }
 
-// Test: GovernanceMetrics structure validation — includes new HasCodeOfConduct field
-// Justification: Ensure GovernanceMetrics correctly tracks all governance indicators
-// Source: OSSF Scorecard Specification
+// Test: GovernanceMetrics structure validation
+// Justification: Ensure GovernanceMetrics correctly tracks compromise-relevant governance indicators
+// Source: OSSF Scorecard Specification (Security Policy check)
 // Methodology: Validate structure fields and types
-// Result: GovernanceMetrics should contain all required fields including HasCodeOfConduct
+// Result: GovernanceMetrics should contain security policy, responsiveness, and abandonment fields
 func TestGovernanceMetrics_Structure(t *testing.T) {
 	metrics := &GovernanceMetrics{
 		HasSecurityPolicy:     true,
-		HasContributing:       true,
-		HasCodeOwners:         true,
-		HasCodeOfConduct:      true,
 		AvgIssueResponseDays:  3.5,
 		RecentActivityGap:     10.0,
 		HasAbandonmentPattern: false,
@@ -762,15 +745,6 @@ func TestGovernanceMetrics_Structure(t *testing.T) {
 	if !metrics.HasSecurityPolicy {
 		t.Error("Expected HasSecurityPolicy to be true")
 	}
-	if !metrics.HasContributing {
-		t.Error("Expected HasContributing to be true")
-	}
-	if !metrics.HasCodeOwners {
-		t.Error("Expected HasCodeOwners to be true")
-	}
-	if !metrics.HasCodeOfConduct {
-		t.Error("Expected HasCodeOfConduct to be true")
-	}
 	if metrics.AvgIssueResponseDays != 3.5 {
 		t.Errorf("Expected AvgIssueResponseDays=3.5, got %f", metrics.AvgIssueResponseDays)
 	}
@@ -779,12 +753,12 @@ func TestGovernanceMetrics_Structure(t *testing.T) {
 	}
 }
 
-// Test: Governance scoring thresholds — verify the 3-point system
+// Test: Governance scoring thresholds — verify the 2-point system
 // Justification: Validates the risk mapping used in scoreGovernance:
 //
-//	3 points → 0 risk (strong governance)
-//	1-2 points → 1 risk (moderate governance)
-//	0 points → 2 risk (poor governance)
+//	2 points → 0 risk (responsive + security policy)
+//	1 point  → 1 risk (partial signals)
+//	0 points → 2 risk (no signals)
 //
 // Source: Internal scoring rubric
 // Methodology: Directly verify risk level boundaries
@@ -1109,9 +1083,8 @@ func TestScoreGovernance_MockServer_TwoGovernanceDocs(t *testing.T) {
 	if !containsSubstring(score.Evidence, "SECURITY.md") {
 		t.Errorf("Expected evidence to mention SECURITY.md, got: %s", score.Evidence)
 	}
-	if !containsSubstring(score.Evidence, "CONTRIBUTING.md") {
-		t.Errorf("Expected evidence to mention CONTRIBUTING.md, got: %s", score.Evidence)
-	}
+	// Note: refactored governance only checks SECURITY.md (security disclosure process),
+	// not CONTRIBUTING.md. CONTRIBUTING.md is not a supply chain security signal.
 }
 
 // Test: Governance scoring with all docs + branch protection → 0 risk
@@ -1246,8 +1219,9 @@ func TestScoreGovernance_MockServer_SingleGovernanceDoc(t *testing.T) {
 		t.Errorf("Expected 1 risk point for single governance doc, got %d (evidence: %s)",
 			score.RiskPoints, score.Evidence)
 	}
-	if !containsSubstring(score.Evidence, "Single governance doc") {
-		t.Errorf("Expected evidence to mention 'Single governance doc', got: %s", score.Evidence)
+	// Refactored governance checks SECURITY.md only (security disclosure process)
+	if !containsSubstring(score.Evidence, "Security policy") {
+		t.Errorf("Expected evidence to mention 'Security policy', got: %s", score.Evidence)
 	}
 }
 

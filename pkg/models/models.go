@@ -35,7 +35,6 @@ type AIAnalysisResult struct {
 	Timestamp         time.Time              `json:"timestamp"`
 	ModelVersion      string                 `json:"model_version"`         // AI model used for analysis
 	OverallConfidence float64                `json:"overall_confidence"`    // 0.0-1.0
-	SemanticFindings  []SemanticFinding      `json:"semantic_findings,omitempty"`
 	AttackPatterns    []AttackPatternMatch   `json:"attack_patterns,omitempty"`
 	ExecutiveSummary  *ExecutiveExplanation  `json:"executive_summary,omitempty"`
 	AnalysisNotes     string                 `json:"analysis_notes,omitempty"` // Additional context from AI
@@ -319,4 +318,47 @@ type CategoryAIInsight struct {
 	Findings       []string `json:"findings"`         // AI-identified patterns beyond rule-based scoring
 	Context        string   `json:"context"`          // Contextual analysis and amplifying/mitigating factors
 	Recommendation string   `json:"recommendation"`   // Category-specific action recommendation
+}
+
+// EcosystemCapabilities describes what data each package registry exposes.
+// Scoring functions should check these before interpreting zero values.
+// A zero value in a field that the ecosystem does not expose means "data unavailable",
+// not "data is zero/bad".
+//
+// Justification: npm exposes multi-maintainer lists and download counts; PyPI exposes
+// a singular author and no download counts; Maven exposes no ownership data at all.
+// Scoring that treats zero as worst-case silently penalizes ecosystems with less data.
+//
+// Source: npm registry API docs, PyPI JSON API docs, Maven Central REST API docs
+type EcosystemCapabilities struct {
+	HasMaintainerList   bool // npm: yes, PyPI: partial (single author), Maven: no
+	HasDownloadCounts   bool // npm: yes, PyPI: partial (via BigQuery, not real-time), Maven: no
+	HasOwnershipHistory bool // npm: yes (via API), PyPI: no, Maven: no
+}
+
+// GetEcosystemCapabilities returns the data capabilities for a given ecosystem.
+// Scoring functions use this to distinguish "zero means unavailable" from "zero means bad".
+func GetEcosystemCapabilities(eco Ecosystem) EcosystemCapabilities {
+	switch eco {
+	case EcosystemNPM:
+		return EcosystemCapabilities{
+			HasMaintainerList:   true,
+			HasDownloadCounts:   true,
+			HasOwnershipHistory: true,
+		}
+	case EcosystemPyPI:
+		return EcosystemCapabilities{
+			HasMaintainerList:   true, // Partial: single author field, but populated
+			HasDownloadCounts:   false, // PyPI JSON API does not expose real-time downloads
+			HasOwnershipHistory: false,
+		}
+	case EcosystemMaven:
+		return EcosystemCapabilities{
+			HasMaintainerList:   false, // Maven Central does not expose maintainer/owner data
+			HasDownloadCounts:   false, // Maven Central does not expose download counts
+			HasOwnershipHistory: false,
+		}
+	default:
+		return EcosystemCapabilities{}
+	}
 }
