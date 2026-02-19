@@ -407,21 +407,6 @@ func TestBuildBatchedAttackPrompt(t *testing.T) {
 	}
 }
 
-// mockAnthropicServer creates an httptest server that mimics the Anthropic Messages API.
-func mockAnthropicServer(t *testing.T, responseJSON string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		if !strings.HasSuffix(r.URL.Path, "/messages") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responseJSON)
-	}))
-}
-
 // makeAnthropicMessageResponse builds a valid Anthropic API JSON response with the given text content.
 func makeAnthropicMessageResponse(textContent string) string {
 	return fmt.Sprintf(`{
