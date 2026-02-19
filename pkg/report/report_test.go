@@ -227,9 +227,9 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 			t.Error("HTML output missing package details")
 		}
 
-		// Verify evidence section
-		if !strings.Contains(output, "Evidence:") {
-			t.Error("HTML output missing evidence section")
+		// Verify finding description is included
+		if !strings.Contains(output, "Single maintainer") {
+			t.Error("HTML output missing finding description")
 		}
 	})
 }
