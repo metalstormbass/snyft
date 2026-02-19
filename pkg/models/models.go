@@ -35,9 +35,31 @@ type AIAnalysisResult struct {
 	Timestamp         time.Time              `json:"timestamp"`
 	ModelVersion      string                 `json:"model_version"`         // AI model used for analysis
 	OverallConfidence float64                `json:"overall_confidence"`    // 0.0-1.0
+	DeepAnalysis      *DeepAnalysisResult    `json:"deep_analysis,omitempty"`
 	AttackPatterns    []AttackPatternMatch   `json:"attack_patterns,omitempty"`
 	ExecutiveSummary  *ExecutiveExplanation  `json:"executive_summary,omitempty"`
 	AnalysisNotes     string                 `json:"analysis_notes,omitempty"` // Additional context from AI
+}
+
+// DeepAnalysisResult contains the AI's holistic cross-cutting analysis of a package.
+// Unlike per-category analysis that re-examines what rules already found, deep analysis
+// identifies compound risk patterns and behavioral anomalies that rule-based scoring
+// cannot detect — particularly around maintainer behavior and process integrity.
+type DeepAnalysisResult struct {
+	RiskAssessment   string         `json:"risk_assessment"`              // AI's holistic risk assessment
+	CompoundRisks    []CompoundRisk `json:"compound_risks,omitempty"`     // Cross-signal risk patterns
+	BehaviorFindings []string       `json:"behavior_findings,omitempty"`  // Maintainer/process behavioral anomalies
+	MissedByRules    []string       `json:"missed_by_rules,omitempty"`    // Insights rules cannot detect
+	Confidence       float64        `json:"confidence"`                   // 0.0-1.0
+}
+
+// CompoundRisk represents a cross-cutting risk pattern where multiple weak signals
+// combine to indicate a higher likelihood of compromise than any single signal alone.
+type CompoundRisk struct {
+	Pattern      string   `json:"pattern"`       // e.g., "single maintainer + dormancy + no CI"
+	RiskLevel    string   `json:"risk_level"`    // HIGH, MEDIUM, LOW
+	Contributing []string `json:"contributing"`  // Which signals combine
+	Explanation  string   `json:"explanation"`   // Why this combination matters
 }
 
 // SemanticFinding represents a code pattern or behavior identified through AI analysis

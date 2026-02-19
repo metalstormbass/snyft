@@ -26,6 +26,7 @@ type Analyzer struct {
 	// AI analysis client (optional)
 	claudeClient *ai.Client
 	aiEnabled    bool
+	aiTimeout    time.Duration
 }
 
 // AnalyzerOption is a functional option for configuring an Analyzer
@@ -51,6 +52,7 @@ func WithAIConfig(config *ai.Config) AnalyzerOption {
 
 		a.claudeClient = claudeClient
 		a.aiEnabled = true
+		a.aiTimeout = config.Timeout
 	}
 }
 
