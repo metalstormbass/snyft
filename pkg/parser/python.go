@@ -179,6 +179,140 @@ func parsePythonRequirement(req string) (string, string) {
 	return strings.TrimSpace(req), "latest"
 }
 
+func parsePoetryLock(path string) ([]models.Dependency, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read poetry.lock: %w", err)
+	}
+
+	var deps []models.Dependency
+	lines := strings.Split(string(data), "\n")
+
+	var currentName, currentVersion string
+	inPackage := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect start of a new [[package]] block
+		if trimmed == "[[package]]" {
+			// Save previous package if we had one
+			if inPackage && currentName != "" {
+				deps = append(deps, models.Dependency{
+					Name:      currentName,
+					Version:   currentVersion,
+					Ecosystem: models.EcosystemPyPI,
+					Source:    path,
+				})
+			}
+			currentName = ""
+			currentVersion = ""
+			inPackage = true
+			continue
+		}
+
+		// Stop parsing packages when we hit [metadata]
+		if trimmed == "[metadata]" {
+			if inPackage && currentName != "" {
+				deps = append(deps, models.Dependency{
+					Name:      currentName,
+					Version:   currentVersion,
+					Ecosystem: models.EcosystemPyPI,
+					Source:    path,
+				})
+			}
+			inPackage = false
+			break
+		}
+
+		if !inPackage {
+			continue
+		}
+
+		// Parse name and version fields within a [[package]] block
+		if strings.HasPrefix(trimmed, "name = ") {
+			currentName = strings.Trim(strings.TrimPrefix(trimmed, "name = "), "\"")
+		} else if strings.HasPrefix(trimmed, "version = ") {
+			currentVersion = strings.Trim(strings.TrimPrefix(trimmed, "version = "), "\"")
+		}
+	}
+
+	// Handle last package if file doesn't end with [metadata]
+	if inPackage && currentName != "" {
+		deps = append(deps, models.Dependency{
+			Name:      currentName,
+			Version:   currentVersion,
+			Ecosystem: models.EcosystemPyPI,
+			Source:    path,
+		})
+	}
+
+	return deps, nil
+}
+
+func countPoetryLockDependencies(lockfilePath string) (*models.DependencyMetrics, error) {
+	data, err := os.ReadFile(lockfilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read poetry.lock: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	totalPackages := 0
+	mainPackages := 0
+	currentCategory := ""
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "[[package]]" {
+			totalPackages++
+			currentCategory = "" // reset for new package
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "category = ") {
+			currentCategory = strings.Trim(strings.TrimPrefix(trimmed, "category = "), "\"")
+			if currentCategory == "main" {
+				mainPackages++
+			}
+		}
+	}
+
+	// Try to read pyproject.toml to get direct dependency count
+	directCount := 0
+	pyprojectPath := strings.Replace(lockfilePath, "poetry.lock", "pyproject.toml", 1)
+	if pyprojectData, err := os.ReadFile(pyprojectPath); err == nil {
+		pyLines := strings.Split(string(pyprojectData), "\n")
+		inDeps := false
+		for _, line := range pyLines {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "[tool.poetry.dependencies]") || strings.Contains(line, "[project.dependencies]") {
+				inDeps = true
+				continue
+			}
+			if strings.HasPrefix(line, "[") {
+				inDeps = false
+				continue
+			}
+			if inDeps && strings.Contains(line, "=") {
+				name := strings.TrimSpace(strings.SplitN(line, "=", 2)[0])
+				if name != "python" {
+					directCount++
+				}
+			}
+		}
+	}
+
+	metrics := &models.DependencyMetrics{
+		TransitiveCount: totalPackages,
+		DirectCount:     directCount,
+		MaxDepth:        0,
+		Verified:        true,
+	}
+
+	return metrics, nil
+}
+
 // Pipfile lock structure (simplified)
 type PipfileLock struct {
 	Default map[string]PipfileLockPackage `json:"default"`
@@ -196,6 +330,11 @@ func CountPythonDependencies(manifestPath string) (*models.DependencyMetrics, er
 	// For Pipfile.lock (most accurate)
 	if filename == "pipfile.lock" {
 		return countPipfileLockDependencies(manifestPath)
+	}
+
+	// For poetry.lock (accurate - full lock file)
+	if filename == "poetry.lock" {
+		return countPoetryLockDependencies(manifestPath)
 	}
 
 	// For requirements.txt (less accurate - may be all transitives from pip freeze)

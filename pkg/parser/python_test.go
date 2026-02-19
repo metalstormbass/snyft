@@ -374,3 +374,154 @@ func TestCountPythonDependencies_ComplexRequirements(t *testing.T) {
 		t.Errorf("Expected at least 5 dependencies, got %d", metrics.TransitiveCount)
 	}
 }
+
+// ---- parsePoetryLock tests ----
+
+// Test: parsePoetryLock extracts all packages from poetry.lock
+// Justification: poetry.lock is the lockfile for Poetry-managed Python projects -
+//                accurate parsing identifies all resolved packages (direct and
+//                transitive) for supply chain analysis of the full dependency tree
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - transitive
+//         dependencies as attack vectors in supply chain compromises
+// Methodology: Parse a poetry.lock file with [[package]] blocks
+// Result: Returns all packages with correct names, versions, and PyPI ecosystem
+func TestParsePoetryLock_AllPackages(t *testing.T) {
+	deps, err := parsePoetryLock("testdata/poetry.lock")
+	if err != nil {
+		t.Fatalf("Failed to parse poetry.lock: %v", err)
+	}
+
+	// 8 packages: certifi, charset-normalizer, flask, idna, numpy, requests, urllib3, pytest
+	if len(deps) != 8 {
+		t.Fatalf("Expected 8 dependencies, got %d", len(deps))
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	if v, ok := depMap["requests"]; !ok || v != "2.28.0" {
+		t.Errorf("Expected requests@2.28.0, got %v", v)
+	}
+	if v, ok := depMap["flask"]; !ok || v != "2.3.0" {
+		t.Errorf("Expected flask@2.3.0, got %v", v)
+	}
+	if v, ok := depMap["numpy"]; !ok || v != "1.24.0" {
+		t.Errorf("Expected numpy@1.24.0, got %v", v)
+	}
+	if v, ok := depMap["pytest"]; !ok || v != "7.0.0" {
+		t.Errorf("Expected pytest@7.0.0, got %v", v)
+	}
+	if v, ok := depMap["certifi"]; !ok || v != "2022.9.24" {
+		t.Errorf("Expected certifi@2022.9.24, got %v", v)
+	}
+}
+
+// Test: parsePoetryLock sets correct ecosystem for all packages
+// Justification: Poetry packages are published to PyPI - correct ecosystem tagging
+//                ensures the PyPI registry API is used for supply chain analysis
+// Source: OSSF Scorecard methodology - ecosystem-specific checks
+// Methodology: Verify all parsed deps have PyPI ecosystem
+// Result: All dependencies have EcosystemPyPI
+func TestParsePoetryLock_Ecosystem(t *testing.T) {
+	deps, err := parsePoetryLock("testdata/poetry.lock")
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	for _, dep := range deps {
+		if dep.Ecosystem != models.EcosystemPyPI {
+			t.Errorf("Expected pypi ecosystem for %s, got %s", dep.Name, dep.Ecosystem)
+		}
+	}
+}
+
+// Test: parsePoetryLock sets Source field to the lock file path
+// Justification: Source path is used by analyzeDependencySprawl to locate the
+//                directory containing lock files for accurate dependency counting
+// Source: Snyft architecture - dep.Source drives lock file discovery
+// Methodology: Parse poetry.lock and verify Source field on returned deps
+// Result: All dependencies have Source set to the poetry.lock path
+func TestParsePoetryLock_SourcePath(t *testing.T) {
+	deps, err := parsePoetryLock("testdata/poetry.lock")
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	for _, dep := range deps {
+		if dep.Source != "testdata/poetry.lock" {
+			t.Errorf("Expected source 'testdata/poetry.lock' for %s, got %s", dep.Name, dep.Source)
+		}
+	}
+}
+
+// Test: parsePoetryLock returns error for nonexistent file
+// Justification: Graceful error handling for missing lock files
+// Source: Defense-in-depth principle
+// Methodology: Attempt to parse a nonexistent poetry.lock
+// Result: Returns file read error
+func TestParsePoetryLock_NonexistentFile(t *testing.T) {
+	_, err := parsePoetryLock("testdata/nonexistent-poetry.lock")
+	if err == nil {
+		t.Error("Expected error for nonexistent file")
+	}
+}
+
+// ---- countPoetryLockDependencies tests ----
+
+// Test: countPoetryLockDependencies counts all packages accurately
+// Justification: poetry.lock is a verified lock file providing authoritative
+//                transitive dependency counts - this feeds the dependency sprawl
+//                scorer which assesses supply chain attack surface
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - transitive
+//         dependency count as attack surface metric
+// Methodology: Count [[package]] blocks in poetry.lock
+// Result: Returns total package count with Verified=true
+func TestCountPoetryLockDependencies_TotalCount(t *testing.T) {
+	metrics, err := CountPythonDependencies("testdata/poetry.lock")
+	if err != nil {
+		t.Fatalf("Failed to count poetry.lock dependencies: %v", err)
+	}
+
+	// 8 total packages in the test fixture
+	if metrics.TransitiveCount != 8 {
+		t.Errorf("Expected 8 total dependencies, got %d", metrics.TransitiveCount)
+	}
+
+	if !metrics.Verified {
+		t.Error("Expected verified metrics for poetry.lock")
+	}
+}
+
+// Test: countPoetryLockDependencies resolves direct count from pyproject.toml
+// Justification: Distinguishing direct from transitive dependencies is critical
+//                for dependency sprawl scoring - a package with 3 direct deps
+//                resolving to 100 transitive deps has higher supply chain risk
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - dependency
+//         fan-out as compromise propagation metric
+// Methodology: Count direct deps from companion pyproject.toml
+// Result: DirectCount reflects pyproject.toml [tool.poetry.dependencies] minus python
+func TestCountPoetryLockDependencies_DirectCount(t *testing.T) {
+	metrics, err := CountPythonDependencies("testdata/poetry.lock")
+	if err != nil {
+		t.Fatalf("Failed to count poetry.lock dependencies: %v", err)
+	}
+
+	// pyproject.toml has 3 direct deps: requests, flask, numpy (python excluded)
+	if metrics.DirectCount != 3 {
+		t.Errorf("Expected 3 direct dependencies, got %d", metrics.DirectCount)
+	}
+}
+
+// Test: countPoetryLockDependencies returns error for nonexistent file
+// Justification: Graceful error handling
+// Source: Defense-in-depth principle
+// Methodology: Attempt to count deps in nonexistent poetry.lock
+// Result: Returns error
+func TestCountPoetryLockDependencies_NonExistent(t *testing.T) {
+	_, err := CountPythonDependencies("testdata/nonexistent-poetry.lock")
+	if err == nil {
+		t.Error("Expected error for nonexistent file")
+	}
+}

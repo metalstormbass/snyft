@@ -59,6 +59,8 @@ func ParseManifest(path string) ([]models.Dependency, error) {
 		return parsePipfile(path)
 	case "pyproject.toml":
 		return parsePyprojectToml(path)
+	case "poetry.lock":
+		return parsePoetryLock(path)
 
 	// Java
 	case "pom.xml":
