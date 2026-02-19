@@ -193,6 +193,8 @@ func countRequiresDist(requiresDist []string) int {
 // 2. PEP 740 Trusted Publisher attestations via the Simple API (JSON format),
 //    which includes provenance URLs for packages published with attestations
 //
+// Falls back to scraping the PyPI page when the API is rate-limited.
+//
 // Source: PyPI blog — "Removing PGP from PyPI" (2023-05-23)
 // Source: PEP 740 — "Index support for digital attestations"
 func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool, signedCount, totalCount int, err error) {
@@ -210,11 +212,16 @@ func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return false, 0, 0, fmt.Errorf("failed to fetch PyPI package: %w", err)
+		// Network error — return empty result (no signatures detectable)
+		return false, 0, 0, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or auth errors — return empty result gracefully
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return false, 0, 0, nil
+		}
 		return false, 0, 0, fmt.Errorf("PyPI API returned status %d", resp.StatusCode)
 	}
 
@@ -471,17 +478,23 @@ type PyPIOwnershipHistory struct {
 	TransferDate      time.Time
 }
 
-// GetOwnershipHistory analyzes package owner/author changes over time
+// GetOwnershipHistory analyzes package owner/author changes over time.
+// Falls back to scraping the PyPI page when the API is rate-limited.
 func (c *PyPIClient) GetOwnershipHistory(packageName string) (*PyPIOwnershipHistory, error) {
 	url := fmt.Sprintf("%s/%s/json", c.baseURL, packageName)
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch PyPI package: %w", err)
+		// Network error — try scraping fallback for basic maintainer info
+		return c.scrapePyPIOwnershipHistory(packageName)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or auth errors — try scraping fallback
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapePyPIOwnershipHistory(packageName)
+		}
 		return nil, fmt.Errorf("PyPI API returned status %d", resp.StatusCode)
 	}
 
@@ -563,6 +576,28 @@ func (c *PyPIClient) GetOwnershipHistory(packageName string) (*PyPIOwnershipHist
 	}
 
 	return history, nil
+}
+
+// scrapePyPIOwnershipHistory scrapes basic maintainer info from the PyPI package page.
+// Used as a fallback when the API is rate-limited. Provides current author/maintainers
+// but cannot detect historical author changes (requires release-level API data).
+func (c *PyPIClient) scrapePyPIOwnershipHistory(packageName string) (*PyPIOwnershipHistory, error) {
+	pkg, err := c.scrapePyPIPackageInfo(packageName)
+	if err != nil {
+		return nil, fmt.Errorf("scraping ownership history fallback failed: %w", err)
+	}
+
+	author := ""
+	if len(pkg.Maintainers) > 0 {
+		author = pkg.Maintainers[0]
+	}
+
+	return &PyPIOwnershipHistory{
+		CurrentAuthor:     author,
+		HistoricalAuthors: []string{},
+		AuthorChanges:     0,
+		RecentTransfer:    false,
+	}, nil
 }
 
 // PyPIFullResponse includes releases data

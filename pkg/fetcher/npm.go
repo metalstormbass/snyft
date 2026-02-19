@@ -298,17 +298,23 @@ func extractMaintainers(maintainers []NPMMaintainer) []string {
 	return names
 }
 
-// CheckNPMProvenance checks if a package has npm provenance attestations
+// CheckNPMProvenance checks if a package has npm provenance attestations.
+// Falls back to scraping the npm page when the API is rate-limited.
 func (c *NPMClient) CheckNPMProvenance(packageName string) (bool, string, error) {
 	url := fmt.Sprintf("%s/%s", c.baseURL, packageName)
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return false, "", fmt.Errorf("failed to fetch npm package: %w", err)
+		// Network error — try scraping for provenance badge
+		return c.scrapeNPMProvenance(packageName)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or auth errors — try scraping fallback
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapeNPMProvenance(packageName)
+		}
 		return false, "", fmt.Errorf("npm registry returned status %d", resp.StatusCode)
 	}
 
@@ -328,6 +334,24 @@ func (c *NPMClient) CheckNPMProvenance(packageName string) (bool, string, error)
 	}
 
 	return false, "", nil
+}
+
+// scrapeNPMProvenance scrapes the npm package page to check for provenance indicators.
+// The npm web UI shows a "Provenance" badge on packages published with attestations.
+func (c *NPMClient) scrapeNPMProvenance(packageName string) (bool, string, error) {
+	pageURL := fmt.Sprintf("https://www.npmjs.com/package/%s", packageName)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return false, "", fmt.Errorf("scraping provenance fallback failed: %w", err)
+	}
+
+	// npm shows a "Provenance" badge/link for packages with attestations
+	hasProvenance := false
+	doc.Find("a[href*='provenance'], span:contains('Provenance')").Each(func(_ int, _ *goquery.Selection) {
+		hasProvenance = true
+	})
+
+	return hasProvenance, "", nil
 }
 
 // VerifySourceAvailability verifies that source code exists for the exact version
@@ -583,16 +607,23 @@ func contains(slice []string, str string) bool {
 }
 
 
+// GetOwnershipHistory analyzes package owner/maintainer changes over time.
+// Falls back to scraping the npm page when the API is rate-limited.
 func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistory, error) {
 	url := fmt.Sprintf("%s/%s", c.baseURL, packageName)
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch npm package: %w", err)
+		// Network error — try scraping fallback for basic maintainer info
+		return c.scrapeNPMOwnershipHistory(packageName)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		// Rate limit or auth errors — try scraping fallback
+		if shouldFallbackToScraping(nil, resp.StatusCode) {
+			return c.scrapeNPMOwnershipHistory(packageName)
+		}
 		return nil, fmt.Errorf("npm registry returned status %d", resp.StatusCode)
 	}
 
@@ -702,6 +733,23 @@ func (c *NPMClient) GetOwnershipHistory(packageName string) (*NPMOwnershipHistor
 	}
 
 	return history, nil
+}
+
+// scrapeNPMOwnershipHistory scrapes basic maintainer info from the npm package page.
+// Used as a fallback when the registry API is rate-limited. Provides current
+// maintainers but cannot detect historical maintainer changes (requires API data).
+func (c *NPMClient) scrapeNPMOwnershipHistory(packageName string) (*NPMOwnershipHistory, error) {
+	pkg, err := c.scrapeNPMPackageInfo(packageName)
+	if err != nil {
+		return nil, fmt.Errorf("scraping ownership history fallback failed: %w", err)
+	}
+
+	return &NPMOwnershipHistory{
+		CurrentMaintainers:    pkg.Maintainers,
+		HistoricalMaintainers: []string{},
+		MaintainerChanges:     0,
+		RecentTransfer:        false,
+	}, nil
 }
 
 // GetMaintainerPackageCount fetches the number of packages maintained by a specific user

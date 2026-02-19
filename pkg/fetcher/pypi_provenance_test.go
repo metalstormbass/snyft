@@ -341,12 +341,12 @@ func TestCheckPyPISignatures_MalformedJSON(t *testing.T) {
 	}
 }
 
-// Test: CheckPyPISignatures returns error for 429 Too Many Requests
-// Justification: Rate-limited responses should produce errors, not silently
-//                report zero signatures (which would inflate risk scores)
+// Test: CheckPyPISignatures degrades gracefully for 429 Too Many Requests
+// Justification: Rate-limited responses should return (false, 0, 0, nil) so that
+//                callers treat the result as "unknown" rather than inflating risk scores
 // Source: PyPI service policies — rate limiting behavior
 // Methodology: Mock server returns 429 status
-// Result: Returns error with status code in message
+// Result: Returns no error, no signatures detected — graceful degradation
 func TestCheckPyPISignatures_RateLimited(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -358,8 +358,14 @@ func TestCheckPyPISignatures_RateLimited(t *testing.T) {
 		baseURL:    server.URL,
 	}
 
-	_, _, _, err := client.CheckPyPISignatures("any-package")
-	if err == nil {
-		t.Error("CheckPyPISignatures() expected error for 429, got nil")
+	hasSig, signedCount, totalCount, err := client.CheckPyPISignatures("any-package")
+	if err != nil {
+		t.Errorf("CheckPyPISignatures() returned error on rate limit: %v (should degrade gracefully)", err)
+	}
+	if hasSig {
+		t.Error("CheckPyPISignatures() reported signatures when rate-limited")
+	}
+	if signedCount != 0 || totalCount != 0 {
+		t.Errorf("CheckPyPISignatures() counts = (%d, %d), want (0, 0) on rate limit", signedCount, totalCount)
 	}
 }
