@@ -4,9 +4,9 @@ Snyft supports optional AI-powered analysis using the Claude API for advanced su
 
 ## What AI Provides
 
-1. **Attack Pattern Matching** - Compares package behavior against 8 documented supply chain attack patterns (typosquatting, account takeover, dependency confusion, malicious install scripts, abandoned package takeover, build chain compromise, transitive dependency poisoning, subdomain takeover)
-2. **Executive Summaries** - Stakeholder-friendly risk explanations with business impact and key risk areas
-3. **Per-Category Analysis** - AI-generated insights for each of the 10 scoring categories
+1. **Deep Analysis** - Holistic examination of all signals to find compound risk patterns (e.g., single maintainer + dormant + sudden release = account takeover) and behavioral anomalies that rule-based scoring misses
+2. **Attack Pattern Matching** - Batched comparison against 8 documented supply chain attack patterns (typosquatting, account takeover, dependency confusion, malicious install scripts, abandoned package takeover, build chain compromise, transitive dependency poisoning, subdomain takeover)
+3. **Executive Summaries** - Stakeholder-friendly risk explanations with business impact and key risk areas
 
 AI is **opt-in** and must be enabled with the `--ai` flag.
 
@@ -38,7 +38,7 @@ snyft scan --ai --ai-disable-retry       # Disable retries
 
 ## Cost and Performance
 
-- Adds ~2-5 seconds per package (with caching)
+- Uses 3 focused API calls per package (down from 16+ previously)
 - Caching enabled by default (24h TTL) to reduce costs on repeated scans
 - Rate limiting prevents excessive API usage
 - Circuit breaker stops requests after too many consecutive failures
