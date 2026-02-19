@@ -71,9 +71,9 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 | **10. Package Maturity** | New/abandoned package, irregular updates |
 
 **Total Score**: 0-20 points
-- **0-5**: Low risk
-- **6-14**: Medium risk
-- **15-20**: High risk
+- **0-8**: Low risk
+- **9-11**: Medium risk
+- **12-20**: High risk
 
 ## Typosquatting Detection
 

@@ -160,10 +160,13 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		description = "Full provenance with verified source and signatures"
 
 	case sourceVerified:
-		// Source verified but weak or no attestations
-		riskPoints = 1
-		score = 1
-		description = "Source code verified but limited build attestations"
+		// Source verified: you CAN verify what you're installing.
+		// Attestations are additional confirmation but source verification alone
+		// is sufficient for low risk. This differentiates packages with verifiable
+		// source (most popular packages) from those without.
+		riskPoints = 0
+		score = 2
+		description = "Source code verified against published package"
 
 	default:
 		// SourceVerification is nil (check not performed): fall through to
