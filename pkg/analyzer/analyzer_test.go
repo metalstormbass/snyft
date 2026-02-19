@@ -2076,7 +2076,7 @@ func TestScoreHealth_MediumRisk(t *testing.T) {
 					CodeReviewRate:    50, // Below 75% threshold
 				},
 			},
-			wantRisk: 1, // Medium risk - 2 points (bus factor + CI)
+			wantRisk: 1, // Medium risk - 1 point (bus factor only, review rate below 75%)
 		},
 		{
 			name: "CI and reviews but high bus factor",
@@ -2089,7 +2089,7 @@ func TestScoreHealth_MediumRisk(t *testing.T) {
 					CodeReviewRate: 85,
 				},
 			},
-			wantRisk: 1, // Medium risk - 2 points (CI + reviews, but no bus factor point)
+			wantRisk: 1, // Medium risk - 1 point (review oversight only, no bus factor point)
 		},
 		{
 			name: "Good bus factor with moderate CI but no reviews",
@@ -2101,7 +2101,7 @@ func TestScoreHealth_MediumRisk(t *testing.T) {
 					CodeReviewRate: 0,
 				},
 			},
-			wantRisk: 1, // Medium risk - 2 points (bus factor + CI presence)
+			wantRisk: 1, // Medium risk - 1 point (bus factor only, no review oversight)
 		},
 	}
 
@@ -2189,8 +2189,8 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 				t.Errorf("scoreHealth() RiskPoints = %d, want %d (evidence: %s)",
 					score.RiskPoints, tt.wantRisk, score.Evidence)
 			}
-			if score.RiskPoints == 0 && score.Score < 2 {
-				t.Errorf("scoreHealth() with 0 risk should have Score >= 2 (max), got %d", score.Score)
+			if score.RiskPoints == 0 && score.Score != 2 {
+				t.Errorf("scoreHealth() with 0 risk should have Score == 2, got %d", score.Score)
 			}
 		})
 	}
@@ -2682,64 +2682,66 @@ func TestScoreHealth_CodeReviewVerification(t *testing.T) {
 
 			score := analyzer.scoreHealth(result)
 
-			// Score is now 0-2 (consistent with other categories).
-			// With bus factor + CI (2 internal points) → Score 1.
-			// With bus factor + CI + reviews (3 internal points) → Score 2.
-			minExpectedScore := 1 // bus factor + CI = 2 internal points → Score 1
+			// With bus factor 3 (gets 1 point), max score is 2
+			// If review oversight gives a point, score should be 2
+			// Otherwise score should be 1 (bus factor only)
+			expectedScore := 1
 			if tt.expectsReviewPoint {
-				minExpectedScore = 2 // bus factor + CI + reviews = 3 internal points → Score 2
+				expectedScore = 2
 			}
 
-			if score.Score < minExpectedScore {
-				t.Errorf("scoreHealth() Score = %d, want at least %d (evidence: %s)",
-					score.Score, minExpectedScore, score.Evidence)
+			if score.Score != expectedScore {
+				t.Errorf("scoreHealth() Score = %d, want %d (evidence: %s)",
+					score.Score, expectedScore, score.Evidence)
 			}
 		})
 	}
 }
 
+// Test: CI quality does not affect health score
+// Justification: CI quality measures code correctness, not compromise resistance.
+//                Health scoring focuses on bus factor and review oversight only.
+// Source: SLSA specification (https://slsa.dev/spec/v1.0/) — build integrity
+//         is scored separately from project health signals.
+// Methodology: Vary CI quality parameters while holding bus factor and review
+//              oversight constant; verify score remains unchanged.
+// Result: Health score is identical regardless of CI quality settings.
 func TestScoreHealth_CIQualityAssessment(t *testing.T) {
 	tests := []struct {
 		name           string
 		hasCI          bool
 		ciQualityScore int
 		ciHasTests     bool
-		expectsPoint   bool
 	}{
 		{
 			name:           "High quality CI with tests",
 			hasCI:          true,
 			ciQualityScore: 9,
 			ciHasTests:     true,
-			expectsPoint:   true,
 		},
 		{
 			name:           "Quality CI at threshold",
 			hasCI:          true,
 			ciQualityScore: 7,
 			ciHasTests:     true,
-			expectsPoint:   true,
 		},
 		{
 			name:           "Moderate quality CI",
 			hasCI:          true,
 			ciQualityScore: 5,
 			ciHasTests:     false,
-			expectsPoint:   true, // CI presence earns a point
 		},
 		{
 			name:           "Basic CI only",
 			hasCI:          true,
 			ciQualityScore: 3,
 			ciHasTests:     false,
-			expectsPoint:   true, // CI presence earns a point
 		},
 		{
 			name:           "No CI",
 			hasCI:          false,
 			ciQualityScore: 0,
 			ciHasTests:     false,
-			expectsPoint:   false,
 		},
 	}
 
@@ -2748,21 +2750,25 @@ func TestScoreHealth_CIQualityAssessment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := &models.AnalysisResult{
 				Metadata: models.PackageMetadata{
-					BusFactor:      3, // Good bus factor
+					BusFactor:      3, // Good bus factor (gets 1 point)
 					HasCI:          tt.hasCI,
 					CIQualityScore: tt.ciQualityScore,
 					CIHasTests:     tt.ciHasTests,
+					// No review oversight — score should be 1 (bus factor only)
 				},
 			}
 
 			score := analyzer.scoreHealth(result)
 
-			// Score is now 0-2 (consistent with other categories).
-			// Bus factor alone = 1 internal point → Score 0.
-			// Bus factor + CI quality point = 2 internal points → Score 1.
-			if tt.expectsPoint && score.Score < 1 {
-				t.Errorf("scoreHealth() expected CI quality point but Score = %d (evidence: %s)",
+			// CI quality must NOT affect health score.
+			// With bus factor 3 and no review oversight, score should always be 1.
+			if score.Score != 1 {
+				t.Errorf("scoreHealth() Score = %d, want 1; CI quality should not affect health score (evidence: %s)",
 					score.Score, score.Evidence)
+			}
+			if score.RiskPoints != 1 {
+				t.Errorf("scoreHealth() RiskPoints = %d, want 1; CI quality should not affect risk (evidence: %s)",
+					score.RiskPoints, score.Evidence)
 			}
 		})
 	}
@@ -2776,155 +2782,102 @@ func TestScoreHealth_CIQualityAssessment(t *testing.T) {
 // Methodology: Set bus factor >= 3 with TopContributorPct >= 90%, verify bus factor
 //              point is withheld
 // Result: No bus factor point when concentration >= 90%
+// Test: Top contributor concentration is reported in evidence but does not negate bus factor point
+// Justification: Refactored health scoring uses 2 components (bus factor + review oversight).
+//                Bus factor >= 3 earns 1 point regardless of concentration. Concentration is
+//                noted as additional evidence for context, not as a gating factor.
+// Source: OSSF Scorecard "Contributors" methodology
+// Methodology: Set various bus factors and concentration levels, verify scoring
+// Result: Bus factor >= 3 always gets 1 point; concentration appears in evidence when >= 80%
 func TestScoreHealth_TopContributorConcentration(t *testing.T) {
 	analyzer := NewAnalyzer()
 	tests := []struct {
 		name              string
 		busFactor         int
 		topContributorPct float64
-		wantBusPoint      bool // Whether bus factor point should be awarded
+		wantRisk          int
+		wantConcentration bool // Whether evidence should mention concentration
 	}{
 		{
 			name:              "High bus factor, low concentration",
 			busFactor:         5,
 			topContributorPct: 30.0,
-			wantBusPoint:      true,
+			wantRisk:          1, // bus factor point, no review = 1 risk
+			wantConcentration: false,
 		},
 		{
 			name:              "High bus factor, moderate concentration",
 			busFactor:         3,
 			topContributorPct: 80.0,
-			wantBusPoint:      true, // 80% is noted but not gated
+			wantRisk:          1, // bus factor point, no review = 1 risk
+			wantConcentration: true,
 		},
 		{
 			name:              "High bus factor, extreme concentration",
 			busFactor:         4,
 			topContributorPct: 92.0,
-			wantBusPoint:      false, // 90%+ concentration negates bus factor
+			wantRisk:          1, // bus factor >= 3 still gets point
+			wantConcentration: true,
 		},
 		{
 			name:              "Bus factor 3, exactly 90% concentration",
 			busFactor:         3,
 			topContributorPct: 90.0,
-			wantBusPoint:      false, // >= 90% gated
+			wantRisk:          1, // bus factor >= 3 still gets point
+			wantConcentration: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Only bus factor component, no CI or reviews
 			result := &models.AnalysisResult{
 				Metadata: models.PackageMetadata{
 					BusFactor:         tt.busFactor,
 					TopContributorPct: tt.topContributorPct,
-					HasCI:             false,
-					CIQualityScore:    0,
 					CodeReviewRate:    0,
 				},
 			}
 
 			score := analyzer.scoreHealth(result)
 
-			if tt.wantBusPoint {
-				// With bus factor point but no CI/review points: 1 internal point → Score 0, RiskPoints 2
-				// (still high risk overall, but bus factor was acknowledged)
-				if score.RiskPoints != 2 {
-					t.Errorf("Expected RiskPoints 2 (bus factor point but no CI/reviews), got %d (evidence: %s)",
-						score.RiskPoints, score.Evidence)
-				}
-			} else {
-				// No bus factor point + no CI/review points: 0 internal points → Score 0, RiskPoints 2
-				if score.RiskPoints != 2 {
-					t.Errorf("Expected RiskPoints 2 (no points), got %d (evidence: %s)",
-						score.RiskPoints, score.Evidence)
-				}
-				// Verify evidence mentions concentration
-				if !strings.Contains(score.Evidence, "concentrated") {
-					t.Errorf("Expected evidence to mention concentration, got: %s", score.Evidence)
-				}
+			if score.RiskPoints != tt.wantRisk {
+				t.Errorf("Expected RiskPoints %d, got %d (evidence: %s)",
+					tt.wantRisk, score.RiskPoints, score.Evidence)
+			}
+			if tt.wantConcentration && !strings.Contains(score.Evidence, "Top contributor") {
+				t.Errorf("Expected evidence to mention top contributor concentration, got: %s", score.Evidence)
 			}
 		})
 	}
 }
 
-// Test: OSSF Scorecard fallback for bus factor, code review, and CI
-// Justification: When direct API calls fail (rate limiting, non-GitHub platforms),
-//                OSSF Scorecard checks provide verified supplementary data that should
-//                be used rather than penalizing the project for data unavailability.
-// Source: OSSF Scorecard methodology — https://github.com/ossf/scorecard
-// Methodology: Set bus factor/review/CI to 0, provide OSSF checks, verify fallback
-// Result: OSSF data awards points when direct data is unavailable
-func TestScoreHealth_OSSFFallback(t *testing.T) {
+// Test: Health score with no data available assigns maximum risk
+// Justification: When no bus factor or review data is available, health scoring
+//                should assign worst-case risk (2 points) to flag the package for
+//                manual review rather than assuming good health by default.
+// Source: OSSF Scorecard methodology — unverifiable checks receive conservative scores
+// Methodology: Set bus factor to 0, no maintainers, no review data. Verify max risk.
+// Result: No data = 2 risk points (worst case)
+func TestScoreHealth_NoDataMaxRisk(t *testing.T) {
 	analyzer := NewAnalyzer()
 
-	tests := []struct {
-		name       string
-		ossfChecks map[string]int
-		wantRisk   int
-	}{
-		{
-			name: "OSSF provides all three signals",
-			ossfChecks: map[string]int{
-				"Contributors": 8,
-				"Code-Review":  9,
-				"CI-Tests":     8,
-			},
-			wantRisk: 0, // 3 OSSF points → low risk
-		},
-		{
-			name: "OSSF provides two signals",
-			ossfChecks: map[string]int{
-				"Contributors": 8,
-				"Code-Review":  7,
-				"CI-Tests":     3, // Low CI-Tests score, no point
-			},
-			wantRisk: 1, // 2 OSSF points → medium risk
-		},
-		{
-			name: "OSSF provides one signal",
-			ossfChecks: map[string]int{
-				"Contributors": 3, // Low
-				"Code-Review":  2, // Low
-				"CI-Tests":     9, // High
-			},
-			wantRisk: 2, // 1 OSSF point → high risk
-		},
-		{
-			name: "OSSF all low scores",
-			ossfChecks: map[string]int{
-				"Contributors": 3,
-				"Code-Review":  2,
-				"CI-Tests":     3,
-			},
-			wantRisk: 2, // No OSSF points → high risk
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			BusFactor:      0,
+			Maintainers:    []string{},
+			CodeReviewRate: 0,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := &models.AnalysisResult{
-				Metadata: models.PackageMetadata{
-					// No direct API data
-					BusFactor:      0,
-					Maintainers:    []string{},
-					CodeReviewRate: 0,
-					HasCI:          false,
-					CIQualityScore: 0,
-					// OSSF data available
-					OSSFChecks: tt.ossfChecks,
-				},
-			}
+	score := analyzer.scoreHealth(result)
 
-			score := analyzer.scoreHealth(result)
-
-			if score.RiskPoints != tt.wantRisk {
-				t.Errorf("scoreHealth() with OSSF fallback: RiskPoints = %d, want %d (evidence: %s)",
-					score.RiskPoints, tt.wantRisk, score.Evidence)
-			}
-			if !score.Verified && len(tt.ossfChecks) > 0 {
-				t.Errorf("scoreHealth() should be verified when OSSF data is available")
-			}
-		})
+	if score.RiskPoints != 2 {
+		t.Errorf("scoreHealth() with no data: RiskPoints = %d, want 2 (evidence: %s)",
+			score.RiskPoints, score.Evidence)
+	}
+	if score.Score != 0 {
+		t.Errorf("scoreHealth() with no data: Score = %d, want 0 (evidence: %s)",
+			score.Score, score.Evidence)
 	}
 }
 

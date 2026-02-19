@@ -11,10 +11,7 @@ import (
 
 // GovernanceMetrics contains governance-related metrics for risk assessment
 type GovernanceMetrics struct {
-	HasSecurityPolicy    bool
-	HasContributing      bool
-	HasCodeOwners        bool
-	HasCodeOfConduct     bool    // CODE_OF_CONDUCT.md indicates community governance
+	HasSecurityPolicy    bool    // SECURITY.md — indicates vulnerability disclosure process
 	AvgIssueResponseDays float64
 	RecentActivityGap    float64 // Days since last activity
 	HasAbandonmentPattern bool
@@ -48,14 +45,10 @@ func (a *Analyzer) analyzeGovernance(result *models.AnalysisResult, repoURL stri
 	metrics := &GovernanceMetrics{Verified: true}
 
 	// Check for security policy in both common locations
+	// SECURITY.md is the only governance doc we check — it indicates a vulnerability
+	// disclosure process, meaning compromises are more likely to be reported.
 	metrics.HasSecurityPolicy = a.checkGovernanceFile(gitClient, repoURL, "SECURITY.md") ||
 		a.checkGovernanceFile(gitClient, repoURL, ".github/SECURITY.md")
-
-	// Check for other governance documentation files
-	metrics.HasContributing = a.checkGovernanceFile(gitClient, repoURL, "CONTRIBUTING.md")
-	metrics.HasCodeOwners = a.checkGovernanceFile(gitClient, repoURL, "CODEOWNERS") ||
-		a.checkGovernanceFile(gitClient, repoURL, ".github/CODEOWNERS")
-	metrics.HasCodeOfConduct = a.checkGovernanceFile(gitClient, repoURL, "CODE_OF_CONDUCT.md")
 
 	// Analyze issue response times (GitHub-specific for now)
 	if gitClient.GetPlatformName() == "GitHub" {
@@ -101,33 +94,24 @@ func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repo
 }
 
 // scoreGovernance: governance documentation and maintainer responsiveness (0-2 pts)
+//
 // Test: Governance risk scoring for supply chain security
-// Justification: Packages without clear governance = unclear maintainership =
-//
-//	higher risk of account takeover going unnoticed. Poor responsiveness
-//	indicates unmaintained packages that could be compromised.
-//	Abandonment followed by sudden activity is a red flag for takeover.
-//	Archived repositories represent permanently unmaintained packages.
-//
+// Justification: Packages without a security policy have no vulnerability disclosure
+//                process — compromises go unreported. Unresponsive maintainers indicate
+//                abandoned packages vulnerable to takeover. Archived repos are permanently
+//                unmaintained.
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+//         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+//         OSSF Scorecard Specification (Security Policy check)
+// Methodology: Check for SECURITY.md, issue response times, abandonment signals
 //
-//	"Towards Measuring Supply Chain Attacks" (NDSS 2020)
-//	OSSF Scorecard Specification (Security Policy check)
-//
-// Methodology: Score based on presence of governance docs (SECURITY.md, CONTRIBUTING.md,
-//
-//	CODEOWNERS, CODE_OF_CONDUCT.md), OSSF Security-Policy check, issue response
-//	times, branch protection, and activity patterns
-//
-// Scoring:
-//
-//	Points are earned from two components:
-//	  Docs component (0-2 pts): 1 pt for any governance doc, 2 pts for 2+ docs
-//	  Process component (0-1 pt): fast issue response OR branch protection enabled
-//	Total 3 points = 0 risk (strong governance)
-//	Total 1-2 points = 1 risk (moderate governance)
-//	Total 0 points = 2 risk (poor governance)
-//	Override: Archived repos and abandoned packages always get 2 risk
+// Scoring (two components):
+//   Security Policy (0-1 pt): SECURITY.md present or OSSF Security-Policy >= 5
+//   Responsiveness (0-1 pt): fast issue response (<=14 days) OR branch protection
+//   Total 2 points = 0 risk (responsive + security policy)
+//   Total 1 point  = 1 risk (partial signals)
+//   Total 0 points = 2 risk (no signals)
+//   Override: Archived repos and abandoned packages (>180 days) always get 2 risk
 func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.CategoryScore {
 	const govSource = " [Source: OSSF Scorecard; Backstabber's Knife Collection (Ohm et al., 2020)]"
 
@@ -188,67 +172,45 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 	evidenceParts := []string{}
 
 	// -----------------------------------------------------------------------
-	// Component 1: Governance Documentation (0-2 points)
-	// 1 point for any governance doc, 2 points for 2+ governance docs.
-	// A security policy is the most important individual document.
+	// Component 1: Security Policy (0-1 point)
+	// SECURITY.md indicates a vulnerability disclosure process — compromises
+	// are more likely to be reported and addressed quickly.
+	// OSSF Security-Policy check is a more authoritative source than file presence.
 	// -----------------------------------------------------------------------
-	docsCount := 0
-	docsList := []string{}
+	securityPolicyPoints := 0
 
-	if govMetrics.HasSecurityPolicy {
-		docsCount++
-		docsList = append(docsList, "SECURITY.md")
-	}
-	if govMetrics.HasContributing {
-		docsCount++
-		docsList = append(docsList, "CONTRIBUTING.md")
-	}
-	if govMetrics.HasCodeOwners {
-		docsCount++
-		docsList = append(docsList, "CODEOWNERS")
-	}
-	if govMetrics.HasCodeOfConduct {
-		docsCount++
-		docsList = append(docsList, "CODE_OF_CONDUCT.md")
-	}
-
-	// OSSF Security-Policy check is a more authoritative source than file presence
-	// If OSSF confirms a security policy (score >= 5/10), count it even if file check missed it
-	if result.Metadata.OSSFChecks != nil {
+	hasPolicy := govMetrics.HasSecurityPolicy
+	if !hasPolicy && result.Metadata.OSSFChecks != nil {
 		if spScore, exists := result.Metadata.OSSFChecks["Security-Policy"]; exists && spScore >= 5 {
-			if !govMetrics.HasSecurityPolicy {
-				docsCount++
-				docsList = append(docsList, "OSSF:Security-Policy")
-			}
+			hasPolicy = true
 		}
 	}
 
-	docsPoints := 0
-	switch {
-	case docsCount >= 2:
-		docsPoints = 2
-		evidenceParts = append(evidenceParts, fmt.Sprintf("Governance docs: %s", strings.Join(docsList, ", ")))
-	case docsCount == 1:
-		docsPoints = 1
-		evidenceParts = append(evidenceParts, fmt.Sprintf("Single governance doc: %s", strings.Join(docsList, ", ")))
-	default:
-		evidenceParts = append(evidenceParts, "No governance documentation found")
+	if hasPolicy {
+		securityPolicyPoints = 1
+		if govMetrics.HasSecurityPolicy {
+			evidenceParts = append(evidenceParts, "Security policy: SECURITY.md")
+		} else {
+			evidenceParts = append(evidenceParts, "Security policy: OSSF confirmed")
+		}
+	} else {
+		evidenceParts = append(evidenceParts, "No security policy found")
 	}
 
 	// -----------------------------------------------------------------------
-	// Component 2: Maintainer Process (0-1 point)
+	// Component 2: Responsiveness (0-1 point)
 	// Fast issue response OR branch protection both indicate active governance.
 	// Either signal earns the point; no data = 0 points (not penalized further).
 	// -----------------------------------------------------------------------
-	processPoints := 0
+	responsivenessPoints := 0
 
 	if govMetrics.AvgIssueResponseDays > 0 && govMetrics.AvgIssueResponseDays <= 14 {
 		// Responsive maintainers (within 2 weeks)
-		processPoints = 1
+		responsivenessPoints = 1
 		evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days", govMetrics.AvgIssueResponseDays))
 	} else if result.Metadata.HasBranchProtection {
 		// Branch protection signals an enforced review/merge process
-		processPoints = 1
+		responsivenessPoints = 1
 		if result.Metadata.RequiredReviewers > 0 {
 			evidenceParts = append(evidenceParts, fmt.Sprintf("Branch protection with %d required reviewer(s)", result.Metadata.RequiredReviewers))
 		} else {
@@ -266,17 +228,17 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 
 	// -----------------------------------------------------------------------
 	// Final risk calculation
-	// Total possible: 3 points (2 docs + 1 process)
-	// 3 pts = 0 risk (strong governance)
-	// 1-2 pts = 1 risk (moderate governance)
-	// 0 pts = 2 risk (poor governance)
+	// Total possible: 2 points (1 security policy + 1 responsiveness)
+	// 2 pts = 0 risk (responsive + security policy)
+	// 1 pt  = 1 risk (partial signals)
+	// 0 pts = 2 risk (no signals)
 	// Abandonment/archive are handled as early returns above.
 	// -----------------------------------------------------------------------
-	totalPoints := docsPoints + processPoints
+	totalPoints := securityPolicyPoints + responsivenessPoints
 
 	riskPoints := 2
 	switch {
-	case totalPoints >= 3:
+	case totalPoints >= 2:
 		riskPoints = 0
 	case totalPoints >= 1:
 		riskPoints = 1
@@ -286,11 +248,11 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 	var description string
 	switch {
 	case riskPoints == 0:
-		description = "Strong governance: comprehensive documentation and active maintenance process"
+		description = "Strong governance: security policy and responsive maintenance"
 	case riskPoints == 1:
-		description = "Moderate governance: some documentation or maintenance signals present"
+		description = "Partial governance: security policy or responsive maintenance present"
 	default:
-		description = "Poor governance: no documentation or maintenance signals"
+		description = "Poor governance: no security policy or responsiveness signals"
 	}
 
 	return models.CategoryScore{

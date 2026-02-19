@@ -231,6 +231,9 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 			{"Dependency Sprawl", result.SupplyChainScore.CategoryScores.DependencySprawl},
 			{"Provenance", result.SupplyChainScore.CategoryScores.Provenance},
 			{"Health", result.SupplyChainScore.CategoryScores.Health},
+			{"Governance", result.SupplyChainScore.CategoryScores.Governance},
+			{"Release Security", result.SupplyChainScore.CategoryScores.ReleaseSecurity},
+			{"Package Maturity", result.SupplyChainScore.CategoryScores.PackageMaturity},
 		}
 
 		for _, cat := range categories {
@@ -311,39 +314,6 @@ func (r *Reporter) printMarkdownPackageAIAnalysis(w io.Writer, aiAnalysis *model
 
 			if pattern.MitigationAdvice != "" && r.config.Verbose {
 				_, _ = fmt.Fprintf(w, "  - *Mitigation:* %s\n", pattern.MitigationAdvice)
-			}
-			_, _ = fmt.Fprintln(w)
-		}
-	}
-
-	// Semantic Findings
-	if len(aiAnalysis.SemanticFindings) > 0 && r.config.Verbose {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "#### 🤖 AI-Detected Code Patterns")
-		_, _ = fmt.Fprintln(w)
-
-		for _, finding := range aiAnalysis.SemanticFindings {
-			_, _ = fmt.Fprintf(w, "- **[%s]** %s\n", finding.Severity, finding.Type)
-			if finding.Description != "" {
-				_, _ = fmt.Fprintf(w, "  - *Description:* %s\n", finding.Description)
-			}
-			confidencePct := finding.Confidence * 100
-			_, _ = fmt.Fprintf(w, "  - *Confidence:* %.0f%%\n", confidencePct)
-
-			if finding.FilePath != "" {
-				location := finding.FilePath
-				if finding.LineNumber > 0 {
-					location = fmt.Sprintf("%s:%d", location, finding.LineNumber)
-				}
-				_, _ = fmt.Fprintf(w, "  - *Location:* `%s`\n", location)
-			}
-
-			if finding.Evidence != "" {
-				_, _ = fmt.Fprintf(w, "  - *Evidence:* %s\n", finding.Evidence)
-			}
-
-			if finding.RiskExplanation != "" {
-				_, _ = fmt.Fprintf(w, "  - *Risk:* %s\n", finding.RiskExplanation)
 			}
 			_, _ = fmt.Fprintln(w)
 		}

@@ -201,18 +201,6 @@ func TestAttackMatcher_ErrorHandling(t *testing.T) {
 // Methodology: Build prompts with incomplete data
 // Result: Should create valid prompts with available data
 func TestPrompts_ErrorHandling(t *testing.T) {
-	t.Run("semantic analysis with minimal metadata", func(t *testing.T) {
-		metadata := models.PackageMetadata{} // All fields default/empty
-		findings := []models.Finding{}        // Empty findings
-
-		prompt := NewSemanticAnalysisPrompt("test-pkg", models.EcosystemNPM, metadata, findings)
-		assert.NotNil(t, prompt, "Should create prompt with minimal data")
-
-		system, user := prompt.Render()
-		assert.NotEmpty(t, system, "Should have system prompt")
-		assert.NotEmpty(t, user, "Should have user prompt")
-	})
-
 	t.Run("executive explanation with missing scores", func(t *testing.T) {
 		result := models.AnalysisResult{
 			RiskLevel:        "MEDIUM",
@@ -223,13 +211,6 @@ func TestPrompts_ErrorHandling(t *testing.T) {
 		assert.NotNil(t, prompt, "Should create prompt without supply chain score")
 	})
 
-	t.Run("code pattern analysis with empty script", func(t *testing.T) {
-		prompt := NewCodePatternAnalysisPrompt("postinstall", "")
-		assert.NotNil(t, prompt, "Should create prompt with empty script")
-
-		_, user := prompt.Render()
-		assert.NotEmpty(t, user, "Should have user prompt")
-	})
 }
 
 // Test: Confidence calculation edge cases

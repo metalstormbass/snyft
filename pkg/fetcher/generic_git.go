@@ -128,24 +128,11 @@ func genericRawURLs(repoURL, filePath string) []string {
 // extractOwnerRepo attempts to extract the owner and repository name from a
 // repository URL path (e.g. "https://codeberg.org/owner/repo" → "owner", "repo").
 func extractOwnerRepo(baseURL string) (owner, repo string) {
-	// Strip protocol
-	u := baseURL
-	for _, prefix := range []string{"https://", "http://", "git://"} {
-		if strings.HasPrefix(u, prefix) {
-			u = u[len(prefix):]
-			break
-		}
-	}
-	// u is now "host/owner/repo/..."
-	parts := strings.SplitN(u, "/", 3)
-	if len(parts) < 3 {
+	owner, repo, err := ParseRepoURL(baseURL)
+	if err != nil {
 		return "", ""
 	}
-	// parts[0] = host, parts[1] = owner, parts[2] = repo (may have more segments)
-	ownerPart := parts[1]
-	repoPart := strings.SplitN(parts[2], "/", 2)[0]
-	repoPart = strings.TrimSuffix(repoPart, ".git")
-	return ownerPart, repoPart
+	return owner, repo
 }
 
 // fetchText performs an HTTP GET and returns the response body as a string.
@@ -205,62 +192,64 @@ func (c *GenericGitClient) DetectCISystems(repoURL string) ([]string, error) {
 }
 
 // --- Stub implementations for the remainder of the GitPlatformClient interface ---
-// These return safe zero values so that the generic client can be used wherever a
-// GitPlatformClient is expected without panicking.
+// These return ErrDataUnavailable so that scoring functions can distinguish between
+// "data checked and found absent" (nil error) and "data not available on this platform"
+// (ErrDataUnavailable). The latter should be scored as "unknown" (moderate risk)
+// rather than "worst case" (maximum risk).
 
-// CheckGitTag always returns (false, "", nil) — tag lookup requires a platform API.
+// CheckGitTag returns ErrDataUnavailable — tag lookup requires a platform API.
 func (c *GenericGitClient) CheckGitTag(repoURL, version string) (bool, string, error) {
-	return false, "", nil
+	return false, "", ErrDataUnavailable
 }
 
-// HasAutomatedReleases always returns (false, nil).
+// HasAutomatedReleases returns ErrDataUnavailable — release detection requires a platform API.
 func (c *GenericGitClient) HasAutomatedReleases(repoURL string) (bool, error) {
-	return false, nil
+	return false, ErrDataUnavailable
 }
 
-// GetReleaseHistory always returns an empty slice.
+// GetReleaseHistory returns ErrDataUnavailable — release history requires a platform API.
 func (c *GenericGitClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRelease, error) {
-	return []GitHubRelease{}, nil
+	return nil, ErrDataUnavailable
 }
 
-// GetCommitActivity always returns an empty slice.
+// GetCommitActivity returns ErrDataUnavailable — commit history requires a platform API.
 func (c *GenericGitClient) GetCommitActivity(repoURL string, since time.Time) ([]GitHubCommit, error) {
-	return []GitHubCommit{}, nil
+	return nil, ErrDataUnavailable
 }
 
-// GetProvenanceInfo always returns an empty ProvenanceInfo.
+// GetProvenanceInfo returns ErrDataUnavailable — provenance checks require a platform API.
 func (c *GenericGitClient) GetProvenanceInfo(repoURL string) (*models.ProvenanceInfo, error) {
-	return &models.ProvenanceInfo{}, nil
+	return nil, ErrDataUnavailable
 }
 
-// GetCommitAuthors always returns an empty CommitAuthorStats.
+// GetCommitAuthors returns ErrDataUnavailable — commit authorship analysis requires a platform API.
 func (c *GenericGitClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, error) {
-	return &CommitAuthorStats{}, nil
+	return nil, ErrDataUnavailable
 }
 
-// CheckSignedCommits always returns (false, 0, nil).
+// CheckSignedCommits returns ErrDataUnavailable — signature verification requires a platform API.
 func (c *GenericGitClient) CheckSignedCommits(repoURL string) (bool, int, error) {
-	return false, 0, nil
+	return false, 0, ErrDataUnavailable
 }
 
-// CheckSignedReleases always returns (false, nil).
+// CheckSignedReleases returns ErrDataUnavailable — release signature checks require a platform API.
 func (c *GenericGitClient) CheckSignedReleases(repoURL string) (bool, error) {
-	return false, nil
+	return false, ErrDataUnavailable
 }
 
-// GetCommitStats always returns an empty CommitStats.
+// GetCommitStats returns ErrDataUnavailable — commit statistics require a platform API.
 func (c *GenericGitClient) GetCommitStats(repoURL string) (*CommitStats, error) {
-	return &CommitStats{}, nil
+	return nil, ErrDataUnavailable
 }
 
-// GetPullRequestStats always returns an empty PRStats.
+// GetPullRequestStats returns ErrDataUnavailable — PR statistics require a platform API.
 func (c *GenericGitClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
-	return &PRStats{}, nil
+	return nil, ErrDataUnavailable
 }
 
-// AnalyzeCIQuality always returns an empty CIQuality.
+// AnalyzeCIQuality returns ErrDataUnavailable — CI quality analysis requires a platform API.
 func (c *GenericGitClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CIQuality, error) {
-	return &CIQuality{}, nil
+	return nil, ErrDataUnavailable
 }
 
 // CheckIfOrganization always returns (false, "").

@@ -439,7 +439,15 @@ func TestScoreProvenance_OSSFAtThreshold(t *testing.T) {
 // Methodology: Set only HasCI=true with no other provenance signals;
 //              call scoreProvenance to check CI is counted as weak indicator
 // Result: 1 risk point (partial provenance from CI baseline)
-func TestScoreProvenance_CIAsWeakProvenance(t *testing.T) {
+// Test: CI alone does not count as provenance
+// Justification: CI presence indicates automated builds but does NOT provide any
+//                cryptographic or verifiable provenance evidence. Provenance requires
+//                attestations (SLSA, Sigstore, npm provenance) or signed releases.
+//                CI without attestations leaves build integrity unverifiable.
+// Source: SLSA specification v1.0 — CI is not a provenance level
+// Methodology: Set HasCI=true with no attestation signals, verify no provenance credit
+// Result: 2 risk points (no provenance evidence despite CI)
+func TestScoreProvenance_CIAloneIsNotProvenance(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
@@ -449,16 +457,16 @@ func TestScoreProvenance_CIAsWeakProvenance(t *testing.T) {
 
 	score := a.scoreProvenance(result)
 
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point with CI pipeline, got %d", score.RiskPoints)
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points with CI only (no attestations), got %d", score.RiskPoints)
 	}
 
-	if score.Score != 1 {
-		t.Errorf("Expected score 1 with CI pipeline, got %d", score.Score)
+	if score.Score != 0 {
+		t.Errorf("Expected score 0 with CI only (no attestations), got %d", score.Score)
 	}
 
-	if score.Description != "Partial provenance" {
-		t.Errorf("Expected 'Partial provenance', got '%s'", score.Description)
+	if score.Description != "No provenance evidence" {
+		t.Errorf("Expected 'No provenance evidence', got '%s'", score.Description)
 	}
 }
 

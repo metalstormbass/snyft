@@ -117,148 +117,6 @@ Provide clear, structured analysis with:
 
 Remember: You predict compromise likelihood. You don't track known CVEs.`
 
-// NewSemanticAnalysisPrompt creates a prompt for semantic analysis of package behavior
-// This is used to analyze package metadata, repository activity, and detect risk patterns
-func NewSemanticAnalysisPrompt(packageName string, ecosystem models.Ecosystem, metadata models.PackageMetadata, findings []models.Finding) *PromptTemplate {
-	// Build findings summary
-	findingsSummary := ""
-	if len(findings) > 0 {
-		findingsList := []string{}
-		for _, f := range findings {
-			findingsList = append(findingsList, fmt.Sprintf("- [%s] %s: %s", f.Severity, f.Category, f.Description))
-		}
-		findingsSummary = strings.Join(findingsList, "\n")
-	} else {
-		findingsSummary = "No findings detected"
-	}
-
-	// Build metadata summary
-	metadataSummary := fmt.Sprintf(`Package: %s
-Ecosystem: %s
-Maintainers: %d
-Repository Stars: %d
-Repository Forks: %d
-Last Commit: %s
-Has CI: %v
-Has Install Scripts: %v
-Has SLSA Attestation: %v
-Has Sigstore Signature: %v
-Bus Factor: %d
-Code Review Rate: %.0f%%
-Branch Protection: %v
-Required Reviewers: %d`,
-		packageName,
-		ecosystem,
-		len(metadata.Maintainers),
-		metadata.RepoStars,
-		metadata.RepoForks,
-		metadata.RepoLastCommit.Format("2006-01-02"),
-		metadata.HasCI,
-		metadata.HasInstallScripts,
-		metadata.HasSLSAAttestation,
-		metadata.HasSigstoreSignature,
-		metadata.BusFactor,
-		metadata.CodeReviewRate,
-		metadata.HasBranchProtection,
-		metadata.RequiredReviewers,
-	)
-
-	return &PromptTemplate{
-		SystemPrompt: SemanticAnalysisSystemPrompt,
-		UserPrompt: `Analyze the following package for supply chain compromise risk:
-
-## Package Metadata
-
-{{metadata}}
-
-## Detected Findings
-
-{{findings}}
-
-## Analysis Request
-
-Based on the metadata and findings above, provide a semantic analysis of this package's supply chain risk:
-
-1. **Risk Pattern Recognition**: What patterns suggest this package could be compromised?
-2. **Maintainer Control Assessment**: How vulnerable is the maintainer control to account takeover?
-3. **Release Integrity**: Can we trust the published artifacts match the source code?
-4. **Community Health**: Is this package actively maintained with distributed development?
-5. **Attack Surface**: What vectors could an attacker use to inject malicious code?
-
-For each risk identified, cite the relevant academic research (Ohm et al. 2020, SLSA framework, OSSF Scorecard, etc.).
-
-Focus on **compromise likelihood**, not code vulnerabilities or known CVEs.`,
-		Parameters: map[string]string{
-			"metadata": metadataSummary,
-			"findings": findingsSummary,
-		},
-		Temperature: 0.3, // Lower temperature for analytical tasks
-		MaxTokens:   2000,
-	}
-}
-
-// NewCodePatternAnalysisPrompt creates a prompt for analyzing suspicious code patterns
-// in install scripts (npm postinstall, Python setup.py, Java pom.xml)
-func NewCodePatternAnalysisPrompt(scriptType string, scriptContent string) *PromptTemplate {
-	return &PromptTemplate{
-		SystemPrompt: SemanticAnalysisSystemPrompt,
-		UserPrompt: `Analyze the following install-time script for supply chain risk patterns:
-
-## Script Type: {{scriptType}}
-
-## Script Content
-
-` + "```" + `
-{{scriptContent}}
-` + "```" + `
-
-## Analysis Request
-
-Analyze this script for patterns that increase supply chain compromise risk:
-
-1. **Network Access Patterns**: Does the script download code from external sources during installation?
-   - Risk: Downloaded code bypasses package registry audits
-   - Reference: "Backstabber's Knife Collection" - download-and-execute is a common attack pattern
-
-2. **File System Operations**: Does the script modify files outside the package directory?
-   - Risk: Global modifications can persist malicious code
-   - Reference: SLSA Build Level 1 - builds should be hermetic
-
-3. **Privilege Escalation**: Does the script attempt to gain elevated privileges (sudo, admin)?
-   - Risk: Root access enables system-wide compromise
-   - Reference: npm package "crossenv" attack (2017) used privilege escalation
-
-4. **Obfuscation Techniques**: Is the code deliberately obfuscated or hard to audit?
-   - Risk: Malicious actors hide intent through obfuscation
-   - Reference: "event-stream" attack (2018) used obfuscated payload
-
-5. **Environment Variable Access**: Does the script read sensitive environment variables?
-   - Risk: Credential theft during installation
-   - Reference: Multiple npm packages caught exfiltrating AWS credentials
-
-6. **Child Process Spawning**: Does the script spawn subprocesses that could hide malicious behavior?
-   - Risk: Process injection and sandbox escape
-   - Reference: "flatmap-stream" attack used child processes
-
-**Output Format:**
-
-For each pattern found, provide:
-- Pattern name (e.g., "Network Download", "File System Modification")
-- Specific code snippet demonstrating the pattern
-- Risk level (HIGH/MEDIUM/LOW)
-- Academic justification (cite research or documented attacks)
-- Why this increases compromise likelihood (not why it's a code vulnerability)
-
-If no risky patterns are found, explain why the script appears benign.`,
-		Parameters: map[string]string{
-			"scriptType":     scriptType,
-			"scriptContent": scriptContent,
-		},
-		Temperature: 0.2, // Very low temperature for code analysis
-		MaxTokens:   1500,
-	}
-}
-
 // ============================================================================
 // ATTACK PATTERN COMPARISON PROMPTS
 // ============================================================================
@@ -784,8 +642,6 @@ func NewCustomPrompt(systemPrompt, userPrompt string, parameters map[string]stri
 type PromptType string
 
 const (
-	PromptTypeSemanticAnalysis     PromptType = "semantic_analysis"
-	PromptTypeCodePatternAnalysis  PromptType = "code_pattern_analysis"
 	PromptTypeAttackPatternMatch   PromptType = "attack_pattern_match"
 	PromptTypeExecutiveExplanation PromptType = "executive_explanation"
 	PromptTypePackageComparison    PromptType = "package_comparison"
@@ -795,8 +651,6 @@ const (
 // GetPromptDescription returns a human-readable description of the prompt type
 func GetPromptDescription(promptType PromptType) string {
 	descriptions := map[PromptType]string{
-		PromptTypeSemanticAnalysis:     "Analyzes package metadata and behavior to identify supply chain risk patterns",
-		PromptTypeCodePatternAnalysis:  "Examines install-time scripts for dangerous patterns and behaviors",
 		PromptTypeAttackPatternMatch:   "Compares observed behaviors to documented supply chain attack patterns",
 		PromptTypeExecutiveExplanation: "Generates stakeholder-friendly explanations of risk analysis results",
 		PromptTypePackageComparison:    "Compares multiple packages' supply chain security postures",

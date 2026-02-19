@@ -447,63 +447,6 @@ func (r *Reporter) printPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnal
 		}
 	}
 
-	// Semantic Findings
-	if len(aiAnalysis.SemanticFindings) > 0 && r.config.Verbose {
-		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-		_, _ = fmt.Fprintf(w, "%s│%s  %s🤖 AI-Detected Code Patterns:%s\n",
-			borderColor, ColorReset,
-			ColorBold+ColorCyan, ColorReset)
-
-		for i, finding := range aiAnalysis.SemanticFindings {
-			sevColor := r.getSeverityColor(finding.Severity)
-			_, _ = fmt.Fprintf(w, "%s│%s    %s[%s]%s %s\n",
-				borderColor, ColorReset,
-				sevColor, finding.Severity, ColorReset,
-				finding.Type)
-
-			if finding.Description != "" {
-				_, _ = fmt.Fprintf(w, "%s│%s       %s%s%s\n",
-					borderColor, ColorReset,
-					ColorDim, finding.Description, ColorReset)
-			}
-
-			// Show confidence
-			confidencePct := finding.Confidence * 100
-			_, _ = fmt.Fprintf(w, "%s│%s       %sConfidence: %.0f%%%s\n",
-				borderColor, ColorReset,
-				ColorDim, confidencePct, ColorReset)
-
-			// Show file location if available
-			if finding.FilePath != "" {
-				location := finding.FilePath
-				if finding.LineNumber > 0 {
-					location = fmt.Sprintf("%s:%d", location, finding.LineNumber)
-				}
-				_, _ = fmt.Fprintf(w, "%s│%s       %sLocation: %s%s\n",
-					borderColor, ColorReset,
-					ColorDim, location, ColorReset)
-			}
-
-			// Show evidence
-			if finding.Evidence != "" {
-				_, _ = fmt.Fprintf(w, "%s│%s       %sEvidence: %s%s\n",
-					borderColor, ColorReset,
-					ColorDim, finding.Evidence, ColorReset)
-			}
-
-			// Show risk explanation
-			if finding.RiskExplanation != "" {
-				_, _ = fmt.Fprintf(w, "%s│%s       %sRisk: %s%s\n",
-					borderColor, ColorReset,
-					ColorDim+ColorRed, finding.RiskExplanation, ColorReset)
-			}
-
-			if i < len(aiAnalysis.SemanticFindings)-1 {
-				_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-			}
-		}
-	}
-
 	// AI Analysis Notes
 	if aiAnalysis.AnalysisNotes != "" && r.config.Verbose {
 		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)

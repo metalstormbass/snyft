@@ -1,6 +1,7 @@
 package fetcher
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -69,6 +70,55 @@ func normalizeNPMRepoURL(raw string) string {
 
 	// Fallback: return as-is
 	return raw
+}
+
+// ParseRepoURL extracts the owner and repository name from a repository URL.
+// It handles all common protocol variants:
+//   - https://github.com/owner/repo
+//   - http://github.com/owner/repo
+//   - git://github.com/owner/repo.git
+//   - git+https://github.com/owner/repo.git
+//   - ssh://git@github.com/owner/repo.git
+//   - git@github.com:owner/repo.git
+//
+// The .git suffix is stripped from the repository name if present.
+// Returns an error if the URL does not contain enough path segments to extract
+// both an owner and a repository name.
+func ParseRepoURL(rawURL string) (owner, repo string, err error) {
+	u := rawURL
+
+	// Strip protocol prefixes (order matters: longer prefixes first)
+	for _, prefix := range []string{"git+https://", "git+http://", "https://", "http://", "git://", "ssh://"} {
+		if strings.HasPrefix(u, prefix) {
+			u = u[len(prefix):]
+			break
+		}
+	}
+
+	// Strip git@ prefix and convert colon to slash (git@host:owner/repo → host/owner/repo)
+	if strings.HasPrefix(u, "git@") {
+		u = u[len("git@"):]
+		// Replace the first colon with a slash (git@host:owner/repo)
+		if colonIdx := strings.Index(u, ":"); colonIdx >= 0 {
+			u = u[:colonIdx] + "/" + u[colonIdx+1:]
+		}
+	}
+
+	// u is now "host/owner/repo/..." — split into segments
+	parts := strings.SplitN(u, "/", 4)
+	if len(parts) < 3 {
+		return "", "", fmt.Errorf("malformed repository URL %q: expected host/owner/repo", rawURL)
+	}
+
+	owner = parts[1]
+	repo = strings.SplitN(parts[2], "/", 2)[0]
+	repo = strings.TrimSuffix(repo, ".git")
+
+	if owner == "" || repo == "" {
+		return "", "", fmt.Errorf("malformed repository URL %q: empty owner or repo", rawURL)
+	}
+
+	return owner, repo, nil
 }
 
 // isSourceRepoHost returns true if the URL contains a known source code hosting domain.
