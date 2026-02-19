@@ -739,7 +739,7 @@ func NewReportSummaryPrompt(results []models.AnalysisResult, stats ReportStats) 
 	var sb strings.Builder
 
 	// Report overview
-	sb.WriteString(fmt.Sprintf("## Project Scan Overview\n\n"))
+	sb.WriteString("## Project Scan Overview\n\n")
 	sb.WriteString(fmt.Sprintf("Total Packages: %d\n", stats.TotalPackages))
 	sb.WriteString(fmt.Sprintf("HIGH Risk: %d (%.1f%%)\n", stats.HighRisk, float64(stats.HighRisk)/float64(max(stats.TotalPackages, 1))*100))
 	sb.WriteString(fmt.Sprintf("MEDIUM Risk: %d (%.1f%%)\n", stats.MediumRisk, float64(stats.MediumRisk)/float64(max(stats.TotalPackages, 1))*100))
