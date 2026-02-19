@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -96,7 +97,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Create reporter – enable progress bar for all formats.
 	// For non-text formats (or file output), route the animated progress to stderr
 	// so it doesn't corrupt the structured output on stdout.
-	var progressWriter *os.File
+	var progressWriter io.Writer
 	if format != report.FormatText || outputFile != "" {
 		progressWriter = os.Stderr
 	}
