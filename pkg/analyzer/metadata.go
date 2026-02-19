@@ -179,11 +179,14 @@ func (a *Analyzer) analyzeDependencySprawl(result *models.AnalysisResult, dep mo
 		}
 
 	case models.EcosystemPyPI:
-		// Look for Pipfile.lock first, then fall back to requirements.txt
+		// Look for Pipfile.lock first, then poetry.lock, then fall back to requirements.txt
 		lockfilePath := filepath.Join(dir, "Pipfile.lock")
 		metrics, err = parser.CountPythonDependencies(lockfilePath)
 		if err != nil {
-			// Try requirements.txt
+			lockfilePath = filepath.Join(dir, "poetry.lock")
+			metrics, err = parser.CountPythonDependencies(lockfilePath)
+		}
+		if err != nil {
 			lockfilePath = filepath.Join(dir, "requirements.txt")
 			metrics, err = parser.CountPythonDependencies(lockfilePath)
 		}
