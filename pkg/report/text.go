@@ -137,6 +137,10 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 
 	// Summary box
 	_, _ = fmt.Fprintf(w, "%s  Total Packages Scanned:%s %d\n", ColorBold, ColorReset, r.stats.TotalPackages)
+	if r.stats.DirectDeps > 0 || r.stats.TransitiveDeps > 0 {
+		_, _ = fmt.Fprintf(w, "%s  Direct Dependencies:%s    %d\n", ColorBold, ColorReset, r.stats.DirectDeps)
+		_, _ = fmt.Fprintf(w, "%s  Transitive Dependencies:%s %d\n", ColorBold, ColorReset, r.stats.TransitiveDeps)
+	}
 	_, _ = fmt.Fprintf(w, "%s  Manifest Files Found:%s   %d\n", ColorBold, ColorReset, r.stats.ManifestFiles)
 	_, _ = fmt.Fprintf(w, "%s  Scan Path:%s             %s\n", ColorBold, ColorReset, r.stats.ScannedPath)
 	_, _ = fmt.Fprintln(w)
@@ -311,7 +315,12 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 	riskColor := r.getRiskColor(result.RiskLevel)
 	riskIcon := r.getRiskIcon(result.RiskLevel)
 
-	_, _ = fmt.Fprintf(w, "%s%s┌%s Package: %s%s@%s%s (%s)\n",
+	transitiveLabel := ""
+	if result.Dependency.IsTransitive {
+		transitiveLabel = fmt.Sprintf(" %s(transitive)%s", ColorDim, ColorReset)
+	}
+
+	_, _ = fmt.Fprintf(w, "%s%s┌%s Package: %s%s@%s%s (%s)%s\n",
 		riskColor,
 		riskIcon,
 		strings.Repeat("─", 70),
@@ -319,7 +328,8 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		result.Dependency.Name,
 		result.Dependency.Version,
 		ColorReset,
-		result.Dependency.Ecosystem)
+		result.Dependency.Ecosystem,
+		transitiveLabel)
 
 	_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
 

@@ -84,6 +84,14 @@ func parsePackageLockJSON(path string) ([]models.Dependency, error) {
 		return nil, fmt.Errorf("failed to parse package-lock.json: %w", err)
 	}
 
+	// Build set of direct dependency names from root package
+	directDeps := make(map[string]bool)
+	if rootPkg, hasRoot := lockfile.Packages[""]; hasRoot {
+		for depName := range rootPkg.Dependencies {
+			directDeps[depName] = true
+		}
+	}
+
 	var deps []models.Dependency
 
 	for pkgPath, pkg := range lockfile.Packages {
@@ -95,11 +103,20 @@ func parsePackageLockJSON(path string) ([]models.Dependency, error) {
 		// Extract package name from path (e.g., "node_modules/express" -> "express")
 		name := strings.TrimPrefix(pkgPath, "node_modules/")
 
+		// Determine if this is a transitive dependency:
+		// 1. Nested node_modules paths (e.g., "node_modules/foo/node_modules/bar") are always transitive
+		// 2. Top-level packages not in root's dependencies are transitive
+		isTransitive := true
+		if !strings.Contains(name, "/node_modules/") && directDeps[name] {
+			isTransitive = false
+		}
+
 		deps = append(deps, models.Dependency{
-			Name:      name,
-			Version:   pkg.Version,
-			Ecosystem: models.EcosystemNPM,
-			Source:    path,
+			Name:         name,
+			Version:      pkg.Version,
+			Ecosystem:    models.EcosystemNPM,
+			Source:       path,
+			IsTransitive: isTransitive,
 		})
 	}
 

@@ -321,6 +321,99 @@ type PipfileLockPackage struct {
 	Version string `json:"version"`
 }
 
+// parsePipfileLock parses a Pipfile.lock and returns individual dependencies,
+// tagging each as direct or transitive by cross-referencing the companion Pipfile.
+func parsePipfileLock(path string) ([]models.Dependency, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Pipfile.lock: %w", err)
+	}
+
+	var lockfile PipfileLock
+	if err := json.Unmarshal(data, &lockfile); err != nil {
+		return nil, fmt.Errorf("failed to parse Pipfile.lock: %w", err)
+	}
+
+	// Try to read companion Pipfile to determine which deps are direct
+	directDeps := make(map[string]bool)
+	hasPipfile := false
+	pipfilePath := filepath.Join(filepath.Dir(path), "Pipfile")
+	if pipfileData, readErr := os.ReadFile(pipfilePath); readErr == nil {
+		hasPipfile = true
+		lines := strings.Split(string(pipfileData), "\n")
+		inPackages := false
+		inDevPackages := false
+
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "[packages]" {
+				inPackages = true
+				inDevPackages = false
+				continue
+			}
+			if line == "[dev-packages]" {
+				inDevPackages = true
+				inPackages = false
+				continue
+			}
+			if strings.HasPrefix(line, "[") {
+				inPackages = false
+				inDevPackages = false
+				continue
+			}
+			if (inPackages || inDevPackages) && strings.Contains(line, "=") {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					name := strings.TrimSpace(parts[0])
+					// Python package names are case-insensitive; normalize to lowercase
+					directDeps[strings.ToLower(name)] = true
+				}
+			}
+		}
+	}
+
+	var deps []models.Dependency
+
+	// Process default (production) dependencies
+	for name, pkg := range lockfile.Default {
+		version := strings.TrimPrefix(pkg.Version, "==")
+		isTransitive := false
+		if hasPipfile {
+			// Case-insensitive match against Pipfile direct deps
+			if !directDeps[strings.ToLower(name)] {
+				isTransitive = true
+			}
+		}
+		deps = append(deps, models.Dependency{
+			Name:         name,
+			Version:      version,
+			Ecosystem:    models.EcosystemPyPI,
+			Source:       path,
+			IsTransitive: isTransitive,
+		})
+	}
+
+	// Process develop dependencies
+	for name, pkg := range lockfile.Develop {
+		version := strings.TrimPrefix(pkg.Version, "==")
+		isTransitive := false
+		if hasPipfile {
+			if !directDeps[strings.ToLower(name)] {
+				isTransitive = true
+			}
+		}
+		deps = append(deps, models.Dependency{
+			Name:         name,
+			Version:      version,
+			Ecosystem:    models.EcosystemPyPI,
+			Source:       path,
+			IsTransitive: isTransitive,
+		})
+	}
+
+	return deps, nil
+}
+
 // CountPythonDependencies analyzes Python dependency files and counts dependencies
 func CountPythonDependencies(manifestPath string) (*models.DependencyMetrics, error) {
 	filename := filepath.Base(strings.ToLower(manifestPath))

@@ -31,6 +31,10 @@ func (r *Reporter) generateMarkdown() error {
 	_, _ = fmt.Fprintln(w, "### Scan Overview")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintf(w, "- **Total Packages Scanned:** %d\n", r.stats.TotalPackages)
+	if r.stats.DirectDeps > 0 || r.stats.TransitiveDeps > 0 {
+		_, _ = fmt.Fprintf(w, "- **Direct Dependencies:** %d\n", r.stats.DirectDeps)
+		_, _ = fmt.Fprintf(w, "- **Transitive Dependencies:** %d\n", r.stats.TransitiveDeps)
+	}
 	_, _ = fmt.Fprintf(w, "- **Manifest Files Found:** %d\n", r.stats.ManifestFiles)
 	_, _ = fmt.Fprintf(w, "- **Scan Path:** `%s`\n", r.stats.ScannedPath)
 	_, _ = fmt.Fprintln(w)
@@ -191,11 +195,17 @@ func (r *Reporter) printMarkdownAIExecutiveSummary(w io.Writer) {
 func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResult) {
 	riskIcon := r.getRiskIcon(result.RiskLevel)
 
-	_, _ = fmt.Fprintf(w, "### %s %s@%s (%s)\n",
+	transitiveLabel := ""
+	if result.Dependency.IsTransitive {
+		transitiveLabel = " *(transitive)*"
+	}
+
+	_, _ = fmt.Fprintf(w, "### %s %s@%s (%s)%s\n",
 		riskIcon,
 		result.Dependency.Name,
 		result.Dependency.Version,
-		result.Dependency.Ecosystem)
+		result.Dependency.Ecosystem,
+		transitiveLabel)
 	_, _ = fmt.Fprintln(w)
 
 	_, _ = fmt.Fprintf(w, "**Risk Level:** %s\n", result.RiskLevel)

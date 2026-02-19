@@ -55,8 +55,10 @@ func ParseManifest(path string) ([]models.Dependency, error) {
 	// Python
 	case "requirements.txt":
 		return parseRequirementsTxt(path)
-	case "Pipfile", "Pipfile.lock":
+	case "Pipfile":
 		return parsePipfile(path)
+	case "Pipfile.lock":
+		return parsePipfileLock(path)
 	case "pyproject.toml":
 		return parsePyprojectToml(path)
 	case "poetry.lock":
