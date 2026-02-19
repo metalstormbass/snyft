@@ -36,7 +36,7 @@ make build
 
 ## Understanding the Scoring System
 
-Snyft uses a **20-point risk scoring system** across 10 categories. Each category scores 0-2 risk points (lower is better):
+Snyft uses a **22-point risk scoring system** across 11 categories. Each category scores 0-2 risk points (lower is better):
 
 | Category | What It Assesses |
 |----------|-----------------|
@@ -48,8 +48,9 @@ Snyft uses a **20-point risk scoring system** across 10 categories. Each categor
 | **6. Provenance** | Build integrity (source verification, SLSA/Sigstore attestations) |
 | **7. Health** | Code review barriers (bus factor, review oversight) |
 | **8. Governance** | Maintainer responsiveness (SECURITY.md, issue response times) |
-| **9. Release Security** | Publishing pipeline integrity (CI/CD, branch protection, signed tags) |
+| **9. Release Security** | Publishing pipeline integrity (branch protection, signed tags) |
 | **10. Package Maturity** | Vetting and staleness (package age, update cadence) |
+| **11. CI Pipeline Security** | Build environment risks (unpinned actions, script injection, dangerous triggers) |
 
 ### Risk Levels
 
@@ -57,7 +58,7 @@ Snyft uses a **20-point risk scoring system** across 10 categories. Each categor
 |-------------|------------|---------|
 | **0-8** | LOW | Minimal compromise risk detected |
 | **9-11** | MEDIUM | Concerning signals warrant attention |
-| **12-20** | HIGH | Critical issues, high compromise likelihood |
+| **12+** | HIGH | Critical issues, high compromise likelihood |
 
 ## Output Formats
 

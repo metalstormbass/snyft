@@ -4,7 +4,7 @@
   <img src="assets/snyft.png" alt="Snyft Logo" width="400"/>
 </p>
 
-**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a **20-point risk scoring system** across 10 categories to identify potential compromise risks.
+**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a **22-point risk scoring system** across 11 categories to identify potential compromise risks.
 
 Unlike vulnerability scanners focused on CVEs, Snyft assesses the **likelihood of supply chain compromise** by analyzing repository metadata, build practices, source code availability, and security signals.
 
@@ -55,7 +55,7 @@ See [docs/AI_FEATURES.md](docs/AI_FEATURES.md) for full AI configuration.
 
 ## Supply Chain Scoring System
 
-Each dependency is scored across 10 categories (0-2 risk points each):
+Each dependency is scored across 11 categories (0-2 risk points each):
 
 | Category | Risk Indicators |
 |----------|----------------|
@@ -67,13 +67,14 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 | **6. Provenance** | No source verification, no SLSA/Sigstore attestations |
 | **7. Health** | Low bus factor, no review oversight |
 | **8. Governance** | No SECURITY.md, slow issue response |
-| **9. Release Security** | Manual publishing, no branch protection, CI workflow risks |
+| **9. Release Security** | Manual publishing, no branch protection |
 | **10. Package Maturity** | New/abandoned package, irregular updates |
+| **11. CI Pipeline Security** | No CI, unpinned actions, script injection, dangerous triggers |
 
-**Total Score**: 0-20 points
+**Total Score**: 0-22 points
 - **0-8**: Low risk
 - **9-11**: Medium risk
-- **12-20**: High risk
+- **12+**: High risk
 
 ## Typosquatting Detection
 
