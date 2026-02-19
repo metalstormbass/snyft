@@ -82,7 +82,7 @@ func TestExplainer_HighRiskPackage(t *testing.T) {
 	}
 
 	// Risk assessment guidance should indicate HIGH RISK
-	guidance := explainer.getRecommendationGuidance(result.RiskLevel)
+	guidance := explainer.getRiskAssessmentGuidance(result.RiskLevel)
 	if !contains(guidance, "HIGH RISK") {
 		t.Error("Expected HIGH risk guidance to contain 'HIGH RISK'")
 	}
@@ -180,7 +180,7 @@ func TestExplainer_LowRiskPackage(t *testing.T) {
 		t.Errorf("Expected style 'brief', got '%s'", style)
 	}
 
-	guidance := explainer.getRecommendationGuidance(result.RiskLevel)
+	guidance := explainer.getRiskAssessmentGuidance(result.RiskLevel)
 	if !contains(guidance, "LOW RISK") {
 		t.Error("Expected guidance to contain 'LOW RISK'")
 	}
@@ -372,9 +372,7 @@ BLOCK: Do not use until maintainer count increases and 2FA is enforced.`,
 				if !contains(explanation.BusinessImpact, "SOC2") {
 					t.Error("Expected business impact to contain 'SOC2'")
 				}
-				if !contains(explanation.RecommendedAction, "BLOCK") {
-					t.Error("Expected recommendation to contain 'BLOCK'")
-				}
+				// RecommendedAction intentionally not populated per CLAUDE.md policy
 			},
 		},
 		{
@@ -404,9 +402,7 @@ Recommendation: REVIEW before production deployment.`,
 				if len(explanation.KeyRisks) < 2 {
 					t.Errorf("Expected at least 2 key risks, got %d", len(explanation.KeyRisks))
 				}
-				if !contains(explanation.RecommendedAction, "REVIEW") {
-					t.Error("Expected recommendation to contain 'REVIEW'")
-				}
+				// RecommendedAction intentionally not populated per CLAUDE.md policy
 			},
 		},
 	}
@@ -674,7 +670,7 @@ func TestExplainer_CriticalRiskLevel(t *testing.T) {
 		t.Errorf("Expected style 'urgent' for CRITICAL, got '%s'", style)
 	}
 
-	guidance := explainer.getRecommendationGuidance("CRITICAL")
+	guidance := explainer.getRiskAssessmentGuidance("CRITICAL")
 	if !contains(guidance, "HIGH RISK") {
 		t.Error("Expected CRITICAL guidance to contain 'HIGH RISK'")
 	}
@@ -693,7 +689,7 @@ func TestExplainer_UnknownRiskLevel(t *testing.T) {
 		t.Errorf("Expected style 'balanced' for unknown risk, got '%s'", style)
 	}
 
-	guidance := explainer.getRecommendationGuidance("UNKNOWN")
+	guidance := explainer.getRiskAssessmentGuidance("UNKNOWN")
 	if !contains(guidance, "LOW RISK") {
 		t.Error("Expected unknown risk guidance to default to 'LOW RISK'")
 	}

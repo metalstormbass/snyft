@@ -23,10 +23,14 @@ type Analyzer struct {
 	mavenClient    *fetcher.MavenClient
 	ossfClient     *fetcher.OSSFClient
 
+	// Libraries.io client (optional)
+	librariesIOClient *fetcher.LibrariesIOClient
+
 	// AI analysis client (optional)
-	claudeClient *ai.Client
-	aiEnabled    bool
-	aiTimeout    time.Duration
+	claudeClient      *ai.Client
+	aiEnabled         bool
+	aiTimeout         time.Duration
+	aiPerCallTimeout  time.Duration
 }
 
 // AnalyzerOption is a functional option for configuring an Analyzer
@@ -53,6 +57,7 @@ func WithAIConfig(config *ai.Config) AnalyzerOption {
 		a.claudeClient = claudeClient
 		a.aiEnabled = true
 		a.aiTimeout = config.Timeout
+		a.aiPerCallTimeout = config.PerCallTimeout
 	}
 }
 
@@ -67,13 +72,14 @@ func WithAIDisabled() AnalyzerOption {
 // NewAnalyzer creates a new Analyzer instance with optional configuration
 func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 	a := &Analyzer{
-		githubClient:    fetcher.NewGitHubClient(),
-		gitlabClient:    fetcher.NewGitLabClient(),
-		bitbucketClient: fetcher.NewBitbucketClient(),
-		npmClient:       fetcher.NewNPMClient(),
-		pypiClient:      fetcher.NewPyPIClient(),
-		mavenClient:     fetcher.NewMavenClient(),
-		ossfClient:      fetcher.NewOSSFClient(),
+		githubClient:      fetcher.NewGitHubClient(),
+		gitlabClient:      fetcher.NewGitLabClient(),
+		bitbucketClient:   fetcher.NewBitbucketClient(),
+		npmClient:         fetcher.NewNPMClient(),
+		pypiClient:        fetcher.NewPyPIClient(),
+		mavenClient:       fetcher.NewMavenClient(),
+		ossfClient:        fetcher.NewOSSFClient(),
+		librariesIOClient: fetcher.NewLibrariesIOClient(),
 	}
 
 	// Apply options
@@ -258,6 +264,9 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 
 	result.RepositoryURL = repoURL
 	result.Metadata = metadata
+
+	// Enrich with Libraries.io data (if API key is available)
+	a.enrichWithLibrariesIO(&result)
 
 	// Check for typosquatting before other analysis
 	// Typosquatting Detection: Compare package name against popular packages
@@ -462,6 +471,33 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	}
 
 	result.SupplyChainScore = score
+}
+
+// enrichWithLibrariesIO fetches additional metadata from Libraries.io and merges
+// it into the analysis result's metadata. This is optional enrichment — if the
+// API key is not set or the call fails, analysis proceeds without it.
+//
+// Justification: Dependents count indicates blast radius of a compromise.
+// A package depended on by 50,000 repos is a higher-value target than one
+// depended on by 5. This data is unavailable from registry APIs alone.
+//
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+func (a *Analyzer) enrichWithLibrariesIO(result *models.AnalysisResult) {
+	if a.librariesIOClient == nil || !a.librariesIOClient.IsAvailable() {
+		return
+	}
+
+	info := a.librariesIOClient.GetPackageInfo(string(result.Dependency.Ecosystem), result.Dependency.Name)
+	if info == nil {
+		return
+	}
+
+	result.Metadata.DependentsCount = info.DependentsCount
+	result.Metadata.DependentReposCount = info.DependentReposCount
+	result.Metadata.ContributionsCount = info.ContributionsCount
+	if info.SecurityPolicyURL != "" {
+		result.Metadata.SecurityPolicyURL = info.SecurityPolicyURL
+	}
 }
 
 // scorePublisherControl: Comprehensive publisher control risk assessment (0-2 pts)

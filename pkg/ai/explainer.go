@@ -121,7 +121,7 @@ func (e *Explainer) buildExecutivePrompt(packageName string, ecosystem models.Ec
 
 	// Customize based on style
 	styleGuidance := e.getStyleGuidance(style, result.RiskLevel)
-	recommendationGuidance := e.getRecommendationGuidance(result.RiskLevel)
+	riskAssessmentGuidance := e.getRiskAssessmentGuidance(result.RiskLevel)
 
 	// Inject style-specific instructions
 	enhancedUserPrompt := fmt.Sprintf(`%s
@@ -139,7 +139,7 @@ func (e *Explainer) buildExecutivePrompt(packageName string, ecosystem models.Ec
 %s`,
 		basePrompt.UserPrompt,
 		styleGuidance,
-		recommendationGuidance,
+		riskAssessmentGuidance,
 		e.getAttackPatternContext(result))
 
 	basePrompt.UserPrompt = enhancedUserPrompt
@@ -201,8 +201,9 @@ Example opening: "This package exhibits several supply chain risk factors that i
 	}
 }
 
-// getRecommendationGuidance returns risk-level-specific assessment instructions
-func (e *Explainer) getRecommendationGuidance(riskLevel string) string {
+// getRiskAssessmentGuidance returns risk-level-specific assessment instructions.
+// Note: this does NOT provide recommendations or mitigations — only risk classification guidance.
+func (e *Explainer) getRiskAssessmentGuidance(riskLevel string) string {
 	switch strings.ToUpper(riskLevel) {
 	case "HIGH", "CRITICAL":
 		return `Your risk assessment should classify this package as one of:
@@ -390,7 +391,8 @@ func (e *Explainer) parseExecutiveResponse(response string, result models.Analys
 	explanation.Summary = strings.Join(summaryLines, " ")
 	explanation.KeyRisks = keyRisks
 	explanation.BusinessImpact = strings.Join(businessImpactLines, " ")
-	explanation.RecommendedAction = strings.Join(recommendationLines, " ")
+	// RecommendedAction intentionally not populated — per CLAUDE.md, recommendations are out of scope
+	_ = recommendationLines
 	explanation.TechnicalDetails = strings.Join(technicalLines, " ")
 
 	// Fallback: if we couldn't parse structured content, use the whole response as summary

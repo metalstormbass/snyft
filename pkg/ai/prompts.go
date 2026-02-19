@@ -364,7 +364,6 @@ When explaining risks:
 1. **Executive Summary** (2-3 sentences)
    - Overall risk level
    - Top 1-2 concerns
-   - Recommended action
 
 2. **Business Impact** (1 paragraph)
    - What could happen if this package is compromised?
@@ -387,7 +386,7 @@ When explaining risks:
    - Relevant academic research or industry standards (SLSA, OSSF Scorecard)
    - Comparable real-world incidents (if applicable)
 
-Remember: Clarity over completeness. Stakeholders need enough information to make risk-informed decisions. Do NOT prescribe best practices or tell users how to fix things — describe the risk and let them decide.`
+Remember: Clarity over completeness. Stakeholders need enough information to make risk-informed decisions. Do NOT prescribe best practices, recommendations, mitigations, or tell users how to fix things — describe the risk and let them decide.`
 
 // NewExecutiveExplanationPrompt creates a prompt for generating stakeholder-friendly reports
 func NewExecutiveExplanationPrompt(packageName string, ecosystem models.Ecosystem, analysisResult models.AnalysisResult, targetAudience string) *PromptTemplate {
@@ -481,7 +480,6 @@ Create a comprehensive yet accessible explanation following the format:
 1. **Executive Summary**
    - Overall risk level and why
    - Top concerns (max 2-3)
-   - Recommended immediate action (if any)
 
 2. **Business Impact**
    - What could happen if this package is compromised?
@@ -508,7 +506,7 @@ Create a comprehensive yet accessible explanation following the format:
 - Tailor language to the {{targetAudience}} (executive, technical, compliance, or general audience)
 - Be factual, not alarmist
 - Focus on likelihood and business impact, not just technical details
-- Do NOT prescribe best practices or tell users how to improve — describe the risk
+- Do NOT prescribe best practices, recommendations, mitigations, or tell users how to improve — describe the risk
 - Remember: this is about future compromise risk, not current vulnerabilities`,
 		Parameters: map[string]string{
 			"packageName":    packageName,
@@ -521,6 +519,168 @@ Create a comprehensive yet accessible explanation following the format:
 		},
 		Temperature: 0.7, // Higher temperature for creative, accessible explanations
 		MaxTokens:   3000,
+	}
+}
+
+// ============================================================================
+// UNIFIED REVIEW PROMPT
+// ============================================================================
+
+// UnifiedReviewSystemPrompt provides context for the unified AI review that
+// synthesizes all findings into a single coherent assessment.
+const UnifiedReviewSystemPrompt = `You are a supply chain security analyst producing a final unified assessment.
+
+You receive:
+1. Rule-based category scores (11 categories, 0-22 points total)
+2. AI deep analysis findings (compound risks, behavioral anomalies)
+3. Attack pattern matches (if any)
+
+Your job is to synthesize ALL of this into one coherent assessment and determine if
+the rule-based score should be adjusted.
+
+## Score Adjustment Guidelines
+
+You may recommend a score_adjustment of -2 to +2 points:
+
+- **+2**: AI found strong evidence of compromise risk that rules completely missed
+  (e.g., classic account takeover pattern with multiple corroborating signals)
+- **+1**: AI found moderate additional risk signals beyond what rules detected
+- **0**: Rules captured the risk accurately; no adjustment needed (most common)
+- **-1**: AI found mitigating factors rules couldn't assess (e.g., strong community
+  oversight despite technically appearing single-maintainer)
+- **-2**: AI found strong mitigating factors that significantly reduce actual risk
+  beyond what rules show
+
+Default to 0. Only adjust when you have genuine evidence, not speculation.
+
+## What You DO NOT Do
+
+- Do NOT recommend fixes, improvements, or mitigations
+- Do NOT prescribe best practices
+- Do NOT tell users what to do about the risks
+- Focus purely on assessing and describing the risk
+
+## Output Format
+
+Respond ONLY with valid JSON. No markdown, no code blocks, no text outside the JSON object.
+
+{
+  "summary": "2-4 sentence overall assessment of compromise likelihood",
+  "key_risks": ["risk 1", "risk 2", "risk 3"],
+  "business_impact": "What could happen if this package is compromised",
+  "technical_details": "Key technical risk factors (optional, keep brief)",
+  "confidence": 0.0,
+  "score_adjustment": 0,
+  "adjustment_reason": "Why the score should be adjusted (empty if adjustment is 0)"
+}
+
+IMPORTANT:
+- Be concise. The summary should be 2-4 sentences max.
+- key_risks should have 2-5 entries, each 1 sentence.
+- confidence should reflect data quality: 0.9 if rich data, 0.5 if sparse.
+- Do NOT include recommendations, mitigations, or advice of any kind.`
+
+// NewUnifiedReviewPrompt creates a prompt that synthesizes rule-based scores,
+// deep analysis findings, and attack pattern matches into one unified assessment.
+func NewUnifiedReviewPrompt(result *models.AnalysisResult, deepAnalysis *models.DeepAnalysisResult, attackPatterns []models.AttackPatternMatch) *PromptTemplate {
+	var sb strings.Builder
+
+	// Rule-based scores
+	sb.WriteString(fmt.Sprintf("## Package: %s@%s (%s)\n\n", result.Dependency.Name, result.Dependency.Version, result.Dependency.Ecosystem))
+
+	if result.SupplyChainScore != nil {
+		sb.WriteString(fmt.Sprintf("## Rule-Based Score: %d/22 (%s risk)\n\n", result.SupplyChainScore.TotalScore, result.SupplyChainScore.RiskLevel))
+
+		cs := result.SupplyChainScore.CategoryScores
+		categories := []struct {
+			name  string
+			score models.CategoryScore
+		}{
+			{"Publisher Control", cs.PublisherControl},
+			{"Ownership Changes", cs.OwnershipChanges},
+			{"Release Anomalies", cs.ReleaseAnomalies},
+			{"Install Execution", cs.InstallExecution},
+			{"Dependency Sprawl", cs.DependencySprawl},
+			{"Provenance", cs.Provenance},
+			{"Health", cs.Health},
+			{"Governance", cs.Governance},
+			{"Release Security", cs.ReleaseSecurity},
+			{"Package Maturity", cs.PackageMaturity},
+			{"CI Pipeline Security", cs.CIPipelineSecurity},
+		}
+
+		for _, cat := range categories {
+			sb.WriteString(fmt.Sprintf("- %s: %d/2 risk points — %s\n", cat.name, cat.score.RiskPoints, cat.score.Description))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Deep analysis findings
+	if deepAnalysis != nil {
+		sb.WriteString("## AI Deep Analysis Findings\n\n")
+		if deepAnalysis.RiskAssessment != "" {
+			sb.WriteString(fmt.Sprintf("Assessment: %s\n\n", deepAnalysis.RiskAssessment))
+		}
+		if len(deepAnalysis.CompoundRisks) > 0 {
+			sb.WriteString("Compound Risks:\n")
+			for _, cr := range deepAnalysis.CompoundRisks {
+				sb.WriteString(fmt.Sprintf("- [%s] %s: %s\n", cr.RiskLevel, cr.Pattern, cr.Explanation))
+			}
+			sb.WriteString("\n")
+		}
+		if len(deepAnalysis.BehaviorFindings) > 0 {
+			sb.WriteString("Behavioral Anomalies:\n")
+			for _, bf := range deepAnalysis.BehaviorFindings {
+				sb.WriteString(fmt.Sprintf("- %s\n", bf))
+			}
+			sb.WriteString("\n")
+		}
+		if len(deepAnalysis.MissedByRules) > 0 {
+			sb.WriteString("Insights Beyond Rules:\n")
+			for _, insight := range deepAnalysis.MissedByRules {
+				sb.WriteString(fmt.Sprintf("- %s\n", insight))
+			}
+			sb.WriteString("\n")
+		}
+	} else {
+		sb.WriteString("## AI Deep Analysis: No additional findings beyond rules\n\n")
+	}
+
+	// Attack patterns
+	if len(attackPatterns) > 0 {
+		sb.WriteString("## Attack Pattern Matches\n\n")
+		for _, ap := range attackPatterns {
+			sb.WriteString(fmt.Sprintf("- [%s] %s (confidence: %.0f%%)\n", ap.Severity, ap.PatternName, ap.Confidence*100))
+			if len(ap.Evidence) > 0 {
+				sb.WriteString(fmt.Sprintf("  Evidence: %s\n", strings.Join(ap.Evidence, "; ")))
+			}
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("## Attack Pattern Matches: None identified\n\n")
+	}
+
+	// Risk factors
+	if len(result.RiskFactors) > 0 {
+		sb.WriteString("## Risk Factors\n\n")
+		for _, rf := range result.RiskFactors {
+			sb.WriteString(fmt.Sprintf("- %s\n", rf))
+		}
+		sb.WriteString("\n")
+	}
+
+	return &PromptTemplate{
+		SystemPrompt: UnifiedReviewSystemPrompt,
+		UserPrompt: fmt.Sprintf(`Synthesize the following rule-based scores, AI deep analysis, and attack pattern matches into a unified supply chain risk assessment.
+
+%s
+
+Produce a single JSON response with your unified assessment and score adjustment recommendation.
+Do NOT include recommendations, mitigations, or advice of any kind.
+Respond ONLY with valid JSON (no markdown, no code blocks).`, sb.String()),
+		Parameters:  map[string]string{},
+		Temperature: 0.3,
+		MaxTokens:   2000,
 	}
 }
 

@@ -38,7 +38,23 @@ type AIAnalysisResult struct {
 	DeepAnalysis      *DeepAnalysisResult    `json:"deep_analysis,omitempty"`
 	AttackPatterns    []AttackPatternMatch   `json:"attack_patterns,omitempty"`
 	ExecutiveSummary  *ExecutiveExplanation  `json:"executive_summary,omitempty"`
+	UnifiedSummary    *UnifiedAISummary      `json:"unified_summary,omitempty"`
 	AnalysisNotes     string                 `json:"analysis_notes,omitempty"` // Additional context from AI
+}
+
+// UnifiedAISummary synthesizes ALL prior AI findings (deep analysis + attack patterns)
+// with rule-based scores into a single coherent assessment. Unlike the executive summary
+// which is generated independently, the unified summary sees everything and can adjust
+// the risk score when AI analysis reveals something rules missed.
+type UnifiedAISummary struct {
+	Summary          string    `json:"summary"`
+	KeyRisks         []string  `json:"key_risks"`
+	BusinessImpact   string    `json:"business_impact"`
+	TechnicalDetails string    `json:"technical_details,omitempty"`
+	Confidence       float64   `json:"confidence"`
+	ScoreAdjustment  int       `json:"score_adjustment"`          // -2 to +2
+	AdjustmentReason string    `json:"adjustment_reason,omitempty"`
+	GeneratedAt      time.Time `json:"generated_at"`
 }
 
 // DeepAnalysisResult contains the AI's holistic cross-cutting analysis of a package.
@@ -84,7 +100,7 @@ type AttackPatternMatch struct {
 	Evidence         []string `json:"evidence"`          // List of evidence points
 	AcademicSource   string   `json:"academic_source,omitempty"`  // Citation for attack pattern
 	Indicators       []string `json:"indicators"`        // Specific indicators found
-	MitigationAdvice string   `json:"mitigation_advice,omitempty"`
+	MitigationAdvice string   `json:"mitigation_advice,omitempty"` // Deprecated: per CLAUDE.md, recommendations are out of scope
 }
 
 // ExecutiveExplanation provides a business-friendly summary of AI findings
@@ -92,7 +108,7 @@ type ExecutiveExplanation struct {
 	Summary           string    `json:"summary"`           // High-level summary for stakeholders
 	KeyRisks          []string  `json:"key_risks"`         // Top 3-5 risks in plain language
 	BusinessImpact    string    `json:"business_impact"`   // Potential business consequences
-	RecommendedAction string    `json:"recommended_action"` // What should be done
+	RecommendedAction string    `json:"recommended_action"` // Deprecated: per CLAUDE.md, recommendations are out of scope
 	TechnicalDetails  string    `json:"technical_details,omitempty"` // Optional technical context
 	Confidence        float64   `json:"confidence"`        // 0.0-1.0 confidence in assessment
 	GeneratedAt       time.Time `json:"generated_at"`
@@ -200,6 +216,12 @@ type PackageMetadata struct {
 	// Dependency metrics
 	DependencyMetrics *DependencyMetrics `json:"dependency_metrics,omitempty"`
 
+	// Libraries.io enrichment data (optional, requires LIBRARIES_IO_API_KEY)
+	DependentsCount     int    `json:"dependents_count,omitempty"`      // Number of packages depending on this
+	DependentReposCount int    `json:"dependent_repos_count,omitempty"` // Number of repos depending on this
+	ContributionsCount  int    `json:"contributions_count,omitempty"`   // Contribution count from libraries.io
+	SecurityPolicyURL   string `json:"security_policy_url,omitempty"`   // URL to SECURITY.md or similar
+
 	// OpenSSF Scorecard
 	OSSFScore        float64  `json:"ossf_score"`
 	OSSFChecks       map[string]int `json:"ossf_checks"`
@@ -303,9 +325,11 @@ type ProvenanceInfo struct {
 
 // SupplyChainScore represents a 0-22 point supply chain security scoring rubric
 type SupplyChainScore struct {
-	TotalScore    int                   `json:"total_score"`    // 0-22 points
-	RiskLevel     string                `json:"risk_level"`     // LOW (0-5), MEDIUM (6-16), HIGH (17+)
-	CategoryScores CategoryScores       `json:"category_scores"`
+	TotalScore         int            `json:"total_score"`                      // 0-22 points
+	RiskLevel          string         `json:"risk_level"`                       // LOW (0-9), MEDIUM (10-13), HIGH (14+)
+	CategoryScores     CategoryScores `json:"category_scores"`
+	AIAdjustment       int            `json:"ai_adjustment,omitempty"`          // -2 to +2: AI score adjustment
+	AIAdjustmentReason string         `json:"ai_adjustment_reason,omitempty"`   // Reason for AI adjustment
 }
 
 // CategoryScores contains individual scores for each supply chain security category
@@ -352,7 +376,7 @@ type CategoryAIInsight struct {
 	Confidence     float64  `json:"confidence"`       // 0.0-1.0 confidence in the assessment
 	Findings       []string `json:"findings"`         // AI-identified patterns beyond rule-based scoring
 	Context        string   `json:"context"`          // Contextual analysis and amplifying/mitigating factors
-	Recommendation string   `json:"recommendation"`   // Category-specific action recommendation
+	Recommendation string   `json:"recommendation"`   // Deprecated: per CLAUDE.md, recommendations are out of scope
 }
 
 // EcosystemCapabilities describes what data each package registry exposes.

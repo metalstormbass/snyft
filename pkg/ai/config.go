@@ -35,6 +35,11 @@ type Config struct {
 	CacheTTL     time.Duration
 	CacheMaxCost int64 // Maximum memory for cache in bytes
 
+	// Per-call timeout for individual AI API calls (default: 45s).
+	// Each AI call (deep analysis, attack patterns, unified summary) gets its own
+	// independent timeout so a slow call doesn't starve subsequent calls.
+	PerCallTimeout time.Duration
+
 	// Feature flags
 	EnableRetry         bool
 	EnableRateLimit     bool
@@ -56,6 +61,7 @@ func DefaultConfig() *Config {
 		CacheEnabled:            true,
 		CacheTTL:                24 * time.Hour,
 		CacheMaxCost:            100 * 1024 * 1024, // 100MB
+		PerCallTimeout:          45 * time.Second,
 		EnableRetry:             true,
 		EnableRateLimit:         true,
 		EnableCircuitBreaker:    true,

@@ -42,6 +42,12 @@ func (r *Reporter) generateText() error {
 	// Executive Summary
 	r.printExecutiveSummary(w)
 
+	if !r.config.Verbose {
+		// Summary-only mode: show header + executive summary + format hint
+		r.printFormatHint(w)
+		return nil
+	}
+
 	// Detailed Findings
 	_, _ = fmt.Fprintln(w)
 	r.printSectionHeader(w, "DETAILED FINDINGS")
@@ -55,6 +61,26 @@ func (r *Reporter) generateText() error {
 	r.printRiskSummary(w)
 
 	return nil
+}
+
+// printFormatHint prints guidance on how to get more detailed output
+func (r *Reporter) printFormatHint(w io.Writer) {
+	scanPath := r.stats.ScannedPath
+	if scanPath == "" {
+		scanPath = "<path>"
+	}
+
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "%s%s%s\n", ColorDim, strings.Repeat("─", 78), ColorReset)
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "  %sFor the full detailed report:%s\n", ColorBold, ColorReset)
+	_, _ = fmt.Fprintf(w, "    snyft scan %s -v\n", scanPath)
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "  %sExport formats:%s\n", ColorBold, ColorReset)
+	_, _ = fmt.Fprintf(w, "    snyft scan %s -f html -o report.html\n", scanPath)
+	_, _ = fmt.Fprintf(w, "    snyft scan %s -f json -o report.json\n", scanPath)
+	_, _ = fmt.Fprintf(w, "    snyft scan %s -f markdown -o report.md\n", scanPath)
+	_, _ = fmt.Fprintln(w)
 }
 
 // printHeader prints the report header
@@ -247,13 +273,6 @@ func (r *Reporter) printAIExecutiveSummary(w io.Writer) {
 		fmt.Fprintln(w)
 	}
 
-	// Recommended Action
-	if executiveSummary.RecommendedAction != "" {
-		fmt.Fprintf(w, "  %sRecommended Action:%s\n", ColorBold, ColorReset)
-		fmt.Fprintf(w, "  %s\n", executiveSummary.RecommendedAction)
-		fmt.Fprintln(w)
-	}
-
 	// Confidence
 	confidencePct := executiveSummary.Confidence * 100
 	confidenceColor := ColorGreen
@@ -300,13 +319,26 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 
 	// Supply chain score if available
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %d/22 points (%s%s%s risk)\n",
-			riskColor, ColorReset,
-			ColorBold, ColorReset,
+		scoreStr := fmt.Sprintf("%d/22 points (%s%s%s risk)",
 			result.SupplyChainScore.TotalScore,
 			r.getRiskColor(result.SupplyChainScore.RiskLevel),
 			result.SupplyChainScore.RiskLevel,
 			ColorReset)
+
+		if result.SupplyChainScore.AIAdjustment != 0 {
+			adjSign := "+"
+			if result.SupplyChainScore.AIAdjustment < 0 {
+				adjSign = ""
+			}
+			scoreStr += fmt.Sprintf(" %s[AI adjusted %s%d: %s]%s",
+				ColorCyan, adjSign, result.SupplyChainScore.AIAdjustment,
+				result.SupplyChainScore.AIAdjustmentReason, ColorReset)
+		}
+
+		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %s\n",
+			riskColor, ColorReset,
+			ColorBold, ColorReset,
+			scoreStr)
 	}
 
 	// Repository and source info
@@ -493,13 +525,6 @@ func (r *Reporter) printPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnal
 						borderColor, ColorReset,
 						ColorDim, evidence, ColorReset)
 				}
-			}
-
-			// Show mitigation advice if available
-			if pattern.MitigationAdvice != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "%s│%s       %sMitigation: %s%s\n",
-					borderColor, ColorReset,
-					ColorDim+ColorGreen, pattern.MitigationAdvice, ColorReset)
 			}
 
 			if i < len(aiAnalysis.AttackPatterns)-1 {

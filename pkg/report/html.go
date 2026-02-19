@@ -451,14 +451,6 @@ func (r *Reporter) printHTMLAIExecutiveSummary(w io.Writer) {
 		_, _ = fmt.Fprintln(w, "        </div>")
 	}
 
-	// Recommended Action
-	if executiveSummary.RecommendedAction != "" {
-		_, _ = fmt.Fprintln(w, "        <div style=\"background: rgba(255,255,255,0.1); padding: 15px; border-radius: 5px; margin-top: 15px;\">")
-		_, _ = fmt.Fprintln(w, "          <h4 style=\"margin-top: 0; color: white;\">Recommended Action:</h4>")
-		_, _ = fmt.Fprintf(w, "          <p style=\"margin: 0;\">%s</p>\n", html.EscapeString(executiveSummary.RecommendedAction))
-		_, _ = fmt.Fprintln(w, "        </div>")
-	}
-
 	// Confidence
 	confidencePct := executiveSummary.Confidence * 100
 	_, _ = fmt.Fprintf(w, "        <div style=\"margin-top: 15px; font-size: 14px; opacity: 0.9;\">")
@@ -490,8 +482,17 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 		result.Dependency.Ecosystem)
 
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Supply Chain Score:</span> %d/22 points</div>\n",
-			result.SupplyChainScore.TotalScore)
+		scoreStr := fmt.Sprintf("%d/22 points", result.SupplyChainScore.TotalScore)
+		if result.SupplyChainScore.AIAdjustment != 0 {
+			adjSign := "+"
+			if result.SupplyChainScore.AIAdjustment < 0 {
+				adjSign = ""
+			}
+			scoreStr += fmt.Sprintf(" <span style=\"color: #667eea;\">[AI adjusted %s%d: %s]</span>",
+				adjSign, result.SupplyChainScore.AIAdjustment,
+				html.EscapeString(result.SupplyChainScore.AIAdjustmentReason))
+		}
+		_, _ = fmt.Fprintf(w, "          <div class=\"detail-item\"><span class=\"detail-label\">Supply Chain Score:</span> %s</div>\n", scoreStr)
 	}
 
 	if result.RepositoryURL != "" {
@@ -695,12 +696,6 @@ func (r *Reporter) printHTMLPackageAIAnalysis(w io.Writer, aiAnalysis *models.AI
 					_, _ = fmt.Fprintf(w, "                <li>%s</li>\n", html.EscapeString(evidence))
 				}
 				_, _ = fmt.Fprintln(w, "              </ul>")
-				_, _ = fmt.Fprintln(w, "            </div>")
-			}
-
-			if pattern.MitigationAdvice != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "            <div style=\"font-size: 12px; color: #28a745; margin-top: 8px;\">")
-				_, _ = fmt.Fprintf(w, "              <strong>Mitigation:</strong> %s", html.EscapeString(pattern.MitigationAdvice))
 				_, _ = fmt.Fprintln(w, "            </div>")
 			}
 
