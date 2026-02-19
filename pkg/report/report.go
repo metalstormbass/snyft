@@ -45,11 +45,12 @@ type Config struct {
 
 // Reporter handles report generation
 type Reporter struct {
-	config     Config
-	results    []models.AnalysisResult
-	stats      ScanStats
-	startTime  time.Time
-	spinnerIdx int
+	config           Config
+	results          []models.AnalysisResult
+	stats            ScanStats
+	reportAISummary  *models.ReportAISummary
+	startTime        time.Time
+	spinnerIdx       int
 }
 
 // ScanStats contains scan statistics
@@ -88,6 +89,13 @@ func (r *Reporter) SetScanPath(path string) {
 // SetManifestCount sets the number of manifest files found
 func (r *Reporter) SetManifestCount(count int) {
 	r.stats.ManifestFiles = count
+}
+
+// SetReportAISummary sets the report-level AI summary.
+// This summary is generated AFTER all packages are analyzed and synthesizes
+// all findings into a holistic assessment. Displayed in the executive summary.
+func (r *Reporter) SetReportAISummary(summary *models.ReportAISummary) {
+	r.reportAISummary = summary
 }
 
 // AddResults adds analysis results to the report

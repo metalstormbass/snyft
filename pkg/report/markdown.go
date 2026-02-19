@@ -131,46 +131,58 @@ func (r *Reporter) generateMarkdown() error {
 	return nil
 }
 
-// printMarkdownAIExecutiveSummary prints AI-powered executive insights
+// printMarkdownAIExecutiveSummary prints the report-level AI summary.
+// Generated AFTER all packages are analyzed, displayed first in the executive summary.
 func (r *Reporter) printMarkdownAIExecutiveSummary(w io.Writer) {
-	// Find the first package with AI analysis that has an executive summary
-	var executiveSummary *models.ExecutiveExplanation
-	for _, result := range r.results {
-		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
-			executiveSummary = result.AIAnalysis.ExecutiveSummary
-			break
-		}
-	}
-
-	if executiveSummary == nil {
+	if r.reportAISummary == nil {
 		return
 	}
 
+	summary := r.reportAISummary
+
 	_, _ = fmt.Fprintln(w, "### 🤖 AI-Powered Risk Assessment")
 	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "%s\n", executiveSummary.Summary)
+	_, _ = fmt.Fprintf(w, "%s\n", summary.OverallAssessment)
 	_, _ = fmt.Fprintln(w)
 
-	// Key Risks
-	if len(executiveSummary.KeyRisks) > 0 {
-		_, _ = fmt.Fprintln(w, "**Key Risks Identified:**")
+	// Key Threats
+	if len(summary.KeyThreats) > 0 {
+		_, _ = fmt.Fprintln(w, "**Key Threats:**")
 		_, _ = fmt.Fprintln(w)
-		for _, risk := range executiveSummary.KeyRisks {
-			_, _ = fmt.Fprintf(w, "- 🔴 %s\n", risk)
+		for _, threat := range summary.KeyThreats {
+			_, _ = fmt.Fprintf(w, "- 🔴 %s\n", threat)
 		}
 		_, _ = fmt.Fprintln(w)
 	}
 
-	// Business Impact
-	if executiveSummary.BusinessImpact != "" {
-		_, _ = fmt.Fprintln(w, "**Business Impact:**")
+	// Cross-Package Patterns
+	if len(summary.CrossPatterns) > 0 {
+		_, _ = fmt.Fprintln(w, "**Cross-Package Patterns:**")
 		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintf(w, "%s\n", executiveSummary.BusinessImpact)
+		for _, pattern := range summary.CrossPatterns {
+			_, _ = fmt.Fprintf(w, "- 🟡 %s\n", pattern)
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+
+	// Priority Packages
+	if len(summary.PriorityPackages) > 0 {
+		_, _ = fmt.Fprintln(w, "**Priority Packages:**")
+		_, _ = fmt.Fprintln(w)
+		for _, pkg := range summary.PriorityPackages {
+			_, _ = fmt.Fprintf(w, "- 🔴 %s\n", pkg)
+		}
+		_, _ = fmt.Fprintln(w)
+	}
+
+	// Risk Posture
+	if summary.RiskPosture != "" {
+		_, _ = fmt.Fprintf(w, "**Risk Posture:** %s\n", summary.RiskPosture)
 		_, _ = fmt.Fprintln(w)
 	}
 
 	// Confidence
-	confidencePct := executiveSummary.Confidence * 100
+	confidencePct := summary.Confidence * 100
 	_, _ = fmt.Fprintf(w, "*AI Confidence: %.0f%%*\n", confidencePct)
 	_, _ = fmt.Fprintln(w)
 }

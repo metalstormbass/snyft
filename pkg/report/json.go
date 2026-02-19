@@ -29,12 +29,14 @@ type JSONReport struct {
 	KeyRiskAreas []string    `json:"key_risk_areas"`
 }
 
-// JSONAIExecutiveSummary represents AI-powered executive insights in JSON
+// JSONAIExecutiveSummary represents report-level AI insights in JSON.
+// Generated AFTER all packages are analyzed, synthesizes all findings.
 type JSONAIExecutiveSummary struct {
-	Summary           string   `json:"summary"`
-	KeyRisks          []string `json:"key_risks"`
-	BusinessImpact    string   `json:"business_impact"`
-	RecommendedAction string   `json:"recommended_action"`
+	OverallAssessment string   `json:"overall_assessment"`
+	KeyThreats        []string `json:"key_threats"`
+	CrossPatterns     []string `json:"cross_patterns,omitempty"`
+	PriorityPackages  []string `json:"priority_packages,omitempty"`
+	RiskPosture       string   `json:"risk_posture"`
 	Confidence        float64  `json:"confidence"`
 	GeneratedAt       string   `json:"generated_at"`
 }
@@ -100,18 +102,16 @@ func (r *Reporter) generateJSON() error {
 			r.stats.TotalPackages, r.calculateOverallRisk())
 	}
 
-	// Add AI Executive Summary if available
-	for _, result := range r.results {
-		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
-			aiExec := result.AIAnalysis.ExecutiveSummary
-			report.ExecutiveSummary.AIInsights = &JSONAIExecutiveSummary{
-				Summary:        aiExec.Summary,
-				KeyRisks:       aiExec.KeyRisks,
-				BusinessImpact: aiExec.BusinessImpact,
-				Confidence:     aiExec.Confidence,
-				GeneratedAt:    aiExec.GeneratedAt.Format("2006-01-02T15:04:05Z07:00"),
-			}
-			break // Only include the first one found
+	// Add report-level AI summary if available (generated after all packages analyzed)
+	if r.reportAISummary != nil {
+		report.ExecutiveSummary.AIInsights = &JSONAIExecutiveSummary{
+			OverallAssessment: r.reportAISummary.OverallAssessment,
+			KeyThreats:        r.reportAISummary.KeyThreats,
+			CrossPatterns:     r.reportAISummary.CrossPatterns,
+			PriorityPackages:  r.reportAISummary.PriorityPackages,
+			RiskPosture:       r.reportAISummary.RiskPosture,
+			Confidence:        r.reportAISummary.Confidence,
+			GeneratedAt:       r.reportAISummary.GeneratedAt.Format("2006-01-02T15:04:05Z07:00"),
 		}
 	}
 

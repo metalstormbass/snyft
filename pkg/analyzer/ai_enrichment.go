@@ -129,6 +129,87 @@ func (a *Analyzer) enrichWithAIAnalysis(result *models.AnalysisResult) {
 	}
 }
 
+// GenerateReportSummary creates a report-level AI summary that synthesizes ALL
+// package results into a holistic supply chain risk assessment.
+// This is called AFTER all per-package analysis is complete, so it sees everything.
+// The summary is then displayed at the TOP of the report (executive summary section).
+//
+// Returns nil if AI is not enabled or the call fails (graceful degradation).
+func (a *Analyzer) GenerateReportSummary(results []models.AnalysisResult, stats ai.ReportStats) *models.ReportAISummary {
+	if a.claudeClient == nil || !a.aiEnabled {
+		return nil
+	}
+
+	perCallTimeout := a.aiPerCallTimeout
+	if perCallTimeout <= 0 {
+		perCallTimeout = 60 * time.Second // Slightly longer for report-level summary
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), perCallTimeout)
+	defer cancel()
+
+	prompt := ai.NewReportSummaryPrompt(results, stats)
+	systemPrompt, userPrompt := prompt.Render()
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaudeSonnet4_5,
+		MaxTokens: int64(prompt.MaxTokens),
+		System: []anthropic.TextBlockParam{
+			{Text: systemPrompt},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(userPrompt)),
+		},
+		Temperature: anthropic.Float(prompt.Temperature),
+	}
+
+	message, err := a.claudeClient.CreateMessage(ctx, params)
+	if err != nil {
+		return nil
+	}
+
+	// Extract text content
+	var responseText string
+	for _, block := range message.Content {
+		if block.Type == "text" {
+			responseText += block.Text
+		}
+	}
+
+	if responseText == "" {
+		return nil
+	}
+
+	// Clean potential markdown wrapping
+	responseText = strings.TrimSpace(responseText)
+	responseText = strings.TrimPrefix(responseText, "```json")
+	responseText = strings.TrimPrefix(responseText, "```")
+	responseText = strings.TrimSuffix(responseText, "```")
+	responseText = strings.TrimSpace(responseText)
+
+	var resp struct {
+		OverallAssessment string   `json:"overall_assessment"`
+		KeyThreats        []string `json:"key_threats"`
+		CrossPatterns     []string `json:"cross_patterns"`
+		PriorityPackages  []string `json:"priority_packages"`
+		RiskPosture       string   `json:"risk_posture"`
+		Confidence        float64  `json:"confidence"`
+	}
+	if err := json.Unmarshal([]byte(responseText), &resp); err != nil {
+		return nil
+	}
+
+	return &models.ReportAISummary{
+		OverallAssessment: resp.OverallAssessment,
+		KeyThreats:        resp.KeyThreats,
+		CrossPatterns:     resp.CrossPatterns,
+		PriorityPackages:  resp.PriorityPackages,
+		RiskPosture:       resp.RiskPosture,
+		Confidence:        resp.Confidence,
+		GeneratedAt:       time.Now(),
+	}
+}
+
 // runAttackPatternMatching compares package behavior to documented supply chain attack patterns
 // using a single batched API call for all relevant attacks.
 func (a *Analyzer) runAttackPatternMatching(ctx context.Context, result *models.AnalysisResult) ([]models.AttackPatternMatch, error) {

@@ -277,38 +277,58 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 	return nil
 }
 
-// printHTMLAIExecutiveSummary prints AI-powered executive insights in HTML
+// printHTMLAIExecutiveSummary prints the report-level AI summary in HTML.
+// Generated AFTER all packages are analyzed, displayed first in the executive summary.
 func (r *Reporter) printHTMLAIExecutiveSummary(w io.Writer) {
-	// Find the first package with AI analysis that has an executive summary
-	var executiveSummary *models.ExecutiveExplanation
-	for _, result := range r.results {
-		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
-			executiveSummary = result.AIAnalysis.ExecutiveSummary
-			break
-		}
-	}
-
-	if executiveSummary == nil {
+	if r.reportAISummary == nil {
 		return
 	}
 
+	summary := r.reportAISummary
+
 	_, _ = fmt.Fprintln(w, "      <div style=\"margin-top: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 16px; border-radius: 8px;\">")
 	_, _ = fmt.Fprintln(w, "        <h3 style=\"margin-top: 0; color: white;\">AI Risk Assessment</h3>")
-	_, _ = fmt.Fprintf(w, "        <p style=\"margin: 0 0 8px 0;\">%s</p>\n", html.EscapeString(executiveSummary.Summary))
+	_, _ = fmt.Fprintf(w, "        <p style=\"margin: 0 0 8px 0;\">%s</p>\n", html.EscapeString(summary.OverallAssessment))
 
-	if len(executiveSummary.KeyRisks) > 0 {
+	// Key Threats
+	if len(summary.KeyThreats) > 0 {
 		_, _ = fmt.Fprintln(w, "        <ul style=\"margin: 6px 0; padding-left: 20px;\">")
-		for _, risk := range executiveSummary.KeyRisks {
-			_, _ = fmt.Fprintf(w, "          <li>%s</li>\n", html.EscapeString(risk))
+		for _, threat := range summary.KeyThreats {
+			_, _ = fmt.Fprintf(w, "          <li>%s</li>\n", html.EscapeString(threat))
 		}
 		_, _ = fmt.Fprintln(w, "        </ul>")
 	}
 
-	if executiveSummary.BusinessImpact != "" {
-		_, _ = fmt.Fprintf(w, "        <p style=\"margin: 6px 0 0 0; font-size: 13px; opacity: 0.9;\"><strong>Impact:</strong> %s</p>\n", html.EscapeString(executiveSummary.BusinessImpact))
+	// Cross-Package Patterns
+	if len(summary.CrossPatterns) > 0 {
+		_, _ = fmt.Fprintln(w, "        <div style=\"background: rgba(255,255,255,0.1); padding: 10px; border-radius: 5px; margin-top: 10px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"margin-top: 0; color: white;\">Cross-Package Patterns:</h4>")
+		_, _ = fmt.Fprintln(w, "          <ul style=\"margin: 6px 0; padding-left: 20px;\">")
+		for _, pattern := range summary.CrossPatterns {
+			_, _ = fmt.Fprintf(w, "            <li>%s</li>\n", html.EscapeString(pattern))
+		}
+		_, _ = fmt.Fprintln(w, "          </ul>")
+		_, _ = fmt.Fprintln(w, "        </div>")
 	}
 
-	confidencePct := executiveSummary.Confidence * 100
+	// Priority Packages
+	if len(summary.PriorityPackages) > 0 {
+		_, _ = fmt.Fprintln(w, "        <div style=\"background: rgba(255,255,255,0.1); padding: 10px; border-radius: 5px; margin-top: 10px;\">")
+		_, _ = fmt.Fprintln(w, "          <h4 style=\"margin-top: 0; color: white;\">Priority Packages:</h4>")
+		_, _ = fmt.Fprintln(w, "          <ul style=\"margin: 6px 0; padding-left: 20px;\">")
+		for _, pkg := range summary.PriorityPackages {
+			_, _ = fmt.Fprintf(w, "            <li>%s</li>\n", html.EscapeString(pkg))
+		}
+		_, _ = fmt.Fprintln(w, "          </ul>")
+		_, _ = fmt.Fprintln(w, "        </div>")
+	}
+
+	// Risk Posture
+	if summary.RiskPosture != "" {
+		_, _ = fmt.Fprintf(w, "        <p style=\"margin: 6px 0 0 0; font-size: 13px; opacity: 0.9;\"><strong>Risk Posture:</strong> %s</p>\n", html.EscapeString(summary.RiskPosture))
+	}
+
+	confidencePct := summary.Confidence * 100
 	_, _ = fmt.Fprintf(w, "        <div style=\"margin-top: 6px; font-size: 12px; opacity: 0.7;\">Confidence: %.0f%%</div>\n", confidencePct)
 	_, _ = fmt.Fprintln(w, "      </div>")
 }
