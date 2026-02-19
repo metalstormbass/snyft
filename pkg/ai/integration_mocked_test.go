@@ -61,7 +61,7 @@ func TestExplainer_Integration_Mocked(t *testing.T) {
 	// Validate explanation structure
 	require.NotNil(t, explanation, "Should have explanation")
 	assert.NotEmpty(t, explanation.Summary, "Should have summary")
-	assert.NotEmpty(t, explanation.RecommendedAction, "Should have recommendation")
+	// RecommendedAction intentionally not populated per CLAUDE.md policy
 
 	t.Logf("Executive explanation validated successfully")
 }

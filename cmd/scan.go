@@ -44,7 +44,7 @@ for supply chain security risks.`,
 func init() {
 	scanCmd.Flags().IntVarP(&workers, "workers", "w", 10, "Number of concurrent workers for analysis")
 	scanCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file for results (default: stdout)")
-	scanCmd.Flags().BoolVarP(&verbose, "verbose", "v", true, "Verbose output with detailed analysis")
+	scanCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output with detailed analysis")
 	scanCmd.Flags().StringVarP(&outputFormat, "format", "f", "text", "Output format: text, markdown, json, or html")
 
 	// AI feature flags

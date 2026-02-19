@@ -169,14 +169,6 @@ func (r *Reporter) printMarkdownAIExecutiveSummary(w io.Writer) {
 		_, _ = fmt.Fprintln(w)
 	}
 
-	// Recommended Action
-	if executiveSummary.RecommendedAction != "" {
-		_, _ = fmt.Fprintln(w, "**Recommended Action:**")
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintf(w, "%s\n", executiveSummary.RecommendedAction)
-		_, _ = fmt.Fprintln(w)
-	}
-
 	// Confidence
 	confidencePct := executiveSummary.Confidence * 100
 	_, _ = fmt.Fprintf(w, "*AI Confidence: %.0f%%*\n", confidencePct)
@@ -197,9 +189,15 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 	_, _ = fmt.Fprintf(w, "**Risk Level:** %s\n", result.RiskLevel)
 
 	if result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %d/22 points (%s risk)\n",
-			result.SupplyChainScore.TotalScore,
-			result.SupplyChainScore.RiskLevel)
+		scoreStr := fmt.Sprintf("%d/22 points (%s risk)", result.SupplyChainScore.TotalScore, result.SupplyChainScore.RiskLevel)
+		if result.SupplyChainScore.AIAdjustment != 0 {
+			adjSign := "+"
+			if result.SupplyChainScore.AIAdjustment < 0 {
+				adjSign = ""
+			}
+			scoreStr += fmt.Sprintf(" [AI adjusted %s%d: %s]", adjSign, result.SupplyChainScore.AIAdjustment, result.SupplyChainScore.AIAdjustmentReason)
+		}
+		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %s\n", scoreStr)
 	}
 
 	if result.RepositoryURL != "" {
@@ -366,9 +364,6 @@ func (r *Reporter) printMarkdownPackageAIAnalysis(w io.Writer, aiAnalysis *model
 				}
 			}
 
-			if pattern.MitigationAdvice != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "  - *Mitigation:* %s\n", pattern.MitigationAdvice)
-			}
 			_, _ = fmt.Fprintln(w)
 		}
 	}

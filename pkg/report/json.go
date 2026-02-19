@@ -105,12 +105,11 @@ func (r *Reporter) generateJSON() error {
 		if result.AIAnalysis != nil && result.AIAnalysis.ExecutiveSummary != nil {
 			aiExec := result.AIAnalysis.ExecutiveSummary
 			report.ExecutiveSummary.AIInsights = &JSONAIExecutiveSummary{
-				Summary:           aiExec.Summary,
-				KeyRisks:          aiExec.KeyRisks,
-				BusinessImpact:    aiExec.BusinessImpact,
-				RecommendedAction: aiExec.RecommendedAction,
-				Confidence:        aiExec.Confidence,
-				GeneratedAt:       aiExec.GeneratedAt.Format("2006-01-02T15:04:05Z07:00"),
+				Summary:        aiExec.Summary,
+				KeyRisks:       aiExec.KeyRisks,
+				BusinessImpact: aiExec.BusinessImpact,
+				Confidence:     aiExec.Confidence,
+				GeneratedAt:    aiExec.GeneratedAt.Format("2006-01-02T15:04:05Z07:00"),
 			}
 			break // Only include the first one found
 		}
