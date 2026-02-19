@@ -415,12 +415,18 @@ func TestEnrichFromPOM_IssueManagementFallback(t *testing.T) {
 // Test: deriveRepoFromGroupID maps well-known groupId prefixes to repo URLs
 // Justification: Sonatype requires domain verification for io.github.*,
 //
-//	com.github.*, io.gitlab.*, and io.bitbucket.* prefixes.  When all
-//	POM-based strategies fail, the groupId itself is a high-confidence
+//	com.github.*, io.gitlab.*, and io.bitbucket.* prefixes.  Additionally,
+//	well-known Java foundations (Apache, Eclipse) and major OSS organizations
+//	(FasterXML, Square) host source code on GitHub with predictable naming.
+//	When all POM-based strategies fail, the groupId itself is a high-confidence
 //	signal for the source repository location.  Missing the repo prevents
 //	all git-based risk checks (provenance, health, governance).
 //
 // Source: https://central.sonatype.org/publish/requirements/coordinates/
+//
+//	https://infra.apache.org/github-actions-policy.html (Apache → GitHub)
+//	https://github.com/FasterXML, https://github.com/square
+//
 // Methodology: Unit test against each well-known prefix pattern.
 // Result: Correct repository URL is derived from the groupId + artifactId.
 func TestDeriveRepoFromGroupID(t *testing.T) {
@@ -461,9 +467,27 @@ func TestDeriveRepoFromGroupID(t *testing.T) {
 			want:       "https://github.com/eclipse/org.eclipse.jgit",
 		},
 		{
-			name:       "unrecognised prefix returns empty",
+			name:       "org.apache prefix (Apache Foundation on GitHub)",
+			groupID:    "org.apache.commons",
+			artifactID: "commons-lang3",
+			want:       "https://github.com/apache/commons-lang3",
+		},
+		{
+			name:       "com.fasterxml prefix (FasterXML/Jackson on GitHub)",
 			groupID:    "com.fasterxml.jackson.core",
 			artifactID: "jackson-databind",
+			want:       "https://github.com/FasterXML/jackson-databind",
+		},
+		{
+			name:       "com.squareup prefix (Square on GitHub)",
+			groupID:    "com.squareup.okhttp3",
+			artifactID: "okhttp",
+			want:       "https://github.com/square/okhttp",
+		},
+		{
+			name:       "unrecognised prefix returns empty",
+			groupID:    "com.zaxxer",
+			artifactID: "HikariCP",
 			want:       "",
 		},
 		{
