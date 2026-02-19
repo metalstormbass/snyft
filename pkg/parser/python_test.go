@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -523,5 +525,196 @@ func TestCountPoetryLockDependencies_NonExistent(t *testing.T) {
 	_, err := CountPythonDependencies("testdata/nonexistent-poetry.lock")
 	if err == nil {
 		t.Error("Expected error for nonexistent file")
+	}
+}
+
+// ---- parsePipfileLock tests (transitive dependency tagging) ----
+
+// Test: parsePipfileLock tags direct vs transitive dependencies using companion Pipfile
+// Justification: Pipfile.lock contains all resolved dependencies (direct + transitive).
+//                Cross-referencing with Pipfile reveals which are explicitly chosen by
+//                the developer vs pulled in transitively. Transitive dependencies
+//                represent hidden attack surface — developers rarely audit them.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020) - PyPI attack taxonomy
+//         shows transitive dependency attacks are a growing vector
+// Methodology: Parse Pipfile.lock alongside companion Pipfile. The Pipfile declares
+//              requests, flask, numpy as direct [packages]; pytest as direct [dev-packages].
+//              The Pipfile.lock has urllib3, certifi, charset-normalizer, idna as
+//              transitive deps (not in Pipfile), and pluggy as transitive dev dep.
+// Result: requests=direct, pytest=direct; urllib3, certifi, charset-normalizer,
+//         idna, pluggy=transitive
+func TestParsePipfileLock_TransitiveTagging(t *testing.T) {
+	deps, err := parsePipfileLock("testdata/Pipfile.lock")
+	if err != nil {
+		t.Fatalf("Failed to parse Pipfile.lock: %v", err)
+	}
+
+	// Should have 7 deps total: 5 default + 2 develop
+	if len(deps) != 7 {
+		t.Fatalf("Expected 7 dependencies, got %d", len(deps))
+	}
+
+	depMap := make(map[string]models.Dependency)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep
+	}
+
+	// Direct dependencies (present in companion Pipfile)
+	directDeps := []string{"requests", "pytest"}
+	for _, name := range directDeps {
+		dep, ok := depMap[name]
+		if !ok {
+			t.Errorf("Expected dependency %s not found", name)
+			continue
+		}
+		if dep.IsTransitive {
+			t.Errorf("%s should be direct (IsTransitive=false), got IsTransitive=true", name)
+		}
+	}
+
+	// Transitive dependencies (in Pipfile.lock but NOT in Pipfile)
+	transitiveDeps := []string{"urllib3", "certifi", "charset-normalizer", "idna", "pluggy"}
+	for _, name := range transitiveDeps {
+		dep, ok := depMap[name]
+		if !ok {
+			t.Errorf("Expected dependency %s not found", name)
+			continue
+		}
+		if !dep.IsTransitive {
+			t.Errorf("%s should be transitive (IsTransitive=true), got IsTransitive=false", name)
+		}
+	}
+
+	// Verify all have PyPI ecosystem
+	for _, dep := range deps {
+		if dep.Ecosystem != models.EcosystemPyPI {
+			t.Errorf("Expected pypi ecosystem for %s, got %s", dep.Name, dep.Ecosystem)
+		}
+	}
+}
+
+// Test: parsePipfileLock without companion Pipfile marks all as direct
+// Justification: When no companion Pipfile exists, we cannot determine which
+//                dependencies are direct vs transitive. The safe default is to
+//                mark all as direct (IsTransitive=false) so no dependency is
+//                silently excluded from analysis.
+// Source: Snyft architecture guidelines - degrade gracefully, never fail completely
+// Methodology: Create a Pipfile.lock in a temp directory without a Pipfile,
+//              parse it, and verify all deps have IsTransitive=false
+// Result: All dependencies have IsTransitive=false when no Pipfile is available
+func TestParsePipfileLock_MissingPipfile(t *testing.T) {
+	// Create temp directory with only Pipfile.lock (no Pipfile)
+	tmpDir := t.TempDir()
+	lockContent := `{
+		"_meta": {"hash": {"sha256": "abc"}, "pipfile-spec": 6},
+		"default": {
+			"requests": {"version": "==2.28.0"},
+			"urllib3": {"version": "==1.26.12"}
+		},
+		"develop": {}
+	}`
+
+	lockPath := filepath.Join(tmpDir, "Pipfile.lock")
+	if err := os.WriteFile(lockPath, []byte(lockContent), 0644); err != nil {
+		t.Fatalf("Failed to create test Pipfile.lock: %v", err)
+	}
+
+	deps, err := parsePipfileLock(lockPath)
+	if err != nil {
+		t.Fatalf("Failed to parse Pipfile.lock: %v", err)
+	}
+
+	if len(deps) != 2 {
+		t.Fatalf("Expected 2 dependencies, got %d", len(deps))
+	}
+
+	for _, dep := range deps {
+		if dep.IsTransitive {
+			t.Errorf("%s should be direct (IsTransitive=false) when no Pipfile present, got IsTransitive=true", dep.Name)
+		}
+	}
+}
+
+// Test: parsePipfileLock uses case-insensitive matching for Python package names
+// Justification: Python package names are case-insensitive per PEP 503. A Pipfile
+//                may list "Flask" while Pipfile.lock lists "flask" — these must
+//                match to correctly identify direct dependencies.
+// Source: PEP 503 - Simple Repository API (case normalization for package names)
+// Methodology: Create a Pipfile with "Flask" and a Pipfile.lock with "flask",
+//              verify the case-insensitive match identifies it as direct
+// Result: flask/Flask recognized as direct regardless of casing
+func TestParsePipfileLock_CaseInsensitiveMatching(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Pipfile with uppercase "Flask"
+	pipfileContent := `[packages]
+Flask = "*"
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "Pipfile"), []byte(pipfileContent), 0644); err != nil {
+		t.Fatalf("Failed to create Pipfile: %v", err)
+	}
+
+	// Pipfile.lock with lowercase "flask"
+	lockContent := `{
+		"_meta": {"hash": {"sha256": "abc"}, "pipfile-spec": 6},
+		"default": {
+			"flask": {"version": "==2.3.0"},
+			"werkzeug": {"version": "==2.3.0"}
+		},
+		"develop": {}
+	}`
+	lockPath := filepath.Join(tmpDir, "Pipfile.lock")
+	if err := os.WriteFile(lockPath, []byte(lockContent), 0644); err != nil {
+		t.Fatalf("Failed to create Pipfile.lock: %v", err)
+	}
+
+	deps, err := parsePipfileLock(lockPath)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	depMap := make(map[string]models.Dependency)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep
+	}
+
+	// flask should be direct (matches "Flask" in Pipfile, case-insensitive)
+	if dep, ok := depMap["flask"]; ok {
+		if dep.IsTransitive {
+			t.Error("flask should be direct (case-insensitive match with Flask in Pipfile)")
+		}
+	} else {
+		t.Error("Expected flask dependency not found")
+	}
+
+	// werkzeug should be transitive (not in Pipfile)
+	if dep, ok := depMap["werkzeug"]; ok {
+		if !dep.IsTransitive {
+			t.Error("werkzeug should be transitive (not in Pipfile)")
+		}
+	} else {
+		t.Error("Expected werkzeug dependency not found")
+	}
+}
+
+// Test: parsePipfileLock strips == prefix from versions
+// Justification: Pipfile.lock uses "==X.Y.Z" format for versions. The "==" prefix
+//                must be stripped for clean version strings used in registry lookups.
+// Source: PEP 440 - Version Identification
+// Methodology: Parse Pipfile.lock and verify version strings don't have "==" prefix
+// Result: Versions are clean (e.g., "2.28.0" not "==2.28.0")
+func TestParsePipfileLock_VersionStripping(t *testing.T) {
+	deps, err := parsePipfileLock("testdata/Pipfile.lock")
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	for _, dep := range deps {
+		if dep.Version == "" {
+			t.Errorf("Empty version for %s", dep.Name)
+		}
+		if dep.Version[0] == '=' {
+			t.Errorf("Version for %s still has = prefix: %s", dep.Name, dep.Version)
+		}
 	}
 }

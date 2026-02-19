@@ -13,10 +13,11 @@ const (
 
 // Dependency represents a single dependency from a manifest file
 type Dependency struct {
-	Name      string    `json:"name"`
-	Version   string    `json:"version"`
-	Ecosystem Ecosystem `json:"ecosystem"`
-	Source    string    `json:"source"` // The manifest file it came from
+	Name         string    `json:"name"`
+	Version      string    `json:"version"`
+	Ecosystem    Ecosystem `json:"ecosystem"`
+	Source       string    `json:"source"`        // The manifest file it came from
+	IsTransitive bool     `json:"is_transitive"` // True if this is a transitive (indirect) dependency
 }
 
 // SourceVerification contains detailed results of source code availability verification

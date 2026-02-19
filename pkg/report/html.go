@@ -236,6 +236,10 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 		_, _ = fmt.Fprintf(w, "<span style=\"color: #b8860b;\">%d med</span> · ", r.stats.MediumRisk)
 		_, _ = fmt.Fprintf(w, "<span style=\"color: #28a745;\">%d low</span>", r.stats.LowRisk)
 		_, _ = fmt.Fprintf(w, "</div>\n")
+		if r.stats.DirectDeps > 0 || r.stats.TransitiveDeps > 0 {
+			_, _ = fmt.Fprintf(w, "          <div style=\"font-size: 12px; color: #888; margin-top: 2px;\">%d direct · %d transitive</div>\n",
+				r.stats.DirectDeps, r.stats.TransitiveDeps)
+		}
 	}
 	_, _ = fmt.Fprintf(w, "        </div>\n")
 
@@ -345,9 +349,14 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 
 	_, _ = fmt.Fprintf(w, "      <div class=\"package %s\">\n", riskClass)
 	_, _ = fmt.Fprintln(w, "        <div class=\"package-header\">")
-	_, _ = fmt.Fprintf(w, "          <div class=\"package-name\">%s@%s</div>\n",
+	transitiveLabel := ""
+	if result.Dependency.IsTransitive {
+		transitiveLabel = " <span style=\"font-size: 11px; color: #888; font-weight: normal;\">(transitive)</span>"
+	}
+	_, _ = fmt.Fprintf(w, "          <div class=\"package-name\">%s@%s%s</div>\n",
 		html.EscapeString(result.Dependency.Name),
-		html.EscapeString(result.Dependency.Version))
+		html.EscapeString(result.Dependency.Version),
+		transitiveLabel)
 	_, _ = fmt.Fprintf(w, "          <span class=\"badge %s\">%s</span>\n", riskClass, result.RiskLevel)
 	_, _ = fmt.Fprintln(w, "        </div>")
 

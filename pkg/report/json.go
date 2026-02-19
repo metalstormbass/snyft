@@ -13,12 +13,14 @@ type JSONReport struct {
 		ManifestFiles int    `json:"manifest_files"`
 	} `json:"metadata"`
 	Summary struct {
-		TotalPackages int     `json:"total_packages"`
-		HighRisk      int     `json:"high_risk"`
-		MediumRisk    int     `json:"medium_risk"`
-		LowRisk       int     `json:"low_risk"`
-		OverallRisk   string  `json:"overall_risk"`
-		ScanDuration  float64 `json:"scan_duration_seconds"`
+		TotalPackages          int     `json:"total_packages"`
+		DirectDependencies     int     `json:"direct_dependencies"`
+		TransitiveDependencies int     `json:"transitive_dependencies"`
+		HighRisk               int     `json:"high_risk"`
+		MediumRisk             int     `json:"medium_risk"`
+		LowRisk                int     `json:"low_risk"`
+		OverallRisk            string  `json:"overall_risk"`
+		ScanDuration           float64 `json:"scan_duration_seconds"`
 	} `json:"summary"`
 	ExecutiveSummary struct {
 		KeyFindings      []JSONCriticalIssue              `json:"key_findings"`
@@ -66,6 +68,8 @@ func (r *Reporter) generateJSON() error {
 
 	// Summary
 	report.Summary.TotalPackages = r.stats.TotalPackages
+	report.Summary.DirectDependencies = r.stats.DirectDeps
+	report.Summary.TransitiveDependencies = r.stats.TransitiveDeps
 	report.Summary.HighRisk = r.stats.HighRisk
 	report.Summary.MediumRisk = r.stats.MediumRisk
 	report.Summary.LowRisk = r.stats.LowRisk

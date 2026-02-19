@@ -63,6 +63,8 @@ type ScanStats struct {
 	LowRisk        int
 	ManifestFiles  int
 	ScannedPath    string
+	DirectDeps     int // Number of direct dependencies found (before filtering)
+	TransitiveDeps int // Number of transitive dependencies found (before filtering)
 }
 
 // NewReporter creates a new reporter
@@ -89,6 +91,13 @@ func (r *Reporter) SetScanPath(path string) {
 // SetManifestCount sets the number of manifest files found
 func (r *Reporter) SetManifestCount(count int) {
 	r.stats.ManifestFiles = count
+}
+
+// SetDependencyCounts sets the direct and transitive dependency counts.
+// These reflect the total found before any filtering is applied.
+func (r *Reporter) SetDependencyCounts(direct, transitive int) {
+	r.stats.DirectDeps = direct
+	r.stats.TransitiveDeps = transitive
 }
 
 // SetReportAISummary sets the report-level AI summary.

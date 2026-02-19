@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"os"
 	"testing"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -365,4 +366,149 @@ func TestCountTransitiveDependencies_DirectCount(t *testing.T) {
 	if metrics.DirectCount != 2 {
 		t.Errorf("Expected 2 direct dependencies, got %d", metrics.DirectCount)
 	}
+}
+
+// ---- Transitive dependency tagging tests ----
+
+// Test: parsePackageLockJSON tags direct vs transitive dependencies
+// Justification: Distinguishing direct from transitive dependencies is essential
+//                for supply chain risk assessment. Direct dependencies are explicitly
+//                chosen by the developer; transitive ones are pulled in implicitly
+//                and represent hidden attack surface that developers may not audit.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - transitive
+//         dependencies propagate compromise through the dependency graph
+// Methodology: Parse package-lock-small.json which declares express and lodash as
+//              direct deps in root; accepts, array-flatten, body-parser, cookie,
+//              debug are transitive (not in root's dependencies)
+// Result: express and lodash have IsTransitive=false, all others IsTransitive=true
+func TestParsePackageLockJSON_TransitiveTagging(t *testing.T) {
+	deps, err := parsePackageLockJSON("testdata/package-lock-small.json")
+	if err != nil {
+		t.Fatalf("Failed to parse package-lock.json: %v", err)
+	}
+
+	depMap := make(map[string]models.Dependency)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep
+	}
+
+	// Direct dependencies (declared in root package)
+	directDeps := []string{"express", "lodash"}
+	for _, name := range directDeps {
+		dep, ok := depMap[name]
+		if !ok {
+			t.Errorf("Expected dependency %s not found", name)
+			continue
+		}
+		if dep.IsTransitive {
+			t.Errorf("%s should be direct (IsTransitive=false), got IsTransitive=true", name)
+		}
+	}
+
+	// Transitive dependencies (not in root package's dependencies)
+	transitiveDeps := []string{"accepts", "array-flatten", "body-parser", "cookie", "debug"}
+	for _, name := range transitiveDeps {
+		dep, ok := depMap[name]
+		if !ok {
+			t.Errorf("Expected dependency %s not found", name)
+			continue
+		}
+		if !dep.IsTransitive {
+			t.Errorf("%s should be transitive (IsTransitive=true), got IsTransitive=false", name)
+		}
+	}
+}
+
+// Test: parsePackageLockJSON marks nested node_modules paths as transitive
+// Justification: Packages installed under another package's node_modules are always
+//                transitive — they exist to resolve version conflicts in the
+//                dependency tree. Nested packages represent deeper supply chain
+//                layers with less developer visibility.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - deeper
+//         dependency paths increase compromise propagation risk
+// Methodology: Parse lockfile with nested node_modules paths
+//              (e.g., node_modules/express/node_modules/qs)
+// Result: Nested packages always have IsTransitive=true, even if their name
+//         matches a direct dependency
+func TestParsePackageLockJSON_NestedNodeModulesTransitive(t *testing.T) {
+	// Create a temporary lockfile with nested node_modules
+	nestedLockfile := `{
+		"name": "test-project",
+		"version": "1.0.0",
+		"lockfileVersion": 3,
+		"packages": {
+			"": {
+				"dependencies": {
+					"express": "^4.18.0",
+					"qs": "^6.11.0"
+				}
+			},
+			"node_modules/express": {
+				"version": "4.18.2"
+			},
+			"node_modules/qs": {
+				"version": "6.11.2"
+			},
+			"node_modules/express/node_modules/qs": {
+				"version": "6.5.3"
+			}
+		}
+	}`
+
+	tmpFile := t.TempDir() + "/package-lock.json"
+	if err := writeTestFile(tmpFile, nestedLockfile); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	deps, err := parsePackageLockJSON(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	if len(deps) != 3 {
+		t.Fatalf("Expected 3 dependencies, got %d", len(deps))
+	}
+
+	for _, dep := range deps {
+		switch dep.Name {
+		case "express":
+			if dep.IsTransitive {
+				t.Error("express (top-level direct) should not be transitive")
+			}
+		case "qs":
+			if dep.IsTransitive {
+				t.Error("qs (top-level direct) should not be transitive")
+			}
+		case "express/node_modules/qs":
+			// Nested path: always transitive even though "qs" is a direct dep
+			if !dep.IsTransitive {
+				t.Error("express/node_modules/qs (nested) should be transitive")
+			}
+		default:
+			t.Errorf("Unexpected dependency: %s", dep.Name)
+		}
+	}
+}
+
+// Test: parsePackageJSON marks all deps as direct (IsTransitive=false)
+// Justification: package.json only contains direct dependencies by definition.
+//                All dependencies listed there are explicitly chosen by the developer.
+// Source: npm documentation - package.json contains only direct dependencies
+// Methodology: Parse package.json and verify IsTransitive=false for all
+// Result: All dependencies have IsTransitive=false (default zero value)
+func TestParsePackageJSON_AllDirect(t *testing.T) {
+	deps, err := parsePackageJSON("testdata/package.json")
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	for _, dep := range deps {
+		if dep.IsTransitive {
+			t.Errorf("package.json dependency %s should be direct (IsTransitive=false)", dep.Name)
+		}
+	}
+}
+
+func writeTestFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0644)
 }

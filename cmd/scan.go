@@ -23,6 +23,9 @@ var (
 	verbose     bool
 	outputFormat string
 
+	// Transitive dependency flag
+	includeTransitive bool
+
 	// AI configuration flags
 	aiEnabled      bool
 	aiAPIKey       string
@@ -46,6 +49,9 @@ func init() {
 	scanCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file for results (default: stdout)")
 	scanCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output with detailed analysis")
 	scanCmd.Flags().StringVarP(&outputFormat, "format", "f", "text", "Output format: text, markdown, json, or html")
+
+	// Transitive dependency flag
+	scanCmd.Flags().BoolVar(&includeTransitive, "include-transitive", false, "Include transitive dependencies in analysis (default: direct only)")
 
 	// AI feature flags
 	scanCmd.Flags().BoolVar(&aiEnabled, "ai", false, "Enable AI-powered analysis (requires CLAUDE_API_KEY or --ai-api-key)")
@@ -124,7 +130,31 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	_, _ = fmt.Fprintf(statusOut, "📦 Found %d dependencies across all manifests\n\n", len(dependencies))
+	// Count direct vs transitive dependencies for reporting
+	var directCount, transitiveCount int
+	for _, dep := range dependencies {
+		if dep.IsTransitive {
+			transitiveCount++
+		} else {
+			directCount++
+		}
+	}
+	reporter.SetDependencyCounts(directCount, transitiveCount)
+
+	// Filter out transitive deps unless --include-transitive is set
+	if !includeTransitive && transitiveCount > 0 {
+		var directDeps []models.Dependency
+		for _, dep := range dependencies {
+			if !dep.IsTransitive {
+				directDeps = append(directDeps, dep)
+			}
+		}
+		_, _ = fmt.Fprintf(statusOut, "📦 Found %d dependencies (%d direct, %d transitive)\n", len(dependencies), directCount, transitiveCount)
+		_, _ = fmt.Fprintf(statusOut, "   Analyzing %d direct dependencies (use --include-transitive to analyze all)\n\n", len(directDeps))
+		dependencies = directDeps
+	} else {
+		_, _ = fmt.Fprintf(statusOut, "📦 Found %d dependencies (%d direct, %d transitive)\n\n", len(dependencies), directCount, transitiveCount)
+	}
 
 	// Configure AI if enabled
 	var aiConfig *ai.Config
@@ -204,6 +234,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 	return reporter.Generate()
 }
 
+// lockFilePreference maps manifests to their lock file equivalents.
+// When both exist in the same directory, the lock file is preferred because
+// it contains the complete resolved dependency tree with exact versions.
+var lockFilePreference = map[string]string{
+	"package.json": "package-lock.json",
+	"Pipfile":      "Pipfile.lock",
+}
+
 func parseManifests(dir string, statusOut *os.File) (int, []models.Dependency, error) {
 	var allDeps []models.Dependency
 	var mu sync.Mutex
@@ -214,10 +252,35 @@ func parseManifests(dir string, statusOut *os.File) (int, []models.Dependency, e
 		return 0, nil, err
 	}
 
+	// Build a set of manifest paths for quick lookup
+	manifestSet := make(map[string]bool)
+	for _, f := range manifestFiles {
+		manifestSet[f] = true
+	}
+
+	// Determine which manifests to skip (lock file takes precedence)
+	skipped := make(map[string]bool)
+	for _, file := range manifestFiles {
+		base := filepath.Base(file)
+		if lockName, ok := lockFilePreference[base]; ok {
+			lockPath := filepath.Join(filepath.Dir(file), lockName)
+			if manifestSet[lockPath] {
+				skipped[file] = true
+			}
+		}
+	}
+
 	_, _ = fmt.Fprintf(statusOut, "📄 Found %d manifest files\n", len(manifestFiles))
 
-	// Parse each manifest
+	// Parse each manifest (skip those superseded by lock files)
 	for _, file := range manifestFiles {
+		if skipped[file] {
+			if verbose {
+				_, _ = fmt.Fprintf(statusOut, "  Skipping: %s (lock file present)\n", file)
+			}
+			continue
+		}
+
 		if verbose {
 			_, _ = fmt.Fprintf(statusOut, "  Parsing: %s\n", file)
 		}
@@ -359,13 +422,19 @@ func formatDuration(d time.Duration) string {
 }
 
 func deduplicateDependencies(deps []models.Dependency) []models.Dependency {
-	seen := make(map[string]bool)
+	// Track index of first occurrence so we can replace transitive with direct
+	seen := make(map[string]int) // key -> index in unique slice
 	var unique []models.Dependency
 
 	for _, dep := range deps {
 		key := fmt.Sprintf("%s|%s|%s", dep.Ecosystem, dep.Name, dep.Version)
-		if !seen[key] {
-			seen[key] = true
+		if idx, exists := seen[key]; exists {
+			// If we already have a transitive entry and this one is direct, replace it
+			if unique[idx].IsTransitive && !dep.IsTransitive {
+				unique[idx] = dep
+			}
+		} else {
+			seen[key] = len(unique)
 			unique = append(unique, dep)
 		}
 	}
