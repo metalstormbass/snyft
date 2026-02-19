@@ -114,11 +114,9 @@ func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repo
 //   Override: Archived repos and abandoned packages (>180 days) always get 2 risk
 func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.CategoryScore {
 	const govSource = " [Source: OSSF Scorecard; Backstabber's Knife Collection (Ohm et al., 2020)]"
+	govMethodology := "Checked for SECURITY.md (and .github/SECURITY.md) via Git API. Analyzed issue response times via GitHub API. Checked OSSF Scorecard Security-Policy score. Detected abandonment via last commit date."
 
 	// Early return if no repository URL
-	// Assign moderate risk (1 point) rather than maximum (2 points) because
-	// the absence of a repository URL may be due to an API failure rather than
-	// genuine lack of governance. This requires further investigation.
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
 			Score:       1,
@@ -126,6 +124,13 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Description: "Unable to assess governance: no repository URL available",
 			Evidence:    "No source repository URL found; further investigation recommended" + govSource,
 			Verified:    false,
+			Methodology: "No repository URL available. Could not check for SECURITY.md, issue response times, or abandonment patterns.",
+			ChecksPerformed: []models.CheckResult{
+				{Name: "SECURITY.md", Status: "SKIPPED", Detail: "No repository URL to check"},
+				{Name: "Issue response time", Status: "SKIPPED", Detail: "No repository URL to check"},
+				{Name: "Abandonment detection", Status: "SKIPPED", Detail: "No repository URL to check"},
+				{Name: "OSSF Security-Policy", Status: "SKIPPED", Detail: "No repository URL to check"},
+			},
 		}
 	}
 
@@ -137,11 +142,14 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Description: "Archived repository: no active governance",
 			Evidence:    "Repository is archived and no longer accepting contributions" + govSource,
 			Verified:    true,
+			Methodology: govMethodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Repository archived status", Status: "FAIL", Detail: "Repository is archived — no active governance possible"},
+			},
 		}
 	}
 
-	// Early return for abandoned packages (avoid expensive HTTP calls)
-	// If metadata already tells us the package is abandoned, skip file fetching.
+	// Early return for abandoned packages
 	if !result.Metadata.RepoLastCommit.IsZero() {
 		daysSince := time.Since(result.Metadata.RepoLastCommit).Hours() / 24
 		if daysSince > 180 {
@@ -151,6 +159,10 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 				Description: "Abandoned project: high risk of compromise",
 				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince) + govSource,
 				Verified:    true,
+				Methodology: govMethodology,
+				ChecksPerformed: []models.CheckResult{
+					{Name: "Abandonment detection", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (>180 day threshold)", daysSince)},
+				},
 			}
 		}
 	}
@@ -165,17 +177,19 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Description: "Unable to verify governance",
 			Evidence:    "Could not fetch repository information" + govSource,
 			Verified:    false,
+			Methodology: govMethodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Repository access", Status: "UNAVAILABLE", Detail: "Could not fetch repository information via Git API"},
+			},
 		}
 	}
 
 	// Build evidence list
 	evidenceParts := []string{}
+	govChecks := []models.CheckResult{}
 
 	// -----------------------------------------------------------------------
 	// Component 1: Security Policy (0-1 point)
-	// SECURITY.md indicates a vulnerability disclosure process — compromises
-	// are more likely to be reported and addressed quickly.
-	// OSSF Security-Policy check is a more authoritative source than file presence.
 	// -----------------------------------------------------------------------
 	securityPolicyPoints := 0
 
@@ -190,40 +204,50 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		securityPolicyPoints = 1
 		if govMetrics.HasSecurityPolicy {
 			evidenceParts = append(evidenceParts, "Security policy: SECURITY.md")
+			govChecks = append(govChecks, models.CheckResult{Name: "SECURITY.md", Status: "PASS", Detail: "SECURITY.md found in repository (or .github/SECURITY.md)"})
 		} else {
 			evidenceParts = append(evidenceParts, "Security policy: OSSF confirmed")
+			govChecks = append(govChecks, models.CheckResult{Name: "SECURITY.md", Status: "FAIL", Detail: "No SECURITY.md file found"})
+			govChecks = append(govChecks, models.CheckResult{Name: "OSSF Security-Policy", Status: "PASS", Detail: "OSSF Scorecard confirms security policy exists"})
 		}
 	} else {
 		evidenceParts = append(evidenceParts, "No security policy found")
+		govChecks = append(govChecks, models.CheckResult{Name: "SECURITY.md", Status: "FAIL", Detail: "No SECURITY.md or .github/SECURITY.md found"})
+		if result.Metadata.OSSFChecks != nil {
+			if spScore, exists := result.Metadata.OSSFChecks["Security-Policy"]; exists {
+				govChecks = append(govChecks, models.CheckResult{Name: "OSSF Security-Policy", Status: "FAIL", Detail: fmt.Sprintf("Score: %d/10 (below threshold of 5)", spScore)})
+			}
+		}
 	}
 
 	// -----------------------------------------------------------------------
 	// Component 2: Responsiveness (0-1 point)
-	// Fast issue response OR branch protection both indicate active governance.
-	// Either signal earns the point; no data = 0 points (not penalized further).
 	// -----------------------------------------------------------------------
 	responsivenessPoints := 0
 
 	if govMetrics.AvgIssueResponseDays > 0 && govMetrics.AvgIssueResponseDays <= 14 {
-		// Responsive maintainers (within 2 weeks)
 		responsivenessPoints = 1
 		evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days", govMetrics.AvgIssueResponseDays))
+		govChecks = append(govChecks, models.CheckResult{Name: "Issue response time", Status: "PASS", Detail: fmt.Sprintf("Average response: %.1f days (<= 14 day threshold)", govMetrics.AvgIssueResponseDays)})
 	} else if result.Metadata.HasBranchProtection {
-		// Branch protection signals an enforced review/merge process
 		responsivenessPoints = 1
 		if result.Metadata.RequiredReviewers > 0 {
 			evidenceParts = append(evidenceParts, fmt.Sprintf("Branch protection with %d required reviewer(s)", result.Metadata.RequiredReviewers))
+			govChecks = append(govChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: fmt.Sprintf("Branch protection enabled with %d required reviewer(s)", result.Metadata.RequiredReviewers)})
 		} else {
 			evidenceParts = append(evidenceParts, "Branch protection enabled")
+			govChecks = append(govChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: "Branch protection enabled"})
 		}
 	} else if govMetrics.AvgIssueResponseDays > 14 {
-		// Slow response is worth noting even though it doesn't earn a point
 		evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days (slow)", govMetrics.AvgIssueResponseDays))
+		govChecks = append(govChecks, models.CheckResult{Name: "Issue response time", Status: "FAIL", Detail: fmt.Sprintf("Average response: %.1f days (> 14 day threshold)", govMetrics.AvgIssueResponseDays)})
+	} else {
+		govChecks = append(govChecks, models.CheckResult{Name: "Issue response time", Status: "UNAVAILABLE", Detail: "No issue response data available"})
 	}
 
-	// Note slight inactivity (90-180 days) in evidence without overriding the score
 	if govMetrics.RecentActivityGap > 90 {
 		evidenceParts = append(evidenceParts, fmt.Sprintf("Inactive: %.0f days since last commit", govMetrics.RecentActivityGap))
+		govChecks = append(govChecks, models.CheckResult{Name: "Recent activity", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (> 90 day concern threshold)", govMetrics.RecentActivityGap)})
 	}
 
 	// -----------------------------------------------------------------------
@@ -256,10 +280,12 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 	}
 
 	return models.CategoryScore{
-		Score:       2 - riskPoints, // Invert for display
-		RiskPoints:  riskPoints,
-		Description: description,
-		Evidence:    strings.Join(evidenceParts, "; ") + govSource,
-		Verified:    true,
+		Score:           2 - riskPoints,
+		RiskPoints:      riskPoints,
+		Description:     description,
+		Evidence:        strings.Join(evidenceParts, "; ") + govSource,
+		Verified:        true,
+		Methodology:     govMethodology,
+		ChecksPerformed: govChecks,
 	}
 }

@@ -35,9 +35,8 @@ import (
 func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.CategoryScore {
 	const releaseSecSource = " [Source: SLSA v1.0 Build Level Requirements; Backstabber's Knife Collection (Ohm et al., 2020)]"
 
-	// When no repository URL is available, assign moderate risk (1 point) rather
-	// than maximum (2 points). The absence of a URL may be due to an API failure
-	// rather than genuinely missing release security. This requires investigation.
+	relSecMethodology := "Checked for: (1) automated CI/CD release process, (2) branch protection on default branch, (3) cryptographically signed releases/tags, (4) required PR reviewers, (5) CI/CD workflow security (unpinned actions, excessive permissions, script injection), (6) self-hosted runner detection. Data sources: GitHub/GitLab/Bitbucket APIs with OSSF Scorecard fallback."
+
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
 			Score:       1,
@@ -45,21 +44,27 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 			Description: "Unable to verify release security controls: no repository URL",
 			Evidence:    "No repository URL available; further investigation recommended" + releaseSecSource,
 			Verified:    false,
+			Methodology: "No repository URL available. Could not check any release security controls.",
+			ChecksPerformed: []models.CheckResult{
+				{Name: "CI/CD release process", Status: "SKIPPED", Detail: "No repository URL"},
+				{Name: "Branch protection", Status: "SKIPPED", Detail: "No repository URL"},
+				{Name: "Signed releases", Status: "SKIPPED", Detail: "No repository URL"},
+				{Name: "Required PR reviews", Status: "SKIPPED", Detail: "No repository URL"},
+			},
 		}
 	}
 
 	points := 0
 	evidence := []string{}
-	// If we have a repository URL, we can attempt verification even if controls are absent
+	relSecChecks := []models.CheckResult{}
 	verified := true
 
-	// Component 1: CI-based Publishing (automated releases)
-	// Local publishing from developer machines is a major attack vector
+	// Component 1: CI-based Publishing
 	if result.Metadata.HasReleaseProcess {
 		points++
 		evidence = append(evidence, "Automated CI/CD release process detected")
+		relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "PASS", Detail: "Automated CI/CD release workflow detected"})
 	} else {
-		// Fallback: OSSF Scorecard "Packaging" check indicates automated packaging/publishing
 		ossfPackaging := 0
 		if result.Metadata.OSSFChecks != nil {
 			if ps, ok := result.Metadata.OSSFChecks["Packaging"]; ok {
@@ -69,21 +74,19 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		if ossfPackaging >= 7 {
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Packaging: %d/10 (automated publishing)", ossfPackaging))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "PASS", Detail: fmt.Sprintf("OSSF Packaging score: %d/10 (>= 7 threshold)", ossfPackaging)})
 		} else {
 			evidence = append(evidence, "No automated release process (local publishing risk)")
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "FAIL", Detail: "No automated release process detected; packages may be published from developer machines"})
 		}
 	}
 
 	// Component 2: Branch Protection
-	// Without branch protection, attackers with push access can bypass all controls.
-	// The GitHub branch protection API requires admin access, so direct checks often
-	// fail for third-party packages. OSSF Scorecard provides this data without requiring
-	// admin permissions.
 	if result.Metadata.HasBranchProtection {
 		points++
 		evidence = append(evidence, "Branch protection enabled on default branch")
+		relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: "Branch protection enabled on default branch"})
 	} else {
-		// Fallback: OSSF Scorecard "Branch-Protection" check
 		ossfBranchProt := 0
 		if result.Metadata.OSSFChecks != nil {
 			if bp, ok := result.Metadata.OSSFChecks["Branch-Protection"]; ok {
@@ -93,20 +96,22 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		if ossfBranchProt >= 7 {
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10", ossfBranchProt))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: fmt.Sprintf("OSSF Branch-Protection score: %d/10 (>= 7 threshold)", ossfBranchProt)})
 		} else if ossfBranchProt > 0 {
 			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10 (weak)", ossfBranchProt))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "FAIL", Detail: fmt.Sprintf("OSSF Branch-Protection score: %d/10 (< 7 threshold)", ossfBranchProt)})
 		} else {
 			evidence = append(evidence, "No branch protection detected")
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "FAIL", Detail: "No branch protection detected via API or OSSF Scorecard"})
 		}
 	}
 
 	// Component 3: Signed Releases/Tags
-	// Cryptographic signatures verify release authenticity
 	if result.Metadata.SignedReleases {
 		points++
 		evidence = append(evidence, "Releases are cryptographically signed")
+		relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "PASS", Detail: "Releases are cryptographically signed"})
 	} else {
-		// Fallback: OSSF Scorecard "Signed-Releases" check
 		ossfSigned := 0
 		if result.Metadata.OSSFChecks != nil {
 			if sr, ok := result.Metadata.OSSFChecks["Signed-Releases"]; ok {
@@ -116,25 +121,23 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		if ossfSigned >= 7 {
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Signed-Releases: %d/10", ossfSigned))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "PASS", Detail: fmt.Sprintf("OSSF Signed-Releases score: %d/10 (>= 7 threshold)", ossfSigned)})
 		} else {
 			evidence = append(evidence, "Releases not signed")
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "FAIL", Detail: "Releases are not cryptographically signed"})
 		}
 	}
 
 	// Component 4: Required PR Reviews
-	// Code review is critical for catching malicious code before merge.
-	// The branch protection API (which provides RequiredReviewers) requires admin access,
-	// so we fall back to code review rate and OSSF Scorecard data.
 	if result.Metadata.RequiredReviewers > 0 {
 		points++
 		evidence = append(evidence, fmt.Sprintf("%d required reviewers for PRs", result.Metadata.RequiredReviewers))
+		relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "PASS", Detail: fmt.Sprintf("%d required reviewer(s) configured", result.Metadata.RequiredReviewers)})
 	} else if result.Metadata.CodeReviewRate >= 75 {
-		// High code review rate is strong evidence of review practices even without
-		// branch protection API access
 		points++
 		evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (strong review practice)", result.Metadata.CodeReviewRate))
+		relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "PASS", Detail: fmt.Sprintf("%.0f%% PRs reviewed (>= 75%% threshold)", result.Metadata.CodeReviewRate)})
 	} else {
-		// Fallback: OSSF Scorecard "Code-Review" check
 		ossfReview := 0
 		if result.Metadata.OSSFChecks != nil {
 			if cr, ok := result.Metadata.OSSFChecks["Code-Review"]; ok {
@@ -144,10 +147,13 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		if ossfReview >= 7 {
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Code-Review: %d/10", ossfReview))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "PASS", Detail: fmt.Sprintf("OSSF Code-Review score: %d/10 (>= 7 threshold)", ossfReview)})
 		} else if result.Metadata.CodeReviewRate >= 50 {
 			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (moderate)", result.Metadata.CodeReviewRate))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "FAIL", Detail: fmt.Sprintf("%.0f%% PRs reviewed (< 75%% threshold)", result.Metadata.CodeReviewRate)})
 		} else {
 			evidence = append(evidence, "No required code reviews detected")
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "FAIL", Detail: "No required code reviews or review data detected"})
 		}
 	}
 
@@ -228,10 +234,12 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 	}
 
 	return models.CategoryScore{
-		Score:       points,
-		RiskPoints:  riskPoints,
-		Description: description,
-		Evidence:    strings.Join(evidence, "; ") + releaseSecSource,
-		Verified:    verified,
+		Score:           points,
+		RiskPoints:      riskPoints,
+		Description:     description,
+		Evidence:        strings.Join(evidence, "; ") + releaseSecSource,
+		Verified:        verified,
+		Methodology:     relSecMethodology,
+		ChecksPerformed: relSecChecks,
 	}
 }

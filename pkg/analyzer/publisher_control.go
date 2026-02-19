@@ -685,6 +685,99 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	analysis.Verified = len(evidenceParts) > 0
 }
 
+// buildPublisherControlChecks builds CheckResult slice from the analysis for use in CategoryScore.
+func (analysis *PublisherControlAnalysis) buildPublisherControlChecks() []models.CheckResult {
+	checks := []models.CheckResult{}
+
+	// Maintainer count check
+	if analysis.MaintainerCount == 0 {
+		caps := models.GetEcosystemCapabilities(analysis.Ecosystem)
+		if !caps.HasMaintainerList {
+			checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "UNAVAILABLE", Detail: fmt.Sprintf("%s does not expose maintainer data", analysis.Ecosystem)})
+		} else {
+			checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "FAIL", Detail: "No maintainer data found (ecosystem exposes this data)"})
+		}
+	} else if analysis.SingleMaintainer {
+		checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "FAIL", Detail: fmt.Sprintf("Single maintainer: %s", strings.Join(analysis.MaintainerEmails, ", "))})
+	} else {
+		checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "PASS", Detail: fmt.Sprintf("%d maintainers found", analysis.MaintainerCount)})
+	}
+
+	// Organization check
+	if analysis.IsOrganization {
+		detail := fmt.Sprintf("Organization: %s", analysis.OrgName)
+		if analysis.VerifiedOrgMembership {
+			detail += " (verified)"
+		}
+		checks = append(checks, models.CheckResult{Name: "Organization ownership", Status: "PASS", Detail: detail})
+	} else if analysis.IsPersonalAccount {
+		checks = append(checks, models.CheckResult{Name: "Organization ownership", Status: "FAIL", Detail: "Personal account (not an organization)"})
+	} else {
+		checks = append(checks, models.CheckResult{Name: "Organization ownership", Status: "UNAVAILABLE", Detail: "Account type unknown (no repo URL or API unavailable)"})
+	}
+
+	// Email domain check
+	if analysis.HasExpirableDomains {
+		domains := []string{}
+		for _, d := range analysis.EmailDomains {
+			if d.IsPersonalDomain {
+				domains = append(domains, d.Domain)
+			}
+		}
+		checks = append(checks, models.CheckResult{Name: "Email domain stability", Status: "FAIL", Detail: fmt.Sprintf("Personal/free email domains: %s", strings.Join(domains, ", "))})
+	} else if analysis.HasOrgDomains {
+		checks = append(checks, models.CheckResult{Name: "Email domain stability", Status: "PASS", Detail: "Organizational email domains detected"})
+	} else if len(analysis.EmailDomains) == 0 {
+		checks = append(checks, models.CheckResult{Name: "Email domain stability", Status: "UNAVAILABLE", Detail: "No email data available"})
+	}
+
+	// Account age check
+	if analysis.HasNewMaintainers {
+		for _, age := range analysis.MaintainerAccountAges {
+			if age.IsSuspicious {
+				checks = append(checks, models.CheckResult{Name: "Account age", Status: "FAIL", Detail: fmt.Sprintf("SUSPICIOUS: %s account only %d days old (created %s)", age.Username, age.AccountAge, age.CreatedAt.Format("2006-01-02"))})
+			} else if age.IsNew {
+				checks = append(checks, models.CheckResult{Name: "Account age", Status: "FAIL", Detail: fmt.Sprintf("%s account %d days old (< 6 months, created %s)", age.Username, age.AccountAge, age.CreatedAt.Format("2006-01-02"))})
+			}
+		}
+	} else if len(analysis.MaintainerAccountAges) > 0 {
+		checks = append(checks, models.CheckResult{Name: "Account age", Status: "PASS", Detail: "All maintainer accounts are established (> 6 months old)"})
+	} else {
+		checks = append(checks, models.CheckResult{Name: "Account age", Status: "SKIPPED", Detail: "Could not determine account ages"})
+	}
+
+	// Signing check
+	if analysis.SigningChecked {
+		if analysis.HasSignedCommits || analysis.HasSignedReleases {
+			checks = append(checks, models.CheckResult{Name: "Commit/release signing", Status: "PASS", Detail: fmt.Sprintf("%d signed commits found", analysis.SignedCommitCount)})
+		} else {
+			checks = append(checks, models.CheckResult{Name: "Commit/release signing", Status: "FAIL", Detail: "No signed commits or releases detected"})
+		}
+	} else {
+		checks = append(checks, models.CheckResult{Name: "Commit/release signing", Status: "SKIPPED", Detail: "Signing not checked (no repo URL)"})
+	}
+
+	// MFA check
+	if analysis.MFAChecked {
+		if analysis.MFAEnforced {
+			checks = append(checks, models.CheckResult{Name: "MFA enforcement", Status: "PASS", Detail: "Organization-level MFA enforcement enabled"})
+		} else {
+			checks = append(checks, models.CheckResult{Name: "MFA enforcement", Status: "FAIL", Detail: "Organization does NOT enforce MFA"})
+		}
+	} else {
+		checks = append(checks, models.CheckResult{Name: "MFA enforcement", Status: "UNAVAILABLE", Detail: fmt.Sprintf("MFA status: %s (personal account or platform limitation)", analysis.MFAStatus)})
+	}
+
+	// Package concentration check
+	if analysis.HasHighConcentration {
+		checks = append(checks, models.CheckResult{Name: "Package concentration", Status: "FAIL", Detail: fmt.Sprintf("High-value target: maintainer controls %d packages", analysis.MaxPackagesPerUser)})
+	} else if len(analysis.PackagesPerMaintainer) > 0 {
+		checks = append(checks, models.CheckResult{Name: "Package concentration", Status: "PASS", Detail: fmt.Sprintf("Max packages per maintainer: %d (below 50 threshold)", analysis.MaxPackagesPerUser)})
+	}
+
+	return checks
+}
+
 // extractUsernameFromEmail extracts a username from an email or maintainer string.
 // Supports formats:
 //   - "username"                          → "username"

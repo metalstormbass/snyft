@@ -575,6 +575,11 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 					html.EscapeString(finding.Evidence))
 			}
 
+			if finding.Methodology != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "            <div style=\"margin-top: 3px; font-size: 11px; color: #888;\">Methodology: %s</div>\n",
+					html.EscapeString(finding.Methodology))
+			}
+
 			_, _ = fmt.Fprintln(w, "          </div>")
 		}
 

@@ -107,19 +107,19 @@ func classifyOwnershipFromCommitStats(stats *fetcher.CommitAuthorStats) (riskPoi
 //   - 2 risk points (worst): Recent transfer or near-complete team replacement detected
 func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.CategoryScore {
 	evidenceParts := []string{}
+	ownerChecks := []models.CheckResult{}
 	verified := false
 	riskPoints := 1 // Default to medium risk when unable to verify
+	ownerMethodology := "Multi-source analysis: (1) Git commit author change patterns (recent vs historical committers, 90-day window), (2) npm/PyPI registry ownership history, (3) repository creation date vs package first-published date (transfer signal), (4) fallback: repository age + maintainer count heuristic."
 
 	// 1. Check Git platform commit author changes (if repository available)
 	if result.RepositoryURL != "" {
 		gitClient := a.getGitClient(result.RepositoryURL)
 		commitStats, err := gitClient.GetCommitAuthors(result.RepositoryURL)
 		if errors.Is(err, fetcher.ErrDataUnavailable) {
-			// Platform does not support commit author analysis.
-			// Keep default riskPoints=1 (unknown/moderate) instead of treating
-			// zero-value stats as "worst case". Do NOT set verified=true.
 			evidenceParts = append(evidenceParts, fmt.Sprintf(
 				"%s: commit author analysis not available", gitClient.GetPlatformName()))
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "UNAVAILABLE", Detail: fmt.Sprintf("%s does not support commit author analysis", gitClient.GetPlatformName())})
 		} else if err == nil && commitStats != nil {
 			verified = true
 			pts, ev := classifyOwnershipFromCommitStats(commitStats)
@@ -127,30 +127,36 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 			if ev != "" {
 				evidenceParts = append(evidenceParts, gitClient.GetPlatformName()+": "+ev)
 			}
+			status := "PASS"
+			if pts >= 2 {
+				status = "FAIL"
+			} else if pts == 1 {
+				status = "FAIL"
+			}
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: status, Detail: ev})
+		} else {
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "UNAVAILABLE", Detail: "API error fetching commit authors"})
 		}
+	} else {
+		ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "SKIPPED", Detail: "No repository URL available"})
 	}
 
-	// 2. Cross-registry transfer signal: if the repository was created significantly
-	//    after the package was first published, the repo may have been transferred.
-	//    Source: GitHub repo transfers reset the repo creation date while preserving history.
-	//    Justification: A package published years before its current repo existed indicates
-	//    that the codebase moved — potentially to a new, potentially compromised owner.
+	// 2. Cross-registry transfer signal
 	if !result.Metadata.RepoCreatedAt.IsZero() && !result.Metadata.PublishedAt.IsZero() {
 		ageDiff := result.Metadata.RepoCreatedAt.Sub(result.Metadata.PublishedAt)
-		// Repo created more than 90 days AFTER package was first published
 		if ageDiff > 90*24*time.Hour {
 			riskPoints = 2
 			verified = true
 			evidenceParts = append(evidenceParts,
 				fmt.Sprintf("Repository created %d days after package first published (possible repo transfer)",
 					int(ageDiff.Hours()/24)))
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Repo-package date mismatch", Status: "FAIL", Detail: fmt.Sprintf("Repository created %s, package published %s (%d day gap > 90 day threshold)", result.Metadata.RepoCreatedAt.Format("2006-01-02"), result.Metadata.PublishedAt.Format("2006-01-02"), int(ageDiff.Hours()/24))})
+		} else {
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Repo-package date mismatch", Status: "PASS", Detail: "Repository and package creation dates are consistent"})
 		}
 	}
 
 	// 3. Check npm package ownership history
-	//    Justification: npm registry records maintainer lists per version; a sudden change in
-	//    the maintainer set — especially to a single unknown user — is a takeover signal.
-	//    Source: npm security advisories on account takeover (github.blog/2021-12-06-write-access-to-npm)
 	if result.Dependency.Ecosystem == models.EcosystemNPM {
 		npmHistory, err := a.npmClient.GetOwnershipHistory(result.Dependency.Name)
 		if err == nil && npmHistory != nil {
@@ -161,16 +167,15 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 				evidenceParts = append(evidenceParts,
 					fmt.Sprintf("npm: Recent ownership transfer detected (%s)",
 						npmHistory.TransferDate.Format("2006-01-02")))
+				ownerChecks = append(ownerChecks, models.CheckResult{Name: "npm ownership history", Status: "FAIL", Detail: fmt.Sprintf("Recent ownership transfer on %s", npmHistory.TransferDate.Format("2006-01-02"))})
 			} else if npmHistory.MaintainerChanges > 0 {
 				if riskPoints < 2 {
 					riskPoints = 1
 				}
 				evidenceParts = append(evidenceParts,
 					fmt.Sprintf("npm: %d historical maintainer changes", npmHistory.MaintainerChanges))
+				ownerChecks = append(ownerChecks, models.CheckResult{Name: "npm ownership history", Status: "FAIL", Detail: fmt.Sprintf("%d historical maintainer changes detected", npmHistory.MaintainerChanges)})
 			} else {
-				// No ownership change signals — confirmed stable registry history
-				// Lower risk if no prior checks raised it; registry-confirmed stability
-				// is strong evidence of safe ownership.
 				if riskPoints > 0 {
 					riskPoints = 0
 				}
@@ -181,16 +186,14 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 				} else {
 					evidenceParts = append(evidenceParts, "npm: No ownership changes detected")
 				}
+				ownerChecks = append(ownerChecks, models.CheckResult{Name: "npm ownership history", Status: "PASS", Detail: "Stable ownership, no transfers detected"})
 			}
+		} else {
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "npm ownership history", Status: "UNAVAILABLE", Detail: "Could not fetch npm ownership history"})
 		}
 	}
 
 	// 4. Check PyPI package ownership history
-	//    Justification: PyPI release history provides signals about author turnover.
-	//    Note: PyPI's public JSON API does not expose the per-release uploader field,
-	//    so author-change detection is limited. A successful check with no issues
-	//    still confirms the package has a stable, checkable history.
-	//    Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - PyPI attack taxonomy
 	if result.Dependency.Ecosystem == models.EcosystemPyPI {
 		pypiHistory, err := a.pypiClient.GetOwnershipHistory(result.Dependency.Name)
 		if err == nil && pypiHistory != nil {
@@ -201,14 +204,15 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 				evidenceParts = append(evidenceParts,
 					fmt.Sprintf("PyPI: Recent ownership transfer detected (%s)",
 						pypiHistory.TransferDate.Format("2006-01-02")))
+				ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "FAIL", Detail: fmt.Sprintf("Recent ownership transfer on %s", pypiHistory.TransferDate.Format("2006-01-02"))})
 			} else if pypiHistory.AuthorChanges > 0 {
 				if riskPoints < 2 {
 					riskPoints = 1
 				}
 				evidenceParts = append(evidenceParts,
 					fmt.Sprintf("PyPI: %d historical author changes", pypiHistory.AuthorChanges))
+				ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "FAIL", Detail: fmt.Sprintf("%d historical author changes detected", pypiHistory.AuthorChanges)})
 			} else {
-				// No ownership change signals — confirmed clean history
 				if riskPoints > 0 {
 					riskPoints = 0
 				}
@@ -216,11 +220,12 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 					evidenceParts = append(evidenceParts,
 						fmt.Sprintf("PyPI: Stable ownership (no transfers detected, author: %s)", pypiHistory.CurrentAuthor))
 				} else {
-					// PyPI public API omits author/uploader fields for many packages;
-					// absence of change signals is still meaningful.
 					evidenceParts = append(evidenceParts, "PyPI: No ownership changes detected")
 				}
+				ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "PASS", Detail: "Stable ownership, no transfers detected"})
 			}
+		} else {
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "UNAVAILABLE", Detail: "Could not fetch PyPI ownership history"})
 		}
 	}
 
@@ -265,10 +270,12 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 	}
 
 	return models.CategoryScore{
-		Score:       2 - riskPoints, // Invert: 0 risk points = score 2, 2 risk points = score 0
-		RiskPoints:  riskPoints,
-		Description: description,
-		Evidence:    evidence,
-		Verified:    verified,
+		Score:           2 - riskPoints,
+		RiskPoints:      riskPoints,
+		Description:     description,
+		Evidence:        evidence,
+		Verified:        verified,
+		Methodology:     ownerMethodology,
+		ChecksPerformed: ownerChecks,
 	}
 }

@@ -12,6 +12,8 @@ import (
 // Detects dormant packages that suddenly reactivate, checks for unusual release patterns,
 // and analyzes commit frequency changes
 func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.CategoryScore {
+	anomalyMethodology := "Fetched release history (up to 20 releases) and commit activity (last 2 years) via Git API. Checked for: (1) dormancy reactivation (>1yr gap with recent release), (2) relative dormancy (gap >5x average cadence), (3) unusual release spikes (<10% of average cadence), (4) commit frequency anomalies (year-over-year comparison)."
+
 	if result.Metadata.RepoLastCommit.IsZero() || result.RepositoryURL == "" {
 		return models.CategoryScore{
 			Score:       1,
@@ -19,6 +21,12 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			Description: "Unable to verify release patterns",
 			Evidence:    "No commit history available",
 			Verified:    false,
+			Methodology: "No repository URL or commit history available. Could not check for release anomalies or dormancy patterns.",
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Dormancy reactivation", Status: "SKIPPED", Detail: "No commit history or repository URL"},
+				{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "No commit history or repository URL"},
+				{Name: "Commit frequency analysis", Status: "SKIPPED", Detail: "No commit history or repository URL"},
+			},
 		}
 	}
 
@@ -31,8 +39,13 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			Score:       1,
 			RiskPoints:  1,
 			Description: "Package appears dormant",
-			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year)", daysSinceLastCommit),
+			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year); last commit: %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
 			Verified:    true,
+			Methodology: anomalyMethodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Dormancy detection", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (> 365 day threshold); last commit %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02"))},
+				{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "Package is dormant; release pattern analysis not applicable"},
+			},
 		}
 	}
 
@@ -66,12 +79,23 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 	}
 
 	// Regular, consistent activity (active within the year, no anomalies detected)
+	regularChecks := []models.CheckResult{
+		{Name: "Dormancy detection", Status: "PASS", Detail: fmt.Sprintf("Last commit %.0f days ago (within 1 year)", daysSinceLastCommit)},
+	}
+	if daysSinceCreated > 365 {
+		regularChecks = append(regularChecks, models.CheckResult{Name: "Release pattern analysis", Status: "PASS", Detail: "No dormancy reactivation or unusual release spikes detected"})
+		regularChecks = append(regularChecks, models.CheckResult{Name: "Commit frequency analysis", Status: "PASS", Detail: "No suspicious year-over-year commit frequency changes"})
+	} else {
+		regularChecks = append(regularChecks, models.CheckResult{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "Repository < 1 year old; insufficient history for anomaly detection"})
+	}
 	return models.CategoryScore{
-		Score:       2,
-		RiskPoints:  0,
-		Description: "Regular, consistent releases",
-		Evidence:    fmt.Sprintf("Last commit %.0f days ago, no anomalies detected", daysSinceLastCommit),
-		Verified:    true,
+		Score:           2,
+		RiskPoints:      0,
+		Description:     "Regular, consistent releases",
+		Evidence:        fmt.Sprintf("Last commit %.0f days ago, no anomalies detected", daysSinceLastCommit),
+		Verified:        true,
+		Methodology:     anomalyMethodology,
+		ChecksPerformed: regularChecks,
 	}
 }
 
@@ -127,8 +151,9 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.GitHubRelease, repoCr
 		avgDaysBetweenReleases = totalDays / float64(len(validReleases)-1)
 	}
 
+	releaseMethodology := "Analyzed release timestamps from Git API to detect dormancy gaps, relative dormancy vs average cadence, and unusual release spikes."
+
 	// Check 1: Absolute dormancy reactivation (>1 year gap, recent activity)
-	// Classic abandoned-package-takeover pattern: acquire dormant package, release malicious version
 	if maxGapDays > 365 && daysSinceRecentRelease < 90 {
 		return &models.CategoryScore{
 			Score:       0,
@@ -136,13 +161,15 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.GitHubRelease, repoCr
 			Description: "Suspicious reactivation after dormancy",
 			Evidence: fmt.Sprintf("Dormant for %.0f days (%s to %s), recent release %.0f days ago",
 				maxGapDays, gapStartDate.Format("2006-01"), gapEndDate.Format("2006-01"), daysSinceRecentRelease),
-			Verified: true,
+			Verified:    true,
+			Methodology: releaseMethodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Dormancy reactivation", Status: "FAIL", Detail: fmt.Sprintf("%.0f day gap between releases (%s to %s), then activity resumed %.0f days ago", maxGapDays, gapStartDate.Format("2006-01-02"), gapEndDate.Format("2006-01-02"), daysSinceRecentRelease)},
+			},
 		}
 	}
 
 	// Check 2: Relative dormancy reactivation (gap >> average cadence)
-	// A gap much larger than usual cadence signals potential compromise even if < 1 year absolute
-	// Threshold: gap > 5x average cadence AND > 6 months absolute AND recent release within 4 months
 	if avgDaysBetweenReleases > 0 && maxGapDays > avgDaysBetweenReleases*5 && maxGapDays > 180 && daysSinceRecentRelease < 120 {
 		return &models.CategoryScore{
 			Score:       0,
@@ -150,16 +177,18 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.GitHubRelease, repoCr
 			Description: "Suspicious reactivation after relative dormancy",
 			Evidence: fmt.Sprintf("Dormant for %.0f days (%.1fx usual %.0f-day release cadence), recent release %.0f days ago",
 				maxGapDays, maxGapDays/avgDaysBetweenReleases, avgDaysBetweenReleases, daysSinceRecentRelease),
-			Verified: true,
+			Verified:    true,
+			Methodology: releaseMethodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Relative dormancy", Status: "FAIL", Detail: fmt.Sprintf("%.0f day gap is %.1fx the average %.0f-day cadence (threshold: 5x)", maxGapDays, maxGapDays/avgDaysBetweenReleases, avgDaysBetweenReleases)},
+			},
 		}
 	}
 
-	// Check 3: Unusual release spike (recent release much faster than historical cadence)
-	// Attacker pattern: inject malicious version quickly after account compromise
-	// Use relative threshold: spike if recent gap < 10% of average (not a fixed 7-day cutoff)
+	// Check 3: Unusual release spike
 	if len(validReleases) >= 3 && avgDaysBetweenReleases > 60 {
 		recentGap := validReleases[0].PublishedAt.Sub(validReleases[1].PublishedAt).Hours() / 24
-		spikeThreshold := avgDaysBetweenReleases * 0.10 // Gap < 10% of average is a suspicious spike
+		spikeThreshold := avgDaysBetweenReleases * 0.10
 		if recentGap < spikeThreshold && daysSinceRecentRelease < 60 {
 			return &models.CategoryScore{
 				Score:       0,
@@ -167,7 +196,11 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.GitHubRelease, repoCr
 				Description: "Unusual release pattern detected",
 				Evidence: fmt.Sprintf("Avg release every %.0f days, but recent release only %.0f days after previous (%.0f days ago)",
 					avgDaysBetweenReleases, recentGap, daysSinceRecentRelease),
-				Verified: true,
+				Verified:    true,
+				Methodology: releaseMethodology,
+				ChecksPerformed: []models.CheckResult{
+					{Name: "Release spike detection", Status: "FAIL", Detail: fmt.Sprintf("Recent release gap (%.0f days) is < 10%% of average cadence (%.0f days)", recentGap, avgDaysBetweenReleases)},
+				},
 			}
 		}
 	}
@@ -204,8 +237,9 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 		return nil
 	}
 
-	// Check 1: Absolute spike - near-zero prior activity, high recent activity
-	// Classic abandoned-package-takeover: dormant for a year, suddenly many commits
+	commitMethodology := "Compared commit counts from last 12 months against preceding 12 months via Git API. Thresholds: <5 prior + >20 recent = absolute spike; >=5 prior + 10x increase = relative spike; 0 prior + any recent = reactivation."
+
+	// Check 1: Absolute spike
 	if previousYearCount < 5 && recentCount > 20 {
 		return &models.CategoryScore{
 			Score:       0,
@@ -213,12 +247,15 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 			Description: "Suspicious commit frequency spike",
 			Evidence: fmt.Sprintf("%d commits in last year vs %d in previous year (sudden spike)",
 				recentCount, previousYearCount),
-			Verified: true,
+			Verified:    true,
+			Methodology: commitMethodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Commit frequency spike", Status: "FAIL", Detail: fmt.Sprintf("Previous year: %d commits (near-zero), last year: %d commits (sudden spike)", previousYearCount, recentCount)},
+			},
 		}
 	}
 
-	// Check 2: Relative spike - large proportional increase from moderate baseline
-	// A 10x+ increase even from a moderate baseline signals unusual activity
+	// Check 2: Relative spike
 	if previousYearCount >= 5 && recentCount >= previousYearCount*10 && recentCount >= 30 {
 		return &models.CategoryScore{
 			Score:       0,
@@ -226,12 +263,15 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 			Description: "Suspicious commit frequency increase",
 			Evidence: fmt.Sprintf("%d commits in last year vs %d in previous year (%.0fx increase)",
 				recentCount, previousYearCount, float64(recentCount)/float64(previousYearCount)),
-			Verified: true,
+			Verified:    true,
+			Methodology: commitMethodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Commit frequency spike", Status: "FAIL", Detail: fmt.Sprintf("%.0fx increase (%d vs %d commits) exceeds 10x threshold", float64(recentCount)/float64(previousYearCount), recentCount, previousYearCount)},
+			},
 		}
 	}
 
-	// Check 3: Complete dormancy then some activity (moderate concern)
-	// Package was completely inactive but now has some commits - could be legitimate or takeover
+	// Check 3: Reactivation after dormancy
 	if previousYearCount == 0 && recentCount > 0 && recentCount < 20 {
 		return &models.CategoryScore{
 			Score:       1,
@@ -239,6 +279,10 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 			Description: "Package reactivated after dormancy",
 			Evidence:    fmt.Sprintf("0 commits in previous year, %d commits in last year", recentCount),
 			Verified:    true,
+			Methodology: commitMethodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Dormancy reactivation", Status: "FAIL", Detail: fmt.Sprintf("0 commits in prior year, %d in recent year (moderate reactivation)", recentCount)},
+			},
 		}
 	}
 

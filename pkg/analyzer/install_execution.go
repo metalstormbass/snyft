@@ -44,6 +44,8 @@ func convertToModelAnalysis(analysis ScriptAnalysis) *models.InstallScriptAnalys
 //   - 1 risk point (moderate): Single benign install script
 //   - 2 risk points (worst): Multiple scripts OR dangerous content detected
 func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.CategoryScore {
+	methodology := "Checked package manifest for install-time script hooks (preinstall, install, postinstall for npm; setup.py for PyPI; pom.xml for Maven). Analyzed script content for dangerous patterns (network requests, file system modifications, binary execution)."
+
 	// If no install scripts present, return best score
 	if !result.Metadata.HasInstallScripts || len(result.Metadata.InstallScripts) == 0 {
 		return models.CategoryScore{
@@ -52,14 +54,27 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Description: "No install-time scripts",
 			Evidence:    "No install scripts detected in package",
 			Verified:    true,
+			Methodology: methodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Install-time script hooks", Status: "PASS", Detail: "No preinstall, install, or postinstall hooks found"},
+				{Name: "Dangerous pattern analysis", Status: "SKIPPED", Detail: "No scripts to analyze"},
+			},
 		}
 	}
 
 	// If we have script analysis with dangerous patterns, return worst score
 	if result.Metadata.InstallScriptAnalysis != nil && result.Metadata.InstallScriptAnalysis.HasDangerousPatterns {
 		patterns := []string{}
+		checks := []models.CheckResult{
+			{Name: "Install-time script hooks", Status: "FAIL", Detail: "Install scripts with dangerous patterns detected"},
+		}
 		for _, p := range result.Metadata.InstallScriptAnalysis.DangerousPatterns {
 			patterns = append(patterns, fmt.Sprintf("%s (%s)", p.Pattern, p.Severity))
+			checks = append(checks, models.CheckResult{
+				Name:   fmt.Sprintf("Pattern: %s", p.Pattern),
+				Status: "FAIL",
+				Detail: fmt.Sprintf("%s (severity: %s, match: %s)", p.Description, p.Severity, p.Match),
+			})
 		}
 
 		return models.CategoryScore{
@@ -68,6 +83,8 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Description: "Dangerous install-time operations detected",
 			Evidence:    fmt.Sprintf("Risk level: %s, Patterns: %s", result.Metadata.InstallScriptAnalysis.RiskLevel, strings.Join(patterns, ", ")),
 			Verified:    true,
+			Methodology: methodology,
+			ChecksPerformed: checks,
 		}
 	}
 
@@ -89,6 +106,11 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Description: "Multiple install-time scripts detected",
 			Evidence:    fmt.Sprintf("Scripts: %s", strings.Join(foundScripts, ", ")),
 			Verified:    true,
+			Methodology: methodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Install-time script hooks", Status: "FAIL", Detail: fmt.Sprintf("%d install hooks found: %s", len(foundScripts), strings.Join(foundScripts, ", "))},
+				{Name: "Dangerous pattern analysis", Status: "PASS", Detail: "No dangerous patterns detected in script content"},
+			},
 		}
 	}
 
@@ -98,8 +120,13 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Score:       0,
 			RiskPoints:  1,
 			Description: "Single install-time script detected",
-			Evidence:    fmt.Sprintf("Script: %s", foundScripts[0]),
+			Evidence:    fmt.Sprintf("Script: %s (no dangerous patterns found)", foundScripts[0]),
 			Verified:    true,
+			Methodology: methodology,
+			ChecksPerformed: []models.CheckResult{
+				{Name: "Install-time script hooks", Status: "FAIL", Detail: fmt.Sprintf("Install hook found: %s", foundScripts[0])},
+				{Name: "Dangerous pattern analysis", Status: "PASS", Detail: "No dangerous patterns detected in script content"},
+			},
 		}
 	}
 
@@ -108,7 +135,11 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 		Score:       2,
 		RiskPoints:  0,
 		Description: "No install-time scripts",
-		Evidence:    "Package has scripts but no install hooks",
+		Evidence:    "Package has scripts but no install hooks (checked: preinstall, install, postinstall, setup.py, pom.xml)",
 		Verified:    true,
+		Methodology: methodology,
+		ChecksPerformed: []models.CheckResult{
+			{Name: "Install-time script hooks", Status: "PASS", Detail: "Scripts present but none are install-time hooks"},
+		},
 	}
 }

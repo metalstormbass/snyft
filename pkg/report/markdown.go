@@ -267,6 +267,9 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 			if finding.Evidence != "" && r.config.Verbose {
 				_, _ = fmt.Fprintf(w, "  - *Evidence:* %s\n", finding.Evidence)
 			}
+			if finding.Methodology != "" && r.config.Verbose {
+				_, _ = fmt.Fprintf(w, "  - *Methodology:* %s\n", finding.Methodology)
+			}
 		}
 		_, _ = fmt.Fprintln(w)
 	}
