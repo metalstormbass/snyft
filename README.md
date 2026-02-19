@@ -64,8 +64,8 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 | **3. Release Anomalies** | Long dormancy followed by sudden release |
 | **4. Install Execution** | postinstall scripts, dangerous patterns |
 | **5. Dependency Sprawl** | Many transitive dependencies (50+) |
-| **6. Provenance** | No SLSA/Sigstore/provenance attestations |
-| **7. Health** | Low bus factor, no CI, no code reviews |
+| **6. Provenance** | No source verification, no SLSA/Sigstore attestations |
+| **7. Health** | Low bus factor, no review oversight |
 | **8. Governance** | No SECURITY.md, slow issue response |
 | **9. Release Security** | Manual publishing, no branch protection, CI workflow risks |
 | **10. Package Maturity** | New/abandoned package, irregular updates |
