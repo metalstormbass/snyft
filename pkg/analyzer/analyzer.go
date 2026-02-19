@@ -87,21 +87,9 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 		opt(a)
 	}
 
-	// If no AI config was provided via options, try to load from environment
-	if a.claudeClient == nil && !a.aiEnabled {
-		config, err := ai.LoadFromEnv()
-		if err == nil && config.APIKey != "" {
-			// Only initialize if API key is present
-			claudeClient, err := ai.NewClient(config)
-			if err != nil {
-				// Log error but continue - AI analysis is optional
-				fmt.Printf("Warning: Failed to initialize AI client: %v\n", err)
-			} else {
-				a.claudeClient = claudeClient
-				a.aiEnabled = true
-			}
-		}
-	}
+	// AI is opt-in only: callers must explicitly use WithAIConfig to enable it.
+	// Without the --ai flag (or equivalent option), AI analysis stays disabled
+	// regardless of environment variables like CLAUDE_API_KEY.
 
 	return a
 }
