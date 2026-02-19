@@ -259,20 +259,18 @@ func countPoetryLockDependencies(lockfilePath string) (*models.DependencyMetrics
 	lines := strings.Split(string(data), "\n")
 	totalPackages := 0
 	mainPackages := 0
-	currentCategory := ""
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
 		if trimmed == "[[package]]" {
 			totalPackages++
-			currentCategory = "" // reset for new package
 			continue
 		}
 
 		if strings.HasPrefix(trimmed, "category = ") {
-			currentCategory = strings.Trim(strings.TrimPrefix(trimmed, "category = "), "\"")
-			if currentCategory == "main" {
+			category := strings.Trim(strings.TrimPrefix(trimmed, "category = "), "\"")
+			if category == "main" {
 				mainPackages++
 			}
 		}
