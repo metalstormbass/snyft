@@ -251,18 +251,12 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 	}
 
 	// 5. GroupId-to-repository heuristic — io.github.*, com.github.*, etc.
-	//    Sonatype requires domain ownership verification for these prefixes.
+	//    Includes Sonatype-verified prefixes and well-known Java foundations.
 	//    Source: https://central.sonatype.org/publish/requirements/coordinates/
 	if pkg.RepositoryURL == "" {
 		if derived := deriveRepoFromGroupID(pkg.GroupID, pkg.ArtifactID); derived != "" {
 			pkg.RepositoryURL = derived
 		}
-	}
-
-	// 6. Apache Gitbox fallback for org.apache.* packages.
-	//    Source: https://gitbox.apache.org/repos/asf/
-	if pkg.RepositoryURL == "" && strings.HasPrefix(pkg.GroupID, "org.apache.") {
-		pkg.RepositoryURL = "https://gitbox.apache.org/repos/asf/" + pkg.ArtifactID + ".git"
 	}
 
 	// Extract license
@@ -505,6 +499,38 @@ func deriveRepoFromGroupID(groupID, artifactID string) string {
 	// Eclipse Foundation projects are mirrored on GitHub.
 	if len(parts) >= 2 && parts[0] == "org" && parts[1] == "eclipse" {
 		return "https://github.com/eclipse/" + artifactID
+	}
+
+	// Well-known Java foundation and organization mappings.
+	// These map groupId prefixes to GitHub organizations based on
+	// verified, documented, official repository structures.
+	//
+	// Unlike io.github.*/com.github.* (Sonatype-enforced), these rely
+	// on foundation/org governance ensuring stable URL patterns.
+	// They are used as a heuristic fallback — if the repo doesn't exist,
+	// the git client fails gracefully and risk checks use "unknown" scores.
+
+	// Apache Software Foundation: all projects mirrored on GitHub.
+	// Uses GitHub (not gitbox.apache.org) to enable full risk assessment
+	// via the GitHub API (maintainers, releases, PRs, signed commits, etc.).
+	// Source: https://infra.apache.org/github-actions-policy.html
+	if len(parts) >= 2 && parts[0] == "org" && parts[1] == "apache" {
+		return "https://github.com/apache/" + artifactID
+	}
+
+	// FasterXML (Jackson ecosystem): consistently named on GitHub.
+	// FasterXML is one of the most widely used Java library publishers
+	// (jackson-core, jackson-databind, jackson-annotations, woodstox, etc.)
+	// Source: https://github.com/FasterXML — all repos match artifactId
+	if len(parts) >= 2 && parts[0] == "com" && parts[1] == "fasterxml" {
+		return "https://github.com/FasterXML/" + artifactID
+	}
+
+	// Square (OkHttp, Retrofit, Moshi, Wire): consistently named on GitHub.
+	// Square's open source libraries use "square" as the GitHub org.
+	// Source: https://github.com/square — repos match artifactId
+	if len(parts) >= 2 && parts[0] == "com" && parts[1] == "squareup" {
+		return "https://github.com/square/" + artifactID
 	}
 
 	return ""
