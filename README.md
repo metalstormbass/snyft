@@ -47,6 +47,7 @@ make build
 | `-w, --workers` | Concurrent workers | 10 |
 | `-v, --verbose` | Verbose output | `false` |
 | `-o, --output` | Write results to file | stdout |
+| `--include-transitive` | Analyze transitive dependencies | `false` |
 | `--ai` | Enable AI analysis | disabled |
 | `--ai-api-key` | Claude API key (or set `CLAUDE_API_KEY`) | - |
 | `--ai-timeout` | AI timeout in seconds | 60 |
