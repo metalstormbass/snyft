@@ -113,9 +113,9 @@ Provide clear, structured analysis with:
 - Risk factors identified (with academic justification)
 - Evidence for each risk factor
 - Likelihood assessment (not severity of impact)
-- Recommendations for mitigation (if applicable)
+- Compromise scenarios enabled by identified risk factors
 
-Remember: You predict compromise likelihood. You don't track known CVEs.`
+Remember: You predict compromise likelihood. You don't track known CVEs. You don't prescribe best practices.`
 
 // ============================================================================
 // ATTACK PATTERN COMPARISON PROMPTS
@@ -210,10 +210,9 @@ When given package behavior data:
 1. Identify which attack patterns (if any) match the observed behavior
 2. Explain the match quality (strong/moderate/weak match)
 3. Cite the specific indicators present
-4. Assess the likelihood this represents actual malicious intent vs. poor security practices
-5. Provide mitigation recommendations
+4. Assess the likelihood this represents actual malicious intent vs. weak supply chain hygiene
 
-Focus on **pattern matching**, not on whether the package is definitively malicious.`
+Focus on **pattern matching** and **risk assessment**, not on whether the package is definitively malicious.`
 
 // NewAttackPatternMatchingPrompt creates a prompt for comparing behaviors to known attack patterns
 func NewAttackPatternMatchingPrompt(packageName string, ecosystem models.Ecosystem, analysisResult models.AnalysisResult) *PromptTemplate {
@@ -326,7 +325,7 @@ Explain supply chain security risks in language that:
 1. **Business Impact First**: Lead with business consequences, not technical details
 2. **Use Analogies**: Compare technical concepts to familiar business scenarios
 3. **Quantify Risk**: Use clear metrics (Low/Medium/High) with justification
-4. **Actionable Recommendations**: Always provide concrete next steps
+4. **Risk-Focused**: Describe what the risk IS, not what to do about it
 5. **Avoid Fear-Mongering**: Be factual, not alarmist; explain likelihood not just severity
 
 ## Key Messages to Convey
@@ -381,17 +380,13 @@ When explaining risks:
    - Potential Impact: Low/Medium/High (with examples)
    - Overall Risk: Low/Medium/High/Critical
 
-5. **Recommendations** (prioritized)
-   - Immediate actions (if critical)
-   - Short-term improvements (1-4 weeks)
-   - Long-term strategy (ongoing)
+5. **Risk Context**
+   - What compromise scenarios are enabled by these risk factors
+   - How this compares to typical packages in the ecosystem
+   - Relevant academic research or industry standards (SLSA, OSSF Scorecard)
+   - Comparable real-world incidents (if applicable)
 
-6. **References** (optional)
-   - Link to relevant academic research
-   - Industry best practices (SLSA, OSSF Scorecard)
-   - Comparable incidents (if applicable)
-
-Remember: Clarity over completeness. Stakeholders need enough information to make decisions, not exhaustive technical details.`
+Remember: Clarity over completeness. Stakeholders need enough information to make risk-informed decisions. Do NOT prescribe best practices or tell users how to fix things — describe the risk and let them decide.`
 
 // NewExecutiveExplanationPrompt creates a prompt for generating stakeholder-friendly reports
 func NewExecutiveExplanationPrompt(packageName string, ecosystem models.Ecosystem, analysisResult models.AnalysisResult, targetAudience string) *PromptTemplate {
@@ -498,22 +493,17 @@ Create a comprehensive yet accessible explanation following the format:
    - Potential business impact: Low/Medium/High (with examples)
    - Overall risk rating: Low/Medium/High/Critical
 
-5. **Recommendations** (prioritized)
-   - Immediate actions (if critical risk)
-   - Short-term improvements (1-4 weeks)
-   - Long-term strategy (ongoing)
-   - Each recommendation should be specific and actionable
-
-6. **Additional Context**
+5. **Risk Context**
+   - What compromise scenarios are enabled by these risk factors
+   - How this package compares to typical packages in the ecosystem
    - Brief reference to academic research or industry standards (SLSA, OSSF)
    - Comparable real-world incidents (if relevant)
-   - Links to further reading
 
 **Important**:
 - Tailor language to the {{targetAudience}} (executive, technical, compliance, or general audience)
 - Be factual, not alarmist
 - Focus on likelihood and business impact, not just technical details
-- Make recommendations concrete and actionable
+- Do NOT prescribe best practices or tell users how to improve — describe the risk
 - Remember: this is about future compromise risk, not current vulnerabilities`,
 		Parameters: map[string]string{
 			"packageName":    packageName,
@@ -584,15 +574,15 @@ Provide a comparative analysis covering:
    - Which packages have unique risk factors?
    - Are there ecosystem-specific patterns (npm vs PyPI vs Maven)?
 
-3. **Best and Worst Practices**
-   - Which package demonstrates the best supply chain security practices?
+3. **Strongest and Weakest Supply Chain Postures**
+   - Which package has the strongest supply chain security posture?
    - Which package has the most concerning risk factors?
-   - What specific practices should others adopt?
+   - What differentiates the risk profiles?
 
-4. **Recommendations**
-   - If choosing between these packages, which would you recommend and why?
-   - What mitigations would reduce risk for higher-risk packages?
-   - Are there deal-breaker risks in any package?
+4. **Risk Assessment**
+   - Which packages pose the highest supply chain compromise risk and why?
+   - Are there critical risk factors in any package?
+   - How do the risk profiles compare for package selection decisions?
 
 5. **Pattern Analysis**
    - Do any packages show patterns consistent with known attack vectors?

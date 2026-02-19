@@ -57,18 +57,18 @@ func (r *Reporter) generateHTML() error {
 
 	_, _ = fmt.Fprintln(w, "    </section>")
 
-	// Recommendations
+	// Key Risk Areas
 	_, _ = fmt.Fprintln(w, "    <section>")
-	_, _ = fmt.Fprintln(w, "      <h2>Recommendations</h2>")
+	_, _ = fmt.Fprintln(w, "      <h2>Key Risk Areas</h2>")
 
-	recommendations := r.generateRecommendations()
-	if len(recommendations) == 0 {
-		_, _ = fmt.Fprintln(w, "      <p class=\"success\">✓ No critical issues found. Continue monitoring dependencies for changes.</p>")
+	riskAreas := r.generateRiskAreas()
+	if len(riskAreas) == 0 {
+		_, _ = fmt.Fprintln(w, "      <p class=\"success\">✓ No critical supply chain risk factors identified.</p>")
 	} else {
 		_, _ = fmt.Fprintln(w, "      <ol class=\"recommendations\">")
-		for _, rec := range recommendations {
-			cleanRec := stripANSI(rec)
-			if _, err := fmt.Fprintf(w, "        <li>%s</li>\n", html.EscapeString(cleanRec)); err != nil {
+		for _, area := range riskAreas {
+			cleanArea := stripANSI(area)
+			if _, err := fmt.Fprintf(w, "        <li>%s</li>\n", html.EscapeString(cleanArea)); err != nil {
 				return err
 			}
 		}

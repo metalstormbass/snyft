@@ -130,7 +130,7 @@ func (e *Explainer) buildExecutivePrompt(packageName string, ecosystem models.Ec
 
 %s
 
-## Recommendation Guidance
+## Risk Assessment Guidance
 
 %s
 
@@ -161,9 +161,9 @@ This is a HIGH RISK package. Your explanation should:
 - Emphasize time sensitivity if applicable
 - Be direct and unambiguous about the risk
 - Keep summary to 2-3 sentences maximum
-- Include a clear, specific recommendation (BLOCK/REVIEW with conditions)
+- Clearly state the risk level and contributing factors
 
-Example opening: "This package exhibits [critical risk factor] which significantly increases the likelihood of supply chain compromise. [Specific evidence]. Immediate action is recommended."`
+Example opening: "This package exhibits [critical risk factor] which significantly increases the likelihood of supply chain compromise. [Specific evidence]. Risk level: HIGH."`
 
 	case "brief":
 		return `**BRIEF, REASSURING TONE**
@@ -171,11 +171,10 @@ Example opening: "This package exhibits [critical risk factor] which significant
 This is a LOW RISK package. Your explanation should:
 - Be concise (2-3 sentences total for summary)
 - Acknowledge that some minor concerns exist but don't warrant alarm
-- Focus on best practices and continuous monitoring
 - Use measured, balanced language
-- Recommendation should be ALLOW (with optional monitoring suggestions)
+- Focus on what risk signals exist, even if minor
 
-Example opening: "This package demonstrates generally good supply chain security practices with minor areas for improvement. [Brief summary of findings]. No immediate action required."`
+Example opening: "This package exhibits low supply chain compromise risk with minor risk factors identified. [Brief summary of findings]. Risk level: LOW."`
 
 	case "balanced":
 		return `**BALANCED, ANALYTICAL TONE**
@@ -185,9 +184,9 @@ This is a MEDIUM RISK package. Your explanation should:
 - Provide clear context for each risk factor
 - Balance concerns with mitigating factors
 - Be thorough but concise (3-4 sentences for summary)
-- Recommendation should be REVIEW (with specific conditions to check)
+- Clearly state risk factors and their significance
 
-Example opening: "This package exhibits several supply chain risk factors that warrant review before deployment. [Key findings]. A more detailed security review is recommended."`
+Example opening: "This package exhibits several supply chain risk factors that indicate moderate compromise likelihood. [Key findings]. Risk level: MEDIUM."`
 	default:
 		return `**BALANCED, ANALYTICAL TONE**
 
@@ -196,41 +195,39 @@ This is a MEDIUM RISK package. Your explanation should:
 - Provide clear context for each risk factor
 - Balance concerns with mitigating factors
 - Be thorough but concise (3-4 sentences for summary)
-- Recommendation should be REVIEW (with specific conditions to check)
+- Clearly state risk factors and their significance
 
-Example opening: "This package exhibits several supply chain risk factors that warrant review before deployment. [Key findings]. A more detailed security review is recommended."`
+Example opening: "This package exhibits several supply chain risk factors that indicate moderate compromise likelihood. [Key findings]. Risk level: MEDIUM."`
 	}
 }
 
-// getRecommendationGuidance returns recommendation-specific instructions
+// getRecommendationGuidance returns risk-level-specific assessment instructions
 func (e *Explainer) getRecommendationGuidance(riskLevel string) string {
 	switch strings.ToUpper(riskLevel) {
 	case "HIGH", "CRITICAL":
-		return `Your recommendation should be one of:
-- **BLOCK**: Do not use this package until critical risks are addressed. Use when there are multiple HIGH severity findings or patterns matching known attacks.
-- **REVIEW WITH CAUTION**: Use only if absolutely necessary, with specific security measures in place (isolation, monitoring, etc.).
+		return `Your risk assessment should classify this package as one of:
+- **HIGH RISK**: Multiple HIGH severity supply chain risk factors identified. Patterns match known compromise vectors.
+- **ELEVATED RISK**: Significant risk factors present that correlate with documented supply chain attacks.
 
-Include specific conditions that would need to be met before considering this package safe.`
+Describe the specific risk factors and their correlation with known attack patterns.`
 
 	case "MEDIUM":
-		return `Your recommendation should be:
-- **REVIEW**: Conduct a security review before deployment. Specify what aspects to review (maintainer verification, install script audit, dependency tree analysis, etc.).
-- **ALLOW WITH MONITORING**: May be acceptable for non-critical systems with appropriate monitoring.
+		return `Your risk assessment should classify this package as:
+- **MODERATE RISK**: Some supply chain risk factors identified that warrant attention.
+- **LOW-MODERATE RISK**: Minor risk factors present but within acceptable thresholds for most contexts.
 
-Include specific review criteria and monitoring recommendations.`
+Describe which risk factors are present and what compromise scenarios they enable.`
 
 	case "LOW":
-		return `Your recommendation should be:
-- **ALLOW**: Package is acceptable for use.
-- **MONITOR**: Continue standard monitoring practices.
+		return `Your risk assessment should classify this package as:
+- **LOW RISK**: Supply chain risk factors are minimal.
 
-You may include optional suggestions for ongoing best practices but emphasize that no immediate action is required.`
+Describe what was assessed and note any minor risk factors identified.`
 	default:
-		return `Your recommendation should be:
-- **ALLOW**: Package is acceptable for use.
-- **MONITOR**: Continue standard monitoring practices.
+		return `Your risk assessment should classify this package as:
+- **LOW RISK**: Supply chain risk factors are minimal.
 
-You may include optional suggestions for ongoing best practices but emphasize that no immediate action is required.`
+Describe what was assessed and note any minor risk factors identified.`
 	}
 }
 
@@ -452,14 +449,14 @@ func (e *Explainer) GenerateQuickSummary(ctx context.Context, packageName string
 Risk Level: %s
 Risk Score: %d/100
 
-Generate a 2-3 sentence executive summary with a clear recommendation (BLOCK/REVIEW/ALLOW).
+Generate a 2-3 sentence executive summary focused on supply chain compromise risk.
 
 Focus on:
 1. Overall risk level and top concern
 2. Key evidence
-3. Recommended action
+3. Risk classification (HIGH/MEDIUM/LOW)
 
-Be concise and actionable. Format: [Risk assessment]. [Key evidence]. [Recommendation: BLOCK/REVIEW/ALLOW].`,
+Be concise and factual. Format: [Risk assessment]. [Key evidence]. [Risk level: HIGH/MEDIUM/LOW].`,
 		packageName,
 		result.RiskLevel,
 		result.RiskScore,
