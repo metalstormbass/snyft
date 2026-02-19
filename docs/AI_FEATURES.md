@@ -6,7 +6,7 @@ Snyft supports optional AI-powered analysis using the Claude API for advanced su
 
 1. **Deep Analysis** - Holistic examination of all signals to find compound risk patterns (e.g., single maintainer + dormant + sudden release = account takeover) and behavioral anomalies that rule-based scoring misses
 2. **Attack Pattern Matching** - Batched comparison against 8 documented supply chain attack patterns (typosquatting, account takeover, dependency confusion, malicious install scripts, abandoned package takeover, build chain compromise, transitive dependency poisoning, subdomain takeover)
-3. **Executive Summaries** - Stakeholder-friendly risk explanations with business impact and key risk areas
+3. **Unified Summary** - Synthesizes rule-based scores, deep analysis, and attack patterns into one coherent assessment with a score adjustment (-2 to +2 points)
 
 AI is **opt-in** and must be enabled with the `--ai` flag.
 
@@ -38,7 +38,7 @@ snyft scan --ai --ai-disable-retry       # Disable retries
 
 ## Cost and Performance
 
-- Uses 3 focused API calls per package (down from 16+ previously)
+- Uses 3 focused API calls per package, each with independent 45s timeout
 - Caching enabled by default (24h TTL) to reduce costs on repeated scans
 - Rate limiting prevents excessive API usage
 - Circuit breaker stops requests after too many consecutive failures

@@ -45,7 +45,7 @@ make build
 |------|-------------|---------|
 | `-f, --format` | Output format: `text`, `markdown`, `json`, `html` | `text` |
 | `-w, --workers` | Concurrent workers | 10 |
-| `-v, --verbose` | Verbose output | `true` |
+| `-v, --verbose` | Verbose output | `false` |
 | `-o, --output` | Write results to file | stdout |
 | `--ai` | Enable AI analysis | disabled |
 | `--ai-api-key` | Claude API key (or set `CLAUDE_API_KEY`) | - |
