@@ -72,9 +72,9 @@ Each dependency is scored across 11 categories (0-2 risk points each):
 | **11. CI Pipeline Security** | No CI, unpinned actions, script injection, dangerous triggers |
 
 **Total Score**: 0-22 points
-- **0-8**: Low risk
-- **9-11**: Medium risk
-- **12+**: High risk
+- **0-9**: Low risk
+- **10-13**: Medium risk
+- **14+**: High risk
 
 ## Typosquatting Detection
 

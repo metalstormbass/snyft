@@ -43,7 +43,7 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	if result.SourceVerification != nil {
 		if result.SourceVerification.HasSourcePackage || result.RepositoryURL != "" {
 			sourceAvailable = true
-			detail := "Source code available for inspection"
+			var detail string
 			if result.SourceVerification.HasSourcePackage && result.RepositoryURL != "" {
 				detail = "Source package present and repository URL available"
 			} else if result.SourceVerification.HasSourcePackage {
