@@ -190,19 +190,15 @@ func (c *BitbucketClient) DetectCISystems(repoURL string) ([]string, error) {
 	}
 
 	var ciSystems []string
+	detected := make(map[string]bool)
 
 	for _, entry := range ExtendedCIConfigFiles() {
+		if detected[entry.Name] {
+			continue
+		}
 		if c.fileExists(owner, repo, entry.Path) {
-			alreadyAdded := false
-			for _, existing := range ciSystems {
-				if existing == entry.Name {
-					alreadyAdded = true
-					break
-				}
-			}
-			if !alreadyAdded {
-				ciSystems = append(ciSystems, entry.Name)
-			}
+			detected[entry.Name] = true
+			ciSystems = append(ciSystems, entry.Name)
 		}
 	}
 

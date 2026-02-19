@@ -166,12 +166,19 @@ func (c *GenericGitClient) fetchText(url string) (string, error) {
 // DetectCISystems attempts to detect CI/CD systems by looking for their
 // configuration files via GetFileContent. Returns names of any found systems.
 func (c *GenericGitClient) DetectCISystems(repoURL string) ([]string, error) {
-	// CI config files to probe — a representative subset from ci_detection.go
+	// CI config files to probe — a representative subset from ci_detection.go.
+	// GitHub Actions includes common workflow filenames as fallbacks because
+	// the directory path (.github/workflows) cannot be served by CDN fallbacks.
 	ciFiles := []struct {
 		path string
 		name string
 	}{
 		{".github/workflows", "GitHub Actions"},
+		{".github/workflows/ci.yml", "GitHub Actions"},
+		{".github/workflows/build.yml", "GitHub Actions"},
+		{".github/workflows/main.yml", "GitHub Actions"},
+		{".github/workflows/test.yml", "GitHub Actions"},
+		{".github/workflows/codeql.yml", "GitHub Actions"},
 		{".gitlab-ci.yml", "GitLab CI"},
 		{"Jenkinsfile", "Jenkins"},
 		{".travis.yml", "Travis CI"},
@@ -182,9 +189,14 @@ func (c *GenericGitClient) DetectCISystems(repoURL string) ([]string, error) {
 	}
 
 	var detected []string
+	detectedSet := make(map[string]bool)
 	for _, ci := range ciFiles {
+		if detectedSet[ci.name] {
+			continue
+		}
 		_, err := c.GetFileContent(repoURL, ci.path)
 		if err == nil {
+			detectedSet[ci.name] = true
 			detected = append(detected, ci.name)
 		}
 	}
