@@ -205,7 +205,8 @@ type PackageMetadata struct {
 	TopContributorPct   float64           `json:"top_contributor_pct"`    // Percentage by top contributor
 	CodeReviewRate      float64           `json:"code_review_rate"`       // Percentage of PRs with reviews
 	RequiredReviewers   int               `json:"required_reviewers"`     // Required reviewers from branch protection
-	HasBranchProtection bool              `json:"has_branch_protection"`  // Whether branch protection is enabled
+	HasBranchProtection    bool           `json:"has_branch_protection"`     // Whether branch protection is enabled
+	BranchProtectionDenied bool           `json:"branch_protection_denied"` // True when API returned 403/404 (admin access required)
 	CIQualityScore      int               `json:"ci_quality_score"`       // 0-10 CI quality score
 	CIHasTests          bool              `json:"ci_has_tests"`           // Whether CI runs tests
 

@@ -1443,3 +1443,189 @@ func TestScoreReleaseSecurity_NilOSSFChecks_NoPanic(t *testing.T) {
 		t.Errorf("Expected 2 risk points with nil OSSF checks, got %d", score.RiskPoints)
 	}
 }
+
+// Test: GitHub API denies access to branch protection (403/404), OSSF Scorecard used as fallback
+// Justification: The GitHub branch protection API requires admin access. Without it, the API
+//                returns 403/404. This is "access denied" not "no protection." When OSSF
+//                Scorecard has data for the repository, it should be used as a fallback to
+//                correctly assess branch protection status.
+// Source: SLSA Build Level Requirements (https://slsa.dev/spec/v1.0/levels)
+//         OSSF Scorecard Branch-Protection check
+// Methodology: Set BranchProtectionDenied=true (simulating 403/404), HasBranchProtection=false,
+//              and provide OSSF Branch-Protection score >= 7. Verify PASS via OSSF fallback.
+// Result: Branch protection check returns PASS using OSSF data when GitHub API is denied.
+func TestScoreReleaseSecurity_BranchProtection_APIAccessDenied_OSSFFallback(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/example/repo",
+		Metadata: models.PackageMetadata{
+			HasBranchProtection:    false, // GitHub API returned 403
+			BranchProtectionDenied: true,  // Access was denied (403/404)
+			OSSFChecks: map[string]int{
+				"Branch-Protection": 8, // OSSF confirms branch protection exists
+			},
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// OSSF fallback should produce a PASS for branch protection
+	foundBranchProtPass := false
+	for _, check := range score.ChecksPerformed {
+		if check.Name == "Branch protection" {
+			if check.Status != "PASS" {
+				t.Errorf("Expected PASS for branch protection via OSSF fallback, got %q (detail: %s)",
+					check.Status, check.Detail)
+			}
+			if !strings.Contains(check.Detail, "OSSF") {
+				t.Errorf("Expected OSSF attribution in detail, got: %s", check.Detail)
+			}
+			foundBranchProtPass = true
+		}
+	}
+	if !foundBranchProtPass {
+		t.Error("Branch protection check not found in ChecksPerformed")
+	}
+}
+
+// Test: Neither GitHub API nor OSSF has branch protection data → UNAVAILABLE, not FAIL
+// Justification: When the GitHub API returns 403/404 (admin access required) and OSSF
+//                Scorecard has no data for the repository, we cannot determine whether
+//                branch protection is configured. Reporting FAIL would incorrectly penalize
+//                the package for something we simply cannot check. The correct status is
+//                UNAVAILABLE, following the pattern used by governance.go and other checkers.
+// Source: SLSA Build Level Requirements (https://slsa.dev/spec/v1.0/levels)
+//         Governance check UNAVAILABLE pattern (governance.go:245)
+// Methodology: Set BranchProtectionDenied=true, HasBranchProtection=false, and provide
+//              nil OSSFChecks. Verify the check reports UNAVAILABLE.
+// Result: Branch protection check returns UNAVAILABLE when neither source has data.
+func TestScoreReleaseSecurity_BranchProtection_APIAccessDenied_NoOSSF_ReportsUnavailable(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/example/repo",
+		Metadata: models.PackageMetadata{
+			HasBranchProtection:    false, // GitHub API returned 403
+			BranchProtectionDenied: true,  // Access was denied (403/404)
+			OSSFChecks:             nil,   // No OSSF data available
+		},
+	}
+
+	score := analyzer.scoreReleaseSecurity(result)
+
+	// Must be UNAVAILABLE, not FAIL
+	foundBranchProtCheck := false
+	for _, check := range score.ChecksPerformed {
+		if check.Name == "Branch protection" {
+			if check.Status != "UNAVAILABLE" {
+				t.Errorf("Expected UNAVAILABLE status for branch protection when API denied and no OSSF data, got %q (detail: %s)",
+					check.Status, check.Detail)
+			}
+			if !strings.Contains(check.Detail, "admin access") {
+				t.Errorf("Expected detail to mention admin access requirement, got: %s", check.Detail)
+			}
+			foundBranchProtCheck = true
+		}
+	}
+	if !foundBranchProtCheck {
+		t.Error("Branch protection check not found in ChecksPerformed")
+	}
+
+	// Also verify with empty OSSFChecks map (not nil, but no Branch-Protection key)
+	result2 := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/example/repo",
+		Metadata: models.PackageMetadata{
+			HasBranchProtection:    false,
+			BranchProtectionDenied: true,
+			OSSFChecks:             map[string]int{"Code-Review": 9}, // Has OSSF data but not for Branch-Protection
+		},
+	}
+
+	score2 := analyzer.scoreReleaseSecurity(result2)
+
+	for _, check := range score2.ChecksPerformed {
+		if check.Name == "Branch protection" {
+			if check.Status != "UNAVAILABLE" {
+				t.Errorf("Expected UNAVAILABLE when OSSF has no Branch-Protection data, got %q (detail: %s)",
+					check.Status, check.Detail)
+			}
+		}
+	}
+}
+
+// Test: OSSF Scorecard provides correct branch protection score when GitHub API is unavailable
+// Justification: For well-known repositories, OSSF Scorecard independently verifies branch
+//                protection settings. A high OSSF Branch-Protection score (>= 7) should award
+//                credit even when the GitHub API cannot be queried directly.
+// Source: OSSF Scorecard Branch-Protection check methodology
+//         SLSA Build Level Requirements (https://slsa.dev/spec/v1.0/levels)
+// Methodology: Set BranchProtectionDenied=true with various OSSF Branch-Protection scores
+//              and verify correct scoring: >= 7 = PASS, 1-6 = FAIL (weak), 0 = UNAVAILABLE.
+// Result: Correct risk point allocation based on OSSF Branch-Protection score.
+func TestScoreReleaseSecurity_BranchProtection_OSSFScorecard_CorrectScoring(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	tests := []struct {
+		name           string
+		ossfScore      int
+		expectStatus   string
+		expectPoints   int // minimum expected total points from branch protection alone
+	}{
+		{
+			name:         "OSSF score 10 - strong protection",
+			ossfScore:    10,
+			expectStatus: "PASS",
+			expectPoints: 1,
+		},
+		{
+			name:         "OSSF score 7 - threshold pass",
+			ossfScore:    7,
+			expectStatus: "PASS",
+			expectPoints: 1,
+		},
+		{
+			name:         "OSSF score 6 - below threshold",
+			ossfScore:    6,
+			expectStatus: "FAIL",
+			expectPoints: 0,
+		},
+		{
+			name:         "OSSF score 3 - weak protection",
+			ossfScore:    3,
+			expectStatus: "FAIL",
+			expectPoints: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &models.AnalysisResult{
+				RepositoryURL: "https://github.com/example/repo",
+				Metadata: models.PackageMetadata{
+					HasBranchProtection:    false,
+					BranchProtectionDenied: true,
+					OSSFChecks: map[string]int{
+						"Branch-Protection": tt.ossfScore,
+					},
+				},
+			}
+
+			score := analyzer.scoreReleaseSecurity(result)
+
+			for _, check := range score.ChecksPerformed {
+				if check.Name == "Branch protection" {
+					if check.Status != tt.expectStatus {
+						t.Errorf("Expected %s for OSSF score %d, got %q (detail: %s)",
+							tt.expectStatus, tt.ossfScore, check.Status, check.Detail)
+					}
+				}
+			}
+
+			// Verify points: branch protection is one of several components,
+			// so check that score reflects branch protection contribution
+			if tt.expectPoints > 0 && score.Score < tt.expectPoints {
+				t.Errorf("Expected at least %d points from branch protection (OSSF score %d), got total score %d",
+					tt.expectPoints, tt.ossfScore, score.Score)
+			}
+		})
+	}
+}

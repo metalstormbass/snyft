@@ -1261,12 +1261,13 @@ type CommitStats struct{
 
 // PRStats contains pull request statistics for code review verification
 type PRStats struct {
-	TotalPRs           int
-	MergedPRs          int
-	PRsWithReviews     int
-	CodeReviewRate     float64 // Percentage of PRs with reviews
-	RequiredReviewers  int     // Number of required reviewers (from branch protection)
-	HasBranchProtection bool
+	TotalPRs               int
+	MergedPRs              int
+	PRsWithReviews         int
+	CodeReviewRate         float64 // Percentage of PRs with reviews
+	RequiredReviewers      int     // Number of required reviewers (from branch protection)
+	HasBranchProtection    bool
+	BranchProtectionDenied bool // True when API returned 403/404 (admin access required)
 }
 
 // CIQuality contains CI/CD quality metrics
@@ -1517,8 +1518,9 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	}
 
 	// Check branch protection rules
-	branchProtection := c.getBranchProtection(owner, repo)
+	branchProtection, accessDenied := c.getBranchProtection(owner, repo)
 	stats.HasBranchProtection = branchProtection != nil
+	stats.BranchProtectionDenied = accessDenied
 	if branchProtection != nil && branchProtection.RequiredReviews != nil {
 		stats.RequiredReviewers = branchProtection.RequiredReviews.RequiredApprovingReviewCount
 	}
@@ -1555,18 +1557,21 @@ func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 	return len(reviews) > 0
 }
 
-// getBranchProtection fetches branch protection rules for the default branch
-func (c *GitHubClient) getBranchProtection(owner, repo string) *GitHubBranchProtection {
+// getBranchProtection fetches branch protection rules for the default branch.
+// Returns (protection, accessDenied) where accessDenied is true when the API
+// returned 403/404 (admin access required), distinguishing "can't check" from
+// "no protection configured".
+func (c *GitHubClient) getBranchProtection(owner, repo string) (*GitHubBranchProtection, bool) {
 	// First get the default branch
 	repoInfo, err := c.GetRepositoryInfo(fmt.Sprintf("https://github.com/%s/%s", owner, repo))
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	url := fmt.Sprintf("%s/repos/%s/%s/branches/%s/protection", c.baseURL, owner, repo, repoInfo.DefaultBranch)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	if c.token != "" {
@@ -1576,20 +1581,23 @@ func (c *GitHubClient) getBranchProtection(owner, repo string) *GitHubBranchProt
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
+		return nil, true
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return nil, false
 	}
 
 	var protection GitHubBranchProtection
 	if err := json.NewDecoder(resp.Body).Decode(&protection); err != nil {
-		return nil
+		return nil, false
 	}
 
-	return &protection
+	return &protection, false
 }
 
 // AnalyzeCIQuality evaluates CI/CD quality beyond just presence
