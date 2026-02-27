@@ -1292,27 +1292,36 @@ func (c *GitHubClient) scrapeCommitStats(owner, repo string) (*CommitStats, erro
 	}
 
 	authorCommits := make(map[string]int)
+	totalContributors := 0
 
-	// Extract contributor links and their commit counts from the repo page
+	// Extract total contributor count from the repo page (e.g., "329" next to contributors link)
 	doc.Find("a[href*='/graphs/contributors'] span, a[href*='/contributors'] span").Each(func(i int, s *goquery.Selection) {
 		text := strings.TrimSpace(s.Text())
 		num := extractNumber(text)
 		if num > 0 {
-			// We know there are contributors but not individual counts;
-			// approximate with the total number visible
-			authorCommits["unknown"] = num
+			totalContributors = num
 		}
 	})
 
-	// Extract contributor avatars/links from the sidebar
+	// Extract individual contributor usernames from the sidebar
 	doc.Find("a[data-hovercard-type='user']").Each(func(i int, s *goquery.Selection) {
 		if href, exists := s.Attr("href"); exists {
 			username := strings.TrimPrefix(href, "/")
 			if username != "" && !strings.Contains(username, "/") {
-				authorCommits[username] = 1 // Approximate: at least 1 commit
+				authorCommits[username] = 1
 			}
 		}
 	})
+
+	// If we found a total contributor count larger than the visible sidebar avatars,
+	// use it to build a more representative distribution. Each contributor is assigned
+	// 1 commit (equal weight) so calculateBusFactor returns a proportional result
+	// instead of being dominated by a single "unknown" mega-author.
+	if totalContributors > len(authorCommits) {
+		for i := len(authorCommits); i < totalContributors; i++ {
+			authorCommits[fmt.Sprintf("contributor-%d", i)] = 1
+		}
+	}
 
 	totalCommits := 0
 	for _, count := range authorCommits {

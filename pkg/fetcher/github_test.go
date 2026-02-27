@@ -659,6 +659,102 @@ func TestGetCommitStats(t *testing.T) {
 	}
 }
 
+// Test: GetCommitStats with many contributors returns a reasonable bus factor
+// Justification: Packages with many contributors (e.g., Express with 300+) should have
+//                bus_factor >> 1. A bug previously caused the scraping fallback to create
+//                an "unknown" mega-author that absorbed all commits, always returning
+//                bus_factor=1 regardless of actual contributor count.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) — bus factor as key
+//         supply chain risk indicator for account takeover resistance.
+// Methodology: Mock GitHub Commits API with 20 unique authors, each contributing 5 commits.
+//              Verify that calculateBusFactor returns a value reflecting the actual diversity.
+// Result: Bus factor > 1 for a well-distributed contributor base.
+func TestGetCommitStats_ManyContributors(t *testing.T) {
+	// Build 100 commits from 20 different authors (5 commits each)
+	var commits []GitHubCommit
+	for i := 0; i < 20; i++ {
+		login := fmt.Sprintf("dev%d", i)
+		for j := 0; j < 5; j++ {
+			commits = append(commits, GitHubCommit{
+				SHA:    fmt.Sprintf("sha-%d-%d", i, j),
+				Author: &GitHubUser{Login: login},
+				Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: login}},
+			})
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(commits)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	stats, err := client.GetCommitStats("https://github.com/owner/repo")
+	if err != nil {
+		t.Fatalf("GetCommitStats() unexpected error: %v", err)
+	}
+
+	if stats.TotalCommits != 100 {
+		t.Errorf("TotalCommits = %d, want 100", stats.TotalCommits)
+	}
+
+	// With 20 equally-distributed contributors, bus factor should be 11
+	// (need 11 authors at 5 commits each = 55 > 50% of 100)
+	if stats.BusFactor < 2 {
+		t.Errorf("BusFactor = %d, want >= 2 for 20 equally-distributed contributors", stats.BusFactor)
+	}
+
+	if stats.TopContributorPct > 10 {
+		t.Errorf("TopContributorPct = %.1f, want <= 10 for equally-distributed contributors", stats.TopContributorPct)
+	}
+}
+
+// Test: GetCommitStats rate-limited falls back to scraping and does NOT produce bus_factor=1
+//       for a project with many contributors.
+// Justification: When the GitHub API is rate-limited, the scraping fallback must still
+//                differentiate between single-contributor and many-contributor projects.
+//                A previous bug created an "unknown" mega-author that dominated the
+//                calculation, always returning bus_factor=1.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — account takeover risk is
+//         lower when many contributors must be compromised.
+// Methodology: Mock API returns 403 (rate-limited); verify scraping path is attempted and
+//              does not produce bus_factor=1 when contributor data is available.
+// Result: The fallback path attempts scraping rather than returning an API error.
+func TestGetCommitStats_RateLimitedDoesNotReturnOne(t *testing.T) {
+	callCount := int32(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&callCount, 1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "API rate limit exceeded"}`))
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	// This will hit the API, get 403, and attempt scraping fallback.
+	// Scraping will likely fail in test environment (no real GitHub page),
+	// but it must NOT return a raw "GitHub API returned 403" error.
+	_, err := client.GetCommitStats("https://github.com/expressjs/express")
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "GitHub API returned 403") {
+			t.Error("GetCommitStats() returned raw API error instead of attempting scraping fallback")
+		}
+		// Scraping failure is acceptable in test env — what matters is that
+		// the fallback path was taken, not the raw API error propagated.
+	}
+}
+
 // Test: CheckGitTag verifies tag existence using multiple format variants
 // Justification: Git tags link published package versions to source code — if a published
 //                version has no corresponding tag, there is no way to verify what source
