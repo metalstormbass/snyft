@@ -8,12 +8,15 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// Test: Single maintainer with personal email = HIGH RISK
-// Justification: Single point of failure - one phished account = complete package compromise
+// Test: Single maintainer with personal email (no repo URL) = MEDIUM RISK
+// Justification: Single point of failure is the primary risk. Personal email adds a minor
+//   signal (+0.15) but is the norm in OSS, so single maintainer + personal email alone
+//   (without confirmed personal account or no signing) = MEDIUM, not HIGH.
+//   HIGH requires additional confirmed risk signals beyond what's baseline-normal.
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 //         90% of supply chain attacks target maintainer accounts via phishing/credential stuffing
 // Methodology: Count maintainers in package metadata, check email domains
-// Result: Assigns 2 risk points if maintainer_count == 1 AND personal email domain
+// Result: Assigns 1 risk point (MEDIUM) - single maintainer + personal email without repo
 func TestPublisherControl_SingleMaintainerPersonalEmail(t *testing.T) {
 	analyzer := NewAnalyzer()
 
@@ -34,12 +37,14 @@ func TestPublisherControl_SingleMaintainerPersonalEmail(t *testing.T) {
 		t.Error("Expected SingleMaintainer to be true")
 	}
 
-	if analysis.RiskLevel != "HIGH" {
-		t.Errorf("Expected HIGH risk level, got %s", analysis.RiskLevel)
+	// Without repo URL, signing and account type can't be checked.
+	// Score: 1.0 (single) + 0.15 (personal email) = 1.15 → MEDIUM
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("Expected MEDIUM risk level, got %s", analysis.RiskLevel)
 	}
 
-	if analysis.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points, got %d", analysis.RiskPoints)
+	if analysis.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point, got %d", analysis.RiskPoints)
 	}
 
 	if !analysis.HasExpirableDomains {
@@ -273,9 +278,10 @@ func TestEmailDomainAnalysis_MixedDomains(t *testing.T) {
 		t.Error("Expected HasOrgDomains to be true (has company.com)")
 	}
 
-	// Should have moderate risk due to mixed domains
-	if analysis.RiskLevel == "LOW" {
-		t.Error("Expected non-LOW risk level for mixed domains")
+	// With recalibrated weights, 3 maintainers (0.3) + personal email (0.15) = 0.45 → LOW
+	// Mixed domains with multiple maintainers is a normal OSS pattern
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk level for 3-maintainer mixed domains, got %s", analysis.RiskLevel)
 	}
 }
 
@@ -312,28 +318,27 @@ func TestExtractUsernameFromEmail(t *testing.T) {
 // Justification: Cumulative risk factors multiply compromise likelihood
 // Worst case scenario:
 //   - Single maintainer (1.0 risk)
-//   - Personal email (0.3 risk)
-//   - No signing (0.5 risk)
-//   = 1.8 risk → 2 risk points (HIGH)
+//   - Personal account (0.15 risk)
+//   - Personal email (0.15 risk)
+//   - No signing confirmed (0.3 risk)
+//   = 1.6 risk → 2 risk points (HIGH)
 // Source: Risk model based on observed npm attack patterns
 // Methodology: Weight factors by real-world attack frequency
 // Result: Assigns maximum 2 risk points for worst-case scenario
 func TestRiskScoreCalculation_WorstCase(t *testing.T) {
-	analyzer := NewAnalyzer()
-
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			Maintainers: []string{"newuser@gmail.com"}, // Single, personal email
-		},
+	// Direct calculateRiskScore test for actual worst case with all signals confirmed
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+		SigningChecked:      true, // Confirmed: no signing
 	}
 
-	analysis := analyzer.AnalyzePublisherControl(result, "")
-
-	// Manually trigger risk calculation to test scoring logic
 	analysis.calculateRiskScore()
 
 	if analysis.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for worst case, got %d", analysis.RiskPoints)
+		t.Errorf("Expected 2 risk points for worst case, got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
 
 	if analysis.RiskLevel != "HIGH" {
@@ -385,21 +390,20 @@ func TestRiskScoreCalculation_BestCase(t *testing.T) {
 // Justification: The 0.6 threshold separates LOW from MEDIUM risk. A score below 0.6
 //   must remain LOW; off-by-one at this boundary would cause false MEDIUM classifications.
 // Source: Internal risk model calibrated against npm attack patterns
-// Methodology: Construct profile scoring 0.5 (below 0.6 threshold)
-//   4+ maintainers (0.0) + org domains (0.0) + confirmed no signing (0.5) = 0.5
-// Result: Score 0.5 < 0.6 → 0 risk points (LOW)
+// Methodology: Construct profile scoring 0.45 (below 0.6 threshold)
+//   2-3 maintainers (0.3) + personal email (0.15) = 0.45
+// Result: Score 0.45 < 0.6 → 0 risk points (LOW)
 func TestRiskScoreThreshold_JustBelowMedium(t *testing.T) {
-	// 4+ maintainers + org domains + confirmed no signing = 0.0 + 0.0 + 0.5 = 0.5
+	// 2-3 maintainers + personal email = 0.3 + 0.15 = 0.45
 	analysis := &PublisherControlAnalysis{
-		MaintainerCount:  5,
-		SingleMaintainer: false,
-		HasOrgDomains:    true,
-		SigningChecked:   true, // Confirmed: no signing
+		MaintainerCount:     2,
+		SingleMaintainer:    false,
+		HasExpirableDomains: true,
 	}
 	analysis.calculateRiskScore()
 
 	if analysis.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points (LOW) for score ~0.5, got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+		t.Errorf("Expected 0 risk points (LOW) for score ~0.45, got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
 	if analysis.RiskLevel != "LOW" {
 		t.Errorf("Expected LOW risk for score below 0.6, got %s", analysis.RiskLevel)
@@ -411,14 +415,14 @@ func TestRiskScoreThreshold_JustBelowMedium(t *testing.T) {
 //   0.6 must classify as MEDIUM to flag packages that have meaningful risk.
 // Source: Internal risk model calibrated against npm attack patterns
 // Methodology: Construct profile scoring 0.6 (at 0.6 threshold)
-//   2-3 maintainers (0.3) + personal emails (0.3) + signing not checked (0) = 0.6
+//   2-3 maintainers (0.3) + confirmed no signing (0.3) = 0.6
 // Result: Score 0.6 >= 0.6 → 1 risk point (MEDIUM)
 func TestRiskScoreThreshold_AtMediumBoundary(t *testing.T) {
-	// 2-3 maintainers + personal emails = 0.3 + 0.3 = 0.6
+	// 2-3 maintainers + confirmed no signing = 0.3 + 0.3 = 0.6
 	analysis := &PublisherControlAnalysis{
-		MaintainerCount:     2,
-		SingleMaintainer:    false,
-		HasExpirableDomains: true,
+		MaintainerCount:  2,
+		SingleMaintainer: false,
+		SigningChecked:   true, // Confirmed: no signing
 	}
 	analysis.calculateRiskScore()
 
@@ -434,21 +438,20 @@ func TestRiskScoreThreshold_AtMediumBoundary(t *testing.T) {
 // Justification: The 1.3 threshold separates MEDIUM from HIGH risk. A score below 1.3
 //   must remain MEDIUM; falsely classifying as HIGH would trigger unnecessary escalation.
 // Source: Internal risk model calibrated against npm attack patterns
-// Methodology: Construct profile scoring 1.1 (below 1.3 threshold)
-//   2-3 maintainers (0.3) + personal email (0.3) + confirmed no signing (0.5) = 1.1
-// Result: Score 1.1 < 1.3 → 1 risk point (MEDIUM)
+// Methodology: Construct profile scoring 1.15 (below 1.3 threshold)
+//   Single maintainer (1.0) + personal email (0.15) = 1.15
+// Result: Score 1.15 < 1.3 → 1 risk point (MEDIUM)
 func TestRiskScoreThreshold_JustBelowHigh(t *testing.T) {
-	// 2-3 maintainers + personal emails + confirmed no signing = 0.3 + 0.3 + 0.5 = 1.1
+	// Single maintainer + personal email = 1.0 + 0.15 = 1.15
 	analysis := &PublisherControlAnalysis{
-		MaintainerCount:     3,
-		SingleMaintainer:    false,
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
 		HasExpirableDomains: true,
-		SigningChecked:      true, // Confirmed: no signing
 	}
 	analysis.calculateRiskScore()
 
 	if analysis.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point (MEDIUM) for score ~1.1, got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+		t.Errorf("Expected 1 risk point (MEDIUM) for score ~1.15, got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
 	if analysis.RiskLevel != "MEDIUM" {
 		t.Errorf("Expected MEDIUM risk for score below 1.3, got %s", analysis.RiskLevel)
@@ -460,15 +463,15 @@ func TestRiskScoreThreshold_JustBelowHigh(t *testing.T) {
 //   this score have accumulated enough risk factors to warrant HIGH classification.
 // Source: Internal risk model - 1.3 threshold matches known attack patterns from
 //   "Backstabber's Knife Collection" (Ohm et al., 2020)
-// Methodology: Construct profile scoring exactly 1.3+
-//   Single maintainer (1.0) + personal email (0.3) = 1.3 (signing not checked)
+// Methodology: Construct profile scoring exactly 1.3
+//   Single maintainer (1.0) + confirmed no signing (0.3) = 1.3
 // Result: Score 1.3 >= 1.3 → 2 risk points (HIGH)
 func TestRiskScoreThreshold_AtHighBoundary(t *testing.T) {
-	// Single maintainer + personal email = 1.0 + 0.3 = 1.3
+	// Single maintainer + confirmed no signing = 1.0 + 0.3 = 1.3
 	analysis := &PublisherControlAnalysis{
-		MaintainerCount:     1,
-		SingleMaintainer:    true,
-		HasExpirableDomains: true,
+		MaintainerCount:  1,
+		SingleMaintainer: true,
+		SigningChecked:   true, // Confirmed: no signing
 	}
 	analysis.calculateRiskScore()
 
@@ -605,14 +608,16 @@ func TestPackageConcentration_IncreasesRiskScore(t *testing.T) {
 	}
 }
 
-// Test: Confirmed no signing adds +0.5 to risk score
+// Test: Confirmed no signing adds +0.3 to risk score
 // Justification: Unsigned commits/releases mean no cryptographic proof of author identity.
 //   Without signing, attackers who compromise accounts can publish undetected.
+//   Weight reduced from 0.5 to 0.3 because ~90% of OSS doesn't sign — penalizing the
+//   norm too heavily destroys scoring differentiation.
 // Source: Sigstore & SLSA specifications
-// Methodology: Set SigningChecked=true with no signed commits/releases, verify +0.5 penalty
-// Result: No signing adds 0.5 risk, pushing borderline cases into higher risk tiers
+// Methodology: Set SigningChecked=true with no signed commits/releases, verify +0.3 penalty
+// Result: No signing adds 0.3 risk, pushing single-maintainer packages to HIGH (1.0+0.3=1.3)
 func TestSigningPractices_NoSigning_IncreasesRiskScore(t *testing.T) {
-	// Single maintainer + confirmed no signing: 1.0 + 0.5 = 1.5 → HIGH (2 points)
+	// Single maintainer + confirmed no signing: 1.0 + 0.3 = 1.3 → HIGH (2 points)
 	noSigning := &PublisherControlAnalysis{
 		MaintainerCount:  1,
 		SingleMaintainer: true,
@@ -629,14 +634,14 @@ func TestSigningPractices_NoSigning_IncreasesRiskScore(t *testing.T) {
 	}
 }
 
-// Test: Signing reduces risk score by 0.2
+// Test: Signing reduces risk score by 0.15
 // Justification: Signed commits/releases provide cryptographic proof of maintainer identity,
 //   making impersonation harder. This reduces overall risk.
 // Source: OSSF Scorecard - "Signed-Releases" check
 // Methodology: Compare calculateRiskScore with signing enabled vs disabled for same base profile
 // Result: Signing reduces risk, potentially lowering risk tier for borderline cases
 func TestSigningPractices_HasSigning_ReducesRiskScore(t *testing.T) {
-	// Single maintainer with signing: 1.0 - 0.2 = 0.8 → MEDIUM (1 point)
+	// Single maintainer with signing: 1.0 - 0.15 = 0.85 → MEDIUM (1 point)
 	withSigning := &PublisherControlAnalysis{
 		MaintainerCount:   1,
 		SingleMaintainer:  true,
@@ -664,9 +669,9 @@ func TestSigningPractices_HasSigning_ReducesRiskScore(t *testing.T) {
 // Scenario: Real-world package profile
 //   - 2 maintainers (moderate)
 //   - Mixed email domains
-//   - Established accounts
-//   - Some signing
-// Expected: MEDIUM risk (1 risk point)
+//   - No repo URL (signing/account type not checked)
+// Expected: LOW risk (0 risk points) - 2 maintainers with mixed emails and no
+//   additional confirmed risk signals is a normal OSS profile, not risky enough for MEDIUM
 // Methodology: Run full analysis and verify scoring logic
 // Result: Correctly combines all factors into final risk assessment
 func TestCompleteRiskAssessment_RealWorldPackage(t *testing.T) {
@@ -698,9 +703,11 @@ func TestCompleteRiskAssessment_RealWorldPackage(t *testing.T) {
 		t.Error("Expected mixed domain detection")
 	}
 
-	// Should have moderate risk (not lowest, not highest)
-	if analysis.RiskLevel == "LOW" || analysis.RiskLevel == "HIGH" {
-		t.Errorf("Expected MEDIUM risk for real-world package, got %s", analysis.RiskLevel)
+	// 2 maintainers (0.3) + personal email (0.15) = 0.45 → LOW
+	// Without repo URL, signing/account type not checked → no additional penalty
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk for 2-maintainer package with mixed emails (no repo URL), got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
 	}
 
 	// Verify evidence is populated
@@ -764,7 +771,7 @@ func TestPublisherControl_ZeroMaintainers(t *testing.T) {
 // Methodology: Set SigningChecked=true with no signing on a single-maintainer package
 // Result: Assigns 2 risk points (HIGH) for single maintainer + confirmed no signing
 func TestPublisherControl_SingleMaintainerNoSigning_IsHigh(t *testing.T) {
-	// Single maintainer + confirmed no signing: 1.0 + 0.5 = 1.5 → HIGH
+	// Single maintainer + confirmed no signing: 1.0 + 0.3 = 1.3 → HIGH
 	analysis := &PublisherControlAnalysis{
 		MaintainerCount:  1,
 		SingleMaintainer: true,
@@ -845,7 +852,7 @@ func TestPublisherControl_SingleMaintainerSigningNotChecked_IsMedium(t *testing.
 //   - Org does NOT enforce MFA: score increases by 0.5 → HIGH (2 points)
 func TestMFAEnforcement_ImpactsRiskScore(t *testing.T) {
 	// Without MFA enforcement: single maintainer org → HIGH
-	// Score: 1.0 (single) + 0 (signing not checked) + 0.5 (MFA not enforced) = 1.5 → 2 points
+	// Score: 1.0 (single) + 0 (signing not checked) + 0.3 (MFA not enforced) = 1.3 → 2 points
 	noMFA := &PublisherControlAnalysis{
 		MaintainerCount:  1,
 		SingleMaintainer: true,
@@ -995,30 +1002,19 @@ func TestPackageProfile_PyPI_Flask_OrgMaintained_LowRisk(t *testing.T) {
 // A compromised passlib could inject weak hashing algorithms across many applications
 // Result: HIGH risk (2 points) - single maintainer + personal email = maximum risk
 func TestPackageProfile_PyPI_Passlib_SingleMaintainer_HighRisk(t *testing.T) {
-	analyzer := NewAnalyzer()
-
-	// Representative profile: single maintainer, personal email
-	result := &models.AnalysisResult{
-		Dependency: models.Dependency{
-			Name:      "passlib",
-			Ecosystem: models.EcosystemPyPI,
-		},
-		Metadata: models.PackageMetadata{
-			Maintainers: []string{"maintainer@gmail.com"},
-		},
+	// Use direct calculateRiskScore with full realistic profile (personal account confirmed)
+	// Via analyzer without repo URL, we can only confirm single maintainer + personal email
+	// which scores MEDIUM. The full profile with personal account confirmed reaches HIGH.
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
 	}
 
-	analysis := analyzer.AnalyzePublisherControl(result, "")
+	analysis.calculateRiskScore()
 
-	if analysis.MaintainerCount != 1 {
-		t.Errorf("passlib: Expected 1 maintainer, got %d", analysis.MaintainerCount)
-	}
-	if !analysis.SingleMaintainer {
-		t.Error("passlib: Expected SingleMaintainer to be true")
-	}
-	if !analysis.HasExpirableDomains {
-		t.Error("passlib: Expected personal email domain to be flagged")
-	}
+	// Score: 1.0 (single) + 0.15 (personal acct) + 0.15 (personal email) = 1.3 → HIGH
 	if analysis.RiskPoints != 2 {
 		t.Errorf("passlib: Expected 2 risk points (HIGH), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
@@ -1058,10 +1054,11 @@ func TestPackageProfile_Maven_CommonsLang3_Apache_LowRisk(t *testing.T) {
 // Test: python-jose (PyPI) - small JWT library, limited maintainers
 // Profile: 2 maintainers, personal email domains, no signing
 // Source: pypi.org/project/python-jose - JWT implementation, smaller team
-// Justification: Security-sensitive library (JWT) with personal-email maintainers
-// and limited bus factor represents meaningful supply chain risk
-// Result: MEDIUM risk (1 point) - few maintainers + personal emails
-func TestPackageProfile_PyPI_PythonJose_FewMaintainers_MediumRisk(t *testing.T) {
+// Justification: 2 maintainers with personal emails and no additional signals is a normal
+//   OSS profile. With recalibrated weights, personal email (+0.15) is too common to be a
+//   strong differentiator. This correctly scores LOW without repo URL.
+// Result: LOW risk (0 points) - few maintainers + personal emails but no confirmed additional risks
+func TestPackageProfile_PyPI_PythonJose_FewMaintainers_LowRisk(t *testing.T) {
 	analyzer := NewAnalyzer()
 
 	// Representative profile: 2 maintainers, personal email domains
@@ -1086,13 +1083,13 @@ func TestPackageProfile_PyPI_PythonJose_FewMaintainers_MediumRisk(t *testing.T) 
 	if !analysis.HasExpirableDomains {
 		t.Error("python-jose: Expected personal email domains to be flagged")
 	}
-	// Score: 0.3 (2 maintainers ≤3) + 0.3 (expirable domains) = 0.6 → 1 point (MEDIUM)
+	// Score: 0.3 (2 maintainers ≤3) + 0.15 (personal email) = 0.45 → 0 points (LOW)
 	// Signing not checked (no repo URL) → no penalty
-	if analysis.RiskPoints != 1 {
-		t.Errorf("python-jose: Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	if analysis.RiskPoints != 0 {
+		t.Errorf("python-jose: Expected 0 risk points (LOW), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
-	if analysis.RiskLevel != "MEDIUM" {
-		t.Errorf("python-jose: Expected MEDIUM risk, got %s", analysis.RiskLevel)
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("python-jose: Expected LOW risk, got %s", analysis.RiskLevel)
 	}
 }
 
@@ -1102,11 +1099,11 @@ func TestPackageProfile_PyPI_PythonJose_FewMaintainers_MediumRisk(t *testing.T) 
 // Justification: Authentication library with single maintainer = critical supply chain risk.
 //   Compromised JWT library could forge auth tokens across all downstream applications.
 //   From mike-libraries/javascript/package.json: "jsonwebtoken": "^9.0.2"
-// Result: HIGH risk (2 points) - single maintainer for auth-critical library
+// Result: MEDIUM risk (1 point) without repo URL; HIGH (2 points) with full profile
 func TestPackageProfile_NPM_Jsonwebtoken_SingleMaintainer_HighRisk(t *testing.T) {
 	analyzer := NewAnalyzer()
 
-	// Representative profile: single maintainer, personal email
+	// Via analyzer without repo URL: only maintainer count + email are available
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
 			Name:      "jsonwebtoken",
@@ -1125,12 +1122,10 @@ func TestPackageProfile_NPM_Jsonwebtoken_SingleMaintainer_HighRisk(t *testing.T)
 	if !analysis.HasExpirableDomains {
 		t.Error("jsonwebtoken: Expected personal email domain to be flagged")
 	}
-	// Score: 1.0 (single) + 0.3 (personal email) + 0 (signing not checked) = 1.3 → 2 points (HIGH)
-	if analysis.RiskPoints != 2 {
-		t.Errorf("jsonwebtoken: Expected 2 risk points (HIGH), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
-	}
-	if analysis.RiskLevel != "HIGH" {
-		t.Errorf("jsonwebtoken: Expected HIGH risk, got %s", analysis.RiskLevel)
+	// Score: 1.0 (single) + 0.15 (personal email) + 0 (signing not checked) = 1.15 → 1 point (MEDIUM)
+	// Without repo URL, we can't confirm personal account or check signing
+	if analysis.RiskPoints != 1 {
+		t.Errorf("jsonwebtoken (no repo): Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
 }
 
@@ -1168,8 +1163,8 @@ func TestPackageProfile_NPM_Helmet_FewMaintainersOrg_LowRisk(t *testing.T) {
 	if analysis.HasExpirableDomains {
 		t.Error("helmet: Expected no personal email domains")
 	}
-	// Score: 0.3 (2 maintainers ≤3) + 0.0 (org domains) + 0 (signing not checked) = 0.3
-	// 0.3 < 0.6 → LOW (0 points)
+	// Score: 0.3 (2 maintainers ≤3) + 0.0 (org domains) = 0.3
+	// 0.3 < 0.6 → LOW (0 points). Signing not checked (no repo URL) → no penalty.
 	if analysis.RiskPoints != 0 {
 		t.Errorf("helmet: Expected 0 risk points (LOW), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
@@ -1305,23 +1300,17 @@ func TestPackageProfile_PyPI_Requests_OrgMaintained_LowRisk(t *testing.T) {
 //   high impact if compromised (used by FastAPI, many enterprise apps)
 // Result: HIGH risk (2 points) - single maintainer + personal email
 func TestPackageProfile_PyPI_Pydantic_SingleMaintainer_HighRisk(t *testing.T) {
-	analyzer := NewAnalyzer()
-
-	result := &models.AnalysisResult{
-		Dependency: models.Dependency{
-			Name:      "pydantic",
-			Ecosystem: models.EcosystemPyPI,
-		},
-		Metadata: models.PackageMetadata{
-			Maintainers: []string{"maintainer@gmail.com"},
-		},
+	// Use direct calculateRiskScore with full realistic profile (personal account confirmed)
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
 	}
 
-	analysis := analyzer.AnalyzePublisherControl(result, "")
+	analysis.calculateRiskScore()
 
-	if !analysis.SingleMaintainer {
-		t.Error("pydantic: Expected SingleMaintainer to be true")
-	}
+	// Score: 1.0 (single) + 0.15 (personal acct) + 0.15 (personal email) = 1.3 → HIGH
 	if analysis.RiskPoints != 2 {
 		t.Errorf("pydantic: Expected 2 risk points (HIGH), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
@@ -1354,10 +1343,11 @@ func TestPackageProfile_Maven_Guava_Google_LowRisk(t *testing.T) {
 // Test: helmet (npm) - small security middleware, few maintainers
 // Profile: 2 maintainers, personal email domains, no signing
 // Source: npm/helmet - Express.js security middleware
-// Justification: Security middleware package with limited maintainer team;
-//   compromise could disable security headers across many Express apps
-// Result: MEDIUM risk (1 point) - few maintainers + personal emails
-func TestPackageProfile_NPM_Helmet_FewMaintainers_MediumRisk(t *testing.T) {
+// Justification: 2 maintainers with personal emails but no additional confirmed risk
+//   signals is a normal OSS profile. Without repo URL, signing and account type can't
+//   be checked, so we only have maintainer count + email type.
+// Result: LOW risk (0 points) - few maintainers + personal emails, no additional signals
+func TestPackageProfile_NPM_Helmet_FewMaintainers_LowRisk(t *testing.T) {
 	analyzer := NewAnalyzer()
 
 	result := &models.AnalysisResult{
@@ -1378,10 +1368,10 @@ func TestPackageProfile_NPM_Helmet_FewMaintainers_MediumRisk(t *testing.T) {
 	if analysis.MaintainerCount != 2 {
 		t.Errorf("helmet: Expected 2 maintainers, got %d", analysis.MaintainerCount)
 	}
-	// Score: 0.3 (2 maintainers ≤3) + 0.3 (expirable domains) = 0.6 → 1 point (MEDIUM)
+	// Score: 0.3 (2 maintainers ≤3) + 0.15 (personal email) = 0.45 → 0 points (LOW)
 	// Signing not checked (no repo URL) → no penalty
-	if analysis.RiskPoints != 1 {
-		t.Errorf("helmet: Expected 1 risk point (MEDIUM), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
+	if analysis.RiskPoints != 0 {
+		t.Errorf("helmet: Expected 0 risk points (LOW), got %d (evidence: %s)", analysis.RiskPoints, analysis.Evidence)
 	}
 }
 
@@ -1454,8 +1444,8 @@ func TestNewMaintainerAccount_IncreasesRiskScore(t *testing.T) {
 // Result: Signing credit reduces risk from what it would be without signing
 func TestPartialSigning_OnlyCommitsSigned_ReducesRisk(t *testing.T) {
 	// Profile: 3 maintainers, personal emails, commits signed but releases unsigned
-	// Without signing: 0.3 (<=3 maint) + 0.3 (personal emails) + 0.5 (no signing) = 1.1 → MEDIUM
-	// With commit signing only: 0.3 + 0.3 - 0.2 = 0.4 → LOW
+	// Without signing: 0.3 (<=3 maint) + 0.15 (personal emails) + 0.3 (no signing) = 0.75 → MEDIUM
+	// With commit signing only: 0.3 + 0.15 - 0.15 = 0.3 → LOW
 	withPartialSigning := &PublisherControlAnalysis{
 		MaintainerCount:     3,
 		SingleMaintainer:    false,
@@ -1489,7 +1479,7 @@ func TestPartialSigning_OnlyCommitsSigned_ReducesRisk(t *testing.T) {
 // Result: Release signing alone reduces risk score
 func TestPartialSigning_OnlyReleasesSigned_ReducesRisk(t *testing.T) {
 	// Profile: 3 maintainers, personal emails, releases signed but commits unsigned
-	// Score: 0.3 + 0.3 - 0.2 = 0.4 → LOW
+	// Score: 0.3 + 0.15 - 0.15 = 0.3 → LOW
 	withReleaseSigning := &PublisherControlAnalysis{
 		MaintainerCount:     3,
 		SingleMaintainer:    false,
@@ -1520,8 +1510,8 @@ func TestPartialSigning_OnlyReleasesSigned_ReducesRisk(t *testing.T) {
 //   without any MFA fields set
 // Result: Same risk score as baseline (MFA unknown is neutral)
 func TestMFAUnchecked_PersonalAccount_NeutralImpact(t *testing.T) {
-	// Baseline: 3 maintainers, org emails, no signing
-	// Score: 0.3 + 0.5 = 0.8 → MEDIUM (1 point)
+	// Baseline: 3 maintainers, org emails, signing not checked
+	// Score: 0.3 → LOW (0 points)
 	baseline := &PublisherControlAnalysis{
 		MaintainerCount:  3,
 		SingleMaintainer: false,
@@ -1610,5 +1600,140 @@ func TestExtractUsernameFromEmail_EmptyNameAngleBrackets(t *testing.T) {
 		if result != tc.expected {
 			t.Errorf("extractUsernameFromEmail(%q) = %q, expected %q", tc.input, result, tc.expected)
 		}
+	}
+}
+
+// ============================================================
+// Scoring differentiation tests
+// These tests verify that recalibrated weights produce meaningful
+// differentiation between actually risky publishers and normal OSS maintainers.
+// ============================================================
+
+// Test: 5-maintainer package with org account scores LOW, not HIGH
+// Justification: A package with 5 maintainers under an org account with personal emails
+//   and no signing represents a normal, healthy OSS project. The old scoring pushed this
+//   to HIGH (1.1 raw score) because personal email (+0.3) and no signing (+0.5) stacked
+//   with personal account (+0.3). Recalibrated weights correctly score this as LOW.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - multi-maintainer
+//   packages are significantly more resilient to single-point-of-failure attacks
+// Methodology: Construct a healthy multi-maintainer profile with baseline-normal OSS practices
+// Result: 0 risk points (LOW) - normal OSS practices don't inflate score
+func TestDifferentiation_MultiMaintainerOrgAccount_IsLow(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     5,
+		SingleMaintainer:    false,
+		IsOrganization:      true,
+		OrgName:             "some-org",
+		HasExpirableDomains: true, // Personal emails (normal in OSS)
+	}
+	analysis.calculateRiskScore()
+
+	// 5+ maintainers (0.0) + personal email (0.15) = 0.15 → LOW
+	if analysis.RiskPoints != 0 {
+		t.Errorf("5-maintainer org with personal emails: Expected 0 risk points (LOW), got %d (evidence: %s)",
+			analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk for 5-maintainer org, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: Single anonymous maintainer scores HIGH
+// Justification: A single maintainer with personal account, personal email, and no signing
+//   represents the highest-risk publisher profile — single point of failure with no
+//   organizational controls and no cryptographic verification.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - 90% of supply chain
+//   attacks target single-maintainer packages via account takeover
+// Methodology: Construct worst-case single-maintainer profile
+// Result: 2 risk points (HIGH) - maximum risk for anonymous single maintainer
+func TestDifferentiation_SingleAnonymousMaintainer_IsHigh(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+		SigningChecked:      true, // Confirmed: no signing
+	}
+	analysis.calculateRiskScore()
+
+	// 1.0 (single) + 0.15 (personal acct) + 0.15 (personal email) + 0.3 (no signing) = 1.6 → HIGH
+	if analysis.RiskPoints != 2 {
+		t.Errorf("Single anonymous maintainer: Expected 2 risk points (HIGH), got %d (evidence: %s)",
+			analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("Expected HIGH risk for single anonymous maintainer, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: 5-maintainer org scores STRICTLY LOWER than single anonymous maintainer
+// Justification: This is the core differentiation test. Before this fix, both profiles
+//   could score 2/2 (HIGH) because baseline-normal OSS practices inflated the score.
+//   After recalibration, there must be a clear gap between these two profiles.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Compare calculateRiskScore for both profiles
+// Result: Multi-maintainer org = LOW (0), single anonymous = HIGH (2) — clear separation
+func TestDifferentiation_OrgVsAnonymous_ClearSeparation(t *testing.T) {
+	// Profile A: 5-maintainer org with personal emails, no signing, personal account
+	// This represents the worst-case "normal" multi-maintainer OSS project
+	multiMaintainer := &PublisherControlAnalysis{
+		MaintainerCount:     5,
+		SingleMaintainer:    false,
+		IsPersonalAccount:   true,  // Even with personal account type
+		HasExpirableDomains: true,  // Personal emails
+		SigningChecked:      true,  // No signing confirmed
+	}
+	multiMaintainer.calculateRiskScore()
+
+	// Profile B: Single anonymous maintainer
+	singleAnonymous := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+		SigningChecked:      true,
+	}
+	singleAnonymous.calculateRiskScore()
+
+	// Multi-maintainer must score strictly lower
+	if multiMaintainer.RiskPoints >= singleAnonymous.RiskPoints {
+		t.Errorf("Expected multi-maintainer (%d points) < single anonymous (%d points)",
+			multiMaintainer.RiskPoints, singleAnonymous.RiskPoints)
+	}
+
+	// Verify at least 2-tier gap (LOW vs HIGH)
+	if multiMaintainer.RiskLevel == "HIGH" {
+		t.Errorf("Multi-maintainer org should NOT be HIGH risk, got %s (evidence: %s)",
+			multiMaintainer.RiskLevel, multiMaintainer.Evidence)
+	}
+	if singleAnonymous.RiskLevel != "HIGH" {
+		t.Errorf("Single anonymous maintainer should be HIGH risk, got %s (evidence: %s)",
+			singleAnonymous.RiskLevel, singleAnonymous.Evidence)
+	}
+}
+
+// Test: Normal OSS practices don't push 5-maintainer package above MEDIUM
+// Justification: Even with ALL baseline-normal signals active (personal email, personal
+//   account, no signing, MFA not enforced), a 5-maintainer package should not reach HIGH.
+//   The maintainer count provides sufficient resilience against account takeover.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Stack every common OSS signal on a 5-maintainer package
+// Result: At most MEDIUM risk — maintainer count dominates
+func TestDifferentiation_AllNormalSignals_MultiMaintainer_NotHigh(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     5,
+		SingleMaintainer:    false,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+		SigningChecked:      true, // No signing
+		MFAChecked:          true,
+		MFAEnforced:         false, // MFA not enforced
+	}
+	analysis.calculateRiskScore()
+
+	// 0.0 (5+ maint) + 0.15 (personal acct) + 0.15 (personal email) + 0.3 (no signing) + 0.3 (no MFA) = 0.9 → MEDIUM
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("5-maintainer package with all normal OSS signals should NOT be HIGH, got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
 	}
 }

@@ -15,27 +15,31 @@ import (
 // Source: SLSA v1.0 specification (https://slsa.dev/spec/v1.0/requirements), OSSF Scorecard criteria (https://github.com/ossf/scorecard)
 
 func TestScorePublisherControl_HighRisk_SingleMaintainerNoSigning(t *testing.T) {
-	// Test: Single maintainer with personal email and no signing controls
-	// Justification: Single point of compromise - attacker needs to compromise only one account to inject malicious code
-	//                Personal email increases risk (no org security controls, easy to phish)
-	// Source: SLSA v1.0 specification (https://slsa.dev/spec/v1.0/requirements), OSSF Scorecard criteria (https://github.com/ossf/scorecard)
+	// Test: Single maintainer with personal email and no repo URL
+	// Justification: Single point of compromise - attacker needs to compromise only one account
+	//   to inject malicious code. Without repo URL, signing and account type can't be verified.
+	//   With recalibrated weights, single maintainer (1.0) + personal email (0.15) = 1.15 → MEDIUM
+	//   HIGH requires additional confirmed signals (personal account, no signing, etc.)
+	// Source: SLSA v1.0 specification (https://slsa.dev/spec/v1.0/requirements), OSSF Scorecard criteria
 	//         "Backstabber's Knife Collection" (Ohm et al., 2020) - 90% of attacks target maintainer accounts
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			Maintainers: []string{"alice@gmail.com"}, // Personal email domain adds to risk
+			Maintainers: []string{"alice@gmail.com"}, // Personal email domain adds minor risk
 		},
 		RepositoryURL: "", // No repo = no signing verification
 	}
 
 	score := analyzer.scorePublisherControl(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for single maintainer with personal email and no signing, got %d", score.RiskPoints)
+	// Score: 1.0 (single) + 0.15 (personal email) = 1.15 → MEDIUM (1 risk point)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for single maintainer with personal email (no repo), got %d", score.RiskPoints)
 	}
 
-	if score.Score != 0 {
-		t.Errorf("Expected score 0, got %d", score.Score)
+	// CategoryScore.Score = 2 - RiskPoints = 2 - 1 = 1
+	if score.Score != 1 {
+		t.Errorf("Expected score 1, got %d", score.Score)
 	}
 
 	if !score.Verified {
