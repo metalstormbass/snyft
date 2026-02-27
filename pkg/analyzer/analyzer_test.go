@@ -2932,6 +2932,105 @@ func TestScoreHealth_CIPresencePartialCredit(t *testing.T) {
 	}
 }
 
+// Test: OSSF Scorecard "Contributors" check used as fallback when commit data unavailable
+// Justification: When GitHub API is rate-limited and commit stats are degraded (BusFactor=0),
+//                the OSSF Scorecard "Contributors" check provides an alternative signal about
+//                organizational contributor diversity. A high score (>= 5/10) indicates multiple
+//                organizations contribute, reducing single-point-of-compromise risk.
+// Source: OSSF Scorecard methodology — https://github.com/ossf/scorecard
+//         "Contributors" check evaluates organizational diversity of contributors.
+// Methodology: Set BusFactor=0 (no commit data) with OSSFChecks["Contributors"]=8 (high score);
+//              verify scoreHealth awards bus factor point via OSSF fallback.
+// Result: Bus factor point awarded when OSSF Contributors score >= 5.
+func TestScoreHealth_OSSFContributorsFallback(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	tests := []struct {
+		name          string
+		ossfScore     int
+		wantBusPASS   bool
+		wantRiskPoints int
+	}{
+		{
+			name:          "High OSSF Contributors score (8/10) — awards bus factor point",
+			ossfScore:     8,
+			wantBusPASS:   true,
+			wantRiskPoints: 1, // bus factor pass + no review oversight = 1 risk
+		},
+		{
+			name:          "OSSF Contributors at threshold (5/10) — awards bus factor point",
+			ossfScore:     5,
+			wantBusPASS:   true,
+			wantRiskPoints: 1,
+		},
+		{
+			name:          "Low OSSF Contributors score (3/10) — no bus factor point",
+			ossfScore:     3,
+			wantBusPASS:   false,
+			wantRiskPoints: 2, // no bus factor + no review oversight = 2 risk
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := &models.AnalysisResult{
+				RepositoryURL: "https://github.com/test/repo",
+				Metadata: models.PackageMetadata{
+					BusFactor:  0, // No commit data (simulates API rate limit)
+					OSSFChecks: map[string]int{"Contributors": tt.ossfScore},
+				},
+			}
+
+			score := analyzer.scoreHealth(result)
+
+			if score.RiskPoints != tt.wantRiskPoints {
+				t.Errorf("scoreHealth() RiskPoints = %d, want %d (evidence: %s)",
+					score.RiskPoints, tt.wantRiskPoints, score.Evidence)
+			}
+		})
+	}
+}
+
+// Test: Bus factor=1 is only reported when the package truly has a single contributor
+// Justification: The previous bug always returned bus_factor=1 even for Express (300+
+//                contributors). This test ensures bus_factor=1 requires genuine single-
+//                contributor evidence, not degraded data artifacts.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — single maintainer packages
+//         are the highest-risk targets for account takeover.
+// Methodology: Test scoreHealth with genuine bus_factor=1 (verified data) vs fallback
+//              scenarios where OSSF data suggests many contributors.
+// Result: bus_factor=1 earns FAIL only when it reflects real single-contributor data.
+func TestScoreHealth_BusFactorOneOnlyForTrueSingleContributor(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	// Case 1: Genuine single contributor — bus_factor=1 from real commit data
+	realSingle := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/repo",
+		Metadata: models.PackageMetadata{
+			BusFactor:         1,
+			TopContributorPct: 100.0,
+		},
+	}
+	score := analyzer.scoreHealth(realSingle)
+	if score.RiskPoints < 1 {
+		t.Errorf("Genuine single contributor: expected >= 1 risk point, got %d", score.RiskPoints)
+	}
+
+	// Case 2: No commit data but OSSF says many contributors — should NOT be penalized
+	ossfManyContribs := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/repo",
+		Metadata: models.PackageMetadata{
+			BusFactor:  0, // No commit data
+			OSSFChecks: map[string]int{"Contributors": 10},
+		},
+	}
+	score2 := analyzer.scoreHealth(ossfManyContribs)
+	if score2.RiskPoints > score.RiskPoints {
+		t.Errorf("OSSF 10/10 contributors should not be riskier than genuine single contributor: "+
+			"ossf risk=%d, single risk=%d", score2.RiskPoints, score.RiskPoints)
+	}
+}
+
 // Test: Score field is always in 0-2 range (consistent with other categories)
 // Justification: CategoryScore.Score is defined as 0-2 in models.go. All other
 //                scoring categories return 0-2. Health was the only one returning
