@@ -421,6 +421,7 @@ func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL s
 		result.Metadata.CodeReviewRate = prStats.CodeReviewRate
 		result.Metadata.RequiredReviewers = prStats.RequiredReviewers
 		result.Metadata.HasBranchProtection = prStats.HasBranchProtection
+		result.Metadata.BranchProtectionDenied = prStats.BranchProtectionDenied
 	}
 
 	// Analyze CI quality.

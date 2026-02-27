@@ -82,6 +82,11 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 	}
 
 	// Component 2: Branch Protection
+	// The GitHub API requires admin access to read branch protection (returns 403/404
+	// without it). When the API is denied, fall back to OSSF Scorecard data. If neither
+	// source has data, report UNAVAILABLE rather than FAIL — "access denied" is not
+	// evidence of missing protection.
+	// Pattern: follows governance.go OSSF fallback (primary check → OSSF → UNAVAILABLE).
 	if result.Metadata.HasBranchProtection {
 		points++
 		evidence = append(evidence, "Branch protection enabled on default branch")
@@ -100,6 +105,12 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		} else if ossfBranchProt > 0 {
 			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10 (weak)", ossfBranchProt))
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "FAIL", Detail: fmt.Sprintf("OSSF Branch-Protection score: %d/10 (< 7 threshold)", ossfBranchProt)})
+		} else if result.Metadata.BranchProtectionDenied {
+			// API returned 403/404 (admin access required) and OSSF has no data.
+			// Cannot determine branch protection status — report as unavailable,
+			// not as a failure, to avoid penalizing packages we simply can't check.
+			evidence = append(evidence, "Branch protection status unavailable (API access denied, no OSSF data)")
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "UNAVAILABLE", Detail: "GitHub API requires admin access to read branch protection; OSSF Scorecard has no data for this repository"})
 		} else {
 			evidence = append(evidence, "No branch protection detected")
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "FAIL", Detail: "No branch protection detected via API or OSSF Scorecard"})
