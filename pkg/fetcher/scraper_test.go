@@ -776,7 +776,7 @@ func TestNPMCheckNPMProvenance_RateLimitFallback(t *testing.T) {
 	client := NewNPMClient()
 	client.baseURL = apiServer.URL
 
-	_, _, err := client.CheckNPMProvenance("test-package")
+	_, err := client.CheckNPMProvenance("test-package")
 
 	// If scraping fails, we should get a scraping error, not "npm registry returned status 429"
 	if err != nil {

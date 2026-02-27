@@ -198,7 +198,8 @@ func countRequiresDist(requiresDist []string) int {
 // Source: PyPI blog — "Removing PGP from PyPI" (2023-05-23)
 // Source: PEP 740 — "Index support for digital attestations"
 func (c *PyPIClient) CheckPyPISignatures(packageName string) (hasSignatures bool, signedCount, totalCount int, err error) {
-	// First try the Simple API (JSON format) which includes PEP 740 provenance data
+	// First try the Simple API (JSON format) which includes PEP 740 provenance data.
+	// PEP 740 attestations use Sigstore for signing, so hasPEP740 is set when found.
 	if has, sc, tc, err := c.checkPyPISimpleAPI(packageName); err == nil {
 		if has {
 			return true, sc, tc, nil

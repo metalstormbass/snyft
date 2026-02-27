@@ -623,9 +623,14 @@ func (c *GitHubClient) GetProvenanceInfo(repoURL string) (*models.ProvenanceInfo
 	return info, nil
 }
 
-// checkSLSAAttestation checks for SLSA attestations in the repository
+// checkSLSAAttestation checks for SLSA attestations in the repository.
+// Uses a three-tier approach:
+//  1. Check for known SLSA provenance files (fastest, HEAD requests)
+//  2. Check workflow filenames for attestation keywords
+//  3. Check workflow file content for attestation actions (via raw.githubusercontent.com
+//     to avoid API rate limits)
 func (c *GitHubClient) checkSLSAAttestation(owner, repo string) (bool, string) {
-	// Check for SLSA provenance files
+	// Tier 1: Check for SLSA provenance files
 	slsaFiles := []string{
 		".slsa-provenance.json",
 		".github/workflows/slsa-generic-generator.yml",
@@ -641,7 +646,7 @@ func (c *GitHubClient) checkSLSAAttestation(owner, repo string) (bool, string) {
 		}
 	}
 
-	// Check workflow filenames for SLSA/attestation patterns
+	// Tier 2: Check workflow filenames for SLSA/attestation patterns
 	workflows, err := c.getWorkflowFiles(owner, repo)
 	if err == nil {
 		slsaKeywords := []string{"slsa", "provenance", "attest", "supply-chain", "supply_chain"}
@@ -655,7 +660,114 @@ func (c *GitHubClient) checkSLSAAttestation(owner, repo string) (bool, string) {
 		}
 	}
 
+	// Tier 3: Check workflow content for attestation actions.
+	// Many projects use attestation actions in generically-named workflows
+	// (e.g., "release.yml", "publish.yml"). We scan the content of publish/release
+	// workflows for known attestation action references.
+	// Uses raw.githubusercontent.com to avoid GitHub API rate limit consumption.
+	if workflows != nil {
+		found, level := c.checkWorkflowContentForSLSA(owner, repo, workflows)
+		if found {
+			return found, level
+		}
+	}
+
 	return false, ""
+}
+
+// slsaActionPatterns are GitHub Action references and shell commands that indicate
+// SLSA provenance generation. These are checked against workflow file content.
+var slsaActionPatterns = []string{
+	"actions/attest-build-provenance",       // GitHub's official attestation action
+	"slsa-framework/slsa-github-generator",  // SLSA framework's provenance generator
+	"npm publish --provenance",              // npm CLI provenance flag
+	"npm publish --access public --provenance", // common variant
+}
+
+// checkWorkflowContentForSLSA reads workflow file content and searches for
+// attestation action patterns. Tries the GitHub API first (works with
+// authenticated requests and test servers), falling back to raw.githubusercontent.com
+// (CDN, not subject to API rate limits).
+// Only checks publish/release-related workflows to minimize network calls.
+func (c *GitHubClient) checkWorkflowContentForSLSA(owner, repo string, workflows []string) (bool, string) {
+	// Prioritize workflows likely to contain publish/release steps
+	publishKeywords := []string{"release", "publish", "deploy", "build", "ci", "cd"}
+	var prioritized []string
+	var others []string
+	for _, wf := range workflows {
+		lower := strings.ToLower(wf)
+		isPriority := false
+		for _, kw := range publishKeywords {
+			if strings.Contains(lower, kw) {
+				isPriority = true
+				break
+			}
+		}
+		if isPriority {
+			prioritized = append(prioritized, wf)
+		} else {
+			others = append(others, wf)
+		}
+	}
+
+	// Check prioritized workflows first, then others. Cap at 5 content fetches
+	// to avoid excessive network calls.
+	toCheck := append(prioritized, others...)
+	maxChecks := 5
+	if len(toCheck) < maxChecks {
+		maxChecks = len(toCheck)
+	}
+
+	for _, wf := range toCheck[:maxChecks] {
+		path := ".github/workflows/" + wf
+		content := c.getWorkflowContent(owner, repo, path)
+		if content == "" {
+			continue
+		}
+		lower := strings.ToLower(content)
+		for _, pattern := range slsaActionPatterns {
+			if strings.Contains(lower, strings.ToLower(pattern)) {
+				return true, "SLSA_BUILD_LEVEL_2"
+			}
+		}
+	}
+
+	return false, ""
+}
+
+// getWorkflowContent fetches workflow file content. Tries the GitHub API first
+// (works with authenticated requests and in test environments), then falls back
+// to raw.githubusercontent.com (CDN, no API rate limit impact).
+func (c *GitHubClient) getWorkflowContent(owner, repo, path string) string {
+	// Try API first (uses raw media type to get file content directly)
+	apiURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err == nil {
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3.raw")
+		resp, err := c.httpClient.Do(req)
+		if err == nil {
+			if resp.StatusCode == http.StatusOK {
+				body, readErr := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if readErr == nil {
+					return string(body)
+				}
+			} else {
+				_ = resp.Body.Close()
+			}
+		}
+	}
+
+	// Fall back to raw.githubusercontent.com (no API rate limit impact)
+	content, err := c.getFileContentViaRawURL(owner, repo, path)
+	if err == nil {
+		return content
+	}
+
+	return ""
 }
 
 // checkSigstoreSignatures checks for Sigstore/Cosign signatures
