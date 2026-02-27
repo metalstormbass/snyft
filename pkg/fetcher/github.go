@@ -976,9 +976,10 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		if resp.StatusCode != http.StatusOK {
 			_ = resp.Body.Close()
 			if page == 1 {
-				// Rate limit on first page — return empty stats so callers degrade gracefully
+				// Rate limit on first page — return error so callers can distinguish
+				// "could not check" from "no ownership changes detected"
 				if shouldFallbackToScraping(nil, resp.StatusCode) {
-					return stats, nil
+					return nil, fmt.Errorf("%w: GitHub API returned %d for commit authors", ErrRateLimited, resp.StatusCode)
 				}
 				return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 			}
