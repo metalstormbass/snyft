@@ -395,6 +395,35 @@ jobs:
 	}
 }
 
+// Test: SHA-pinned actions with trailing YAML comments are recognized as pinned
+// Justification: Many projects annotate SHA-pinned actions with a YAML comment showing
+//                the version tag (e.g., "actions/checkout@abc123 # v6.0.2"). This is the
+//                MOST secure practice. The parser must strip the comment before checking
+//                the SHA, otherwise it falsely flags these as unpinned.
+// Source: GitHub Security Lab - "Keeping your GitHub Actions and workflows secure"
+//         Common pinning convention: https://github.com/expressjs/express/blob/master/.github/workflows/ci.yml
+// Methodology: Parse workflow with SHA-pinned actions that have trailing YAML comments
+// Result: Zero unpinned actions detected
+func TestParseGitHubActionsWorkflow_SHAPinnedWithComment(t *testing.T) {
+	workflow := `
+name: CI
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac6773b886248e3550e67d8cef9de9658eaa # v6.0.2
+      - uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94d9d67
+`
+	risk := ParseGitHubActionsWorkflow(workflow)
+
+	if len(risk.UnpinnedActions) != 0 {
+		t.Errorf("Expected 0 unpinned actions for SHA-pinned actions with comments, got %d: %v",
+			len(risk.UnpinnedActions), risk.UnpinnedActions)
+	}
+}
+
 // ===== CircleCI Parser Tests =====
 
 // Test: Detect unpinned CircleCI orbs referenced by major version only

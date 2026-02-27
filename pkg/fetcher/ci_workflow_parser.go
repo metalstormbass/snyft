@@ -78,6 +78,12 @@ func checkUnpinnedActions(risk *models.CIWorkflowRisk, lines []string) {
 		ref := strings.TrimSpace(matches[2])
 		action := matches[1]
 
+		// Strip inline YAML comments (e.g., "abc123def # v6.0.2" → "abc123def")
+		// SHA-pinned actions commonly include a version comment after the hash.
+		if idx := strings.Index(ref, " #"); idx != -1 {
+			ref = strings.TrimSpace(ref[:idx])
+		}
+
 		// A full SHA-1 hash is 40 hex chars; SHA-256 is 64. Anything shorter is mutable.
 		if !isSHAPin(ref) {
 			risk.UnpinnedActions = append(risk.UnpinnedActions, action+"@"+ref)
