@@ -1,6 +1,8 @@
 package analyzer
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -2234,6 +2236,74 @@ func TestScoreOwnershipChanges_FallbackBehavior(t *testing.T) {
 	// 2 years old, 3 maintainers, no transfer signals → risk=0 (established)
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points for established package fallback, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	}
+}
+
+// Test: scoreOwnershipChanges reports UNAVAILABLE when GitHub API is rate-limited
+// Justification: When the commit author API is rate-limited, the check cannot determine
+//                whether ownership changes occurred. The report must clearly distinguish
+//                "could not check" (UNAVAILABLE) from "no ownership changes detected" (PASS).
+//                Previously, rate limiting returned empty stats that were misinterpreted as
+//                "no ownership changes", silently hiding that the check was not performed.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — ownership transfer detection
+//         requires actual commit data; absence of data is not evidence of safety.
+// Methodology: Mock GitHub API server returns 403 for commit author requests. Verify
+//              the check status is UNAVAILABLE with a clear detail message, and that the
+//              evidence mentions rate limiting.
+// Result: Commit author analysis check has status=UNAVAILABLE, evidence mentions rate limit.
+func TestScoreOwnershipChanges_RateLimited_ReportsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return 403 for all requests (simulates rate limiting)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	analyzer := NewAnalyzer()
+	analyzer.githubClient = fetcher.NewGitHubClientWithBaseURL(server.URL)
+
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/owner/test-repo",
+		Dependency: models.Dependency{
+			Name:      "com.example:test-package",
+			Ecosystem: models.EcosystemMaven, // Maven → skips npm/PyPI ownership history API calls
+		},
+		Metadata: models.PackageMetadata{},
+	}
+
+	score := analyzer.scoreOwnershipChanges(result)
+
+	// Must have checks performed
+	if len(score.ChecksPerformed) == 0 {
+		t.Fatal("Expected checks to be performed")
+	}
+
+	// Find the commit author analysis check
+	var commitCheck *models.CheckResult
+	for i, check := range score.ChecksPerformed {
+		if check.Name == "Commit author analysis" {
+			commitCheck = &score.ChecksPerformed[i]
+			break
+		}
+	}
+
+	if commitCheck == nil {
+		t.Fatal("Expected 'Commit author analysis' check in results")
+	}
+
+	// Must be UNAVAILABLE, not PASS or FAIL
+	if commitCheck.Status != "UNAVAILABLE" {
+		t.Errorf("Expected UNAVAILABLE status for rate-limited commit analysis, got %q (detail: %s)",
+			commitCheck.Status, commitCheck.Detail)
+	}
+
+	// Detail must mention rate limiting so users understand why
+	if !strings.Contains(commitCheck.Detail, "rate limited") {
+		t.Errorf("Expected detail to mention rate limiting, got: %s", commitCheck.Detail)
+	}
+
+	// Evidence must mention rate limiting
+	if !strings.Contains(score.Evidence, "rate limited") {
+		t.Errorf("Expected evidence to mention rate limiting, got: %s", score.Evidence)
 	}
 }
 

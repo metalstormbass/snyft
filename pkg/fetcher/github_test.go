@@ -2,6 +2,7 @@ package fetcher
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -988,6 +989,69 @@ func TestCheckGitTag_RateLimited(t *testing.T) {
 	_, _, err := client.CheckGitTag("https://github.com/owner/repo", "1.0.0")
 	if err == nil {
 		t.Error("CheckGitTag() expected error when rate-limited, got nil")
+	}
+}
+
+// Test: GetCommitAuthors returns ErrRateLimited when API returns 403
+// Justification: When rate-limited, GetCommitAuthors must return an error (not empty stats)
+//                so callers can distinguish "could not check ownership changes" from
+//                "no ownership changes detected". Empty stats previously caused
+//                scoreOwnershipChanges to silently report no issues instead of UNAVAILABLE.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — ownership transfer detection
+//         requires actual commit data; empty data due to rate limiting is not evidence of safety.
+// Methodology: Mock server returns 403 for commit API requests.
+// Result: Returns (nil, ErrRateLimited) — not (empty stats, nil).
+func TestGetCommitAuthors_RateLimited(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	stats, err := client.GetCommitAuthors("https://github.com/owner/repo")
+	if err == nil {
+		t.Error("GetCommitAuthors() expected error when rate-limited, got nil")
+	}
+	if !errors.Is(err, ErrRateLimited) {
+		t.Errorf("GetCommitAuthors() expected ErrRateLimited, got: %v", err)
+	}
+	if stats != nil {
+		t.Error("GetCommitAuthors() expected nil stats when rate-limited, got non-nil")
+	}
+}
+
+// Test: GetCommitAuthors returns ErrRateLimited when API returns 429
+// Justification: HTTP 429 (Too Many Requests) is the standard rate-limit status code.
+//                Must be handled identically to 403 for rate limiting purposes.
+// Source: GitHub API rate limiting documentation
+// Methodology: Mock server returns 429 for commit API requests.
+// Result: Returns (nil, ErrRateLimited).
+func TestGetCommitAuthors_RateLimited429(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	stats, err := client.GetCommitAuthors("https://github.com/owner/repo")
+	if err == nil {
+		t.Error("GetCommitAuthors() expected error when rate-limited (429), got nil")
+	}
+	if !errors.Is(err, ErrRateLimited) {
+		t.Errorf("GetCommitAuthors() expected ErrRateLimited for 429, got: %v", err)
+	}
+	if stats != nil {
+		t.Error("GetCommitAuthors() expected nil stats when rate-limited (429), got non-nil")
 	}
 }
 
