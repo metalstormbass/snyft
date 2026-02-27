@@ -1,213 +1,250 @@
-# Snyft Check Usefulness Analysis
+# Snyft Risk Check Analysis — Real-World Accuracy Review
 
 ## Test Methodology
 
-Ran `snyft scan` against `/Users/mike/Projects/mike-libraries` which contains 87 real-world packages across 3 ecosystems:
-- **JavaScript (npm)**: 24 packages from `package.json` (express, mongoose, stripe, jest, etc.)
-- **Python (PyPI)**: 25 packages from `requirements.txt` (Flask, Django, boto3, requests, etc.)
-- **Java (Maven)**: 38 packages from `pom.xml` (Spring Boot, Hibernate, Jackson, etc.)
+Ran `snyft scan` against 13 real-world packages across 3 ecosystems, without a `GITHUB_TOKEN`, to evaluate whether each risk check produces accurate and meaningful results.
 
-The scan was run **without a GitHub token**, which is an important factor (see Data Quality section below).
+**npm packages tested**: express, lodash, is-odd, event-stream, colors
+**PyPI packages tested**: requests, flask, cryptography, pyyaml, urllib3
+**Maven packages tested**: guava, commons-lang3, jackson-databind
 
-## Score Distribution Summary
-
-| Category | Score Distribution (risk_points) | Unique Scores | Assessment |
-|---|---|---|---|
-| publisher_control | 0pts=4, 1pts=63, 2pts=20 | 3 | WEAK (72% score 1pt) |
-| ownership_changes | 0pts=59, 1pts=28 | 2 | USEFUL (68/32 split) |
-| release_anomalies | 0pts=60, 1pts=27 | 2 | USEFUL (69/31 split) |
-| **install_execution** | **0pts=85, 1pts=2** | **2** | **SUSPECT (98% score 0pts)** |
-| dependency_sprawl | 0pts=42, 1pts=16, 2pts=29 | 3 | USEFUL (good 3-way spread) |
-| provenance | 1pts=11, 2pts=76 | 2 | WEAK (87% score 2pts) |
-| health | 1pts=17, 2pts=70 | 2 | WEAK (80% score 2pts) |
-| governance | 1pts=52, 2pts=35 | 2 | USEFUL (60/40 split) |
-| release_security | 1pts=14, 2pts=73 | 2 | WEAK (84% score 2pts) |
-| package_maturity | 0pts=43, 1pts=15, 2pts=29 | 3 | USEFUL (good 3-way spread) |
-
-## Critical Finding: Data Quality Issues
-
-**81 out of 87 packages (93%) were rate-limited by the GitHub API** (HTTP 429). This caused cascading failures:
-
-| Data Point | Affected | Impact |
-|---|---|---|
-| Git tag verification | 81/87 (93%) | Provenance check couldn't verify source-to-tag match |
-| Bus factor (commit analysis) | 87/87 (100%) | Health check entirely based on maintainer count only |
-| Code review rate | 87/87 (100%) | No code review oversight data available |
-| CI detection | 78/87 (90%) | Release security couldn't detect CI systems |
-
-**Implication**: The checks scoring "WEAK" may be substantially better with a GitHub token (5000 req/hr vs 60 req/hr unauthenticated). The analysis below separates inherent check design issues from data availability issues.
+Each package was analyzed against all 11 risk categories (0-2 points each, 0-22 total).
 
 ---
 
-## Per-Check Analysis
+## Results Summary
 
-### 1. Publisher Control — WEAK (72% = 1pt)
-
-**What it checks**: Maintainer count, account type, email domains, package concentration, signing, MFA.
-
-**Finding**: Most packages (72%) score 1 risk point regardless of actual risk. The check detects meaningful differences (single maintainer vs multi-maintainer) but the scoring is compressed:
-- Maven packages always score 1pt because Maven doesn't expose maintainer count
-- npm packages with 3+ maintainers still score 1pt due to "personal email domains" and "no signing"
-- The "account type unknown" and "MFA status unknown" messages appear on nearly every package
-
-**Root cause**: Too many sub-signals are OR'd together. A package with 5 maintainers and no signing scores the same as one with 3 maintainers and personal emails.
-
-**Recommendation**: The maintainer count signal is valuable and differentiates well. The other signals (email domains, signing, MFA) almost never vary and dilute the check's usefulness. Consider: weighting maintainer count more heavily, or splitting into sub-categories.
-
----
-
-### 2. Ownership Changes — USEFUL (68% = 0pts, 32% = 1pt)
-
-**What it checks**: Commit author history to detect team replacement patterns.
-
-**Finding**: Provides meaningful differentiation. npm/PyPI packages with stable ownership correctly score 0pts. Maven packages and those without ownership data score 1pt ("no ownership data available"). The 68/32 split is driven by ecosystem differences (Maven lacks ownership data vs npm/PyPI which have it).
-
-**Root cause of 1pt scores**: Maven doesn't expose ownership data, so it falls back to "unverifiable" = 1pt. This is actually correct behavior (unknown = moderate risk).
-
-**Recommendation**: Check is useful. Could be improved by finding alternative ownership signals for Maven (e.g., POM developer history, group ID stability).
+| Package | Ecosystem | Score | Risk | Assessment |
+|---------|-----------|-------|------|------------|
+| express@4.18.2 | npm | 15/22 | HIGH | **WRONG** — Express is one of the most established npm packages |
+| lodash@4.17.21 | npm | 9/22 | LOW | Plausible, but wrong sub-scores |
+| is-odd@3.0.1 | npm | 12/22 | MEDIUM | Reasonable |
+| event-stream@4.0.1 | npm | 12/22 | MEDIUM | Reasonable |
+| colors@1.4.0 | npm | 11/22 | MEDIUM | Reasonable |
+| requests@2.31.0 | pypi | 10/22 | MEDIUM | Slightly high |
+| flask@3.0.0 | pypi | 11/22 | MEDIUM | Slightly high |
+| cryptography@41.0.7 | pypi | 9/22 | LOW | Reasonable |
+| pyyaml@6.0.1 | pypi | 9/22 | LOW | Reasonable |
+| urllib3@2.1.0 | pypi | 9/22 | LOW | Reasonable |
+| guava@32.1.3-jre | maven | 13/22 | MEDIUM | Too high — Guava is Google's core library |
+| commons-lang3@3.14.0 | maven | 10/22 | MEDIUM | Slightly high |
+| jackson-databind@2.16.1 | maven | 12/22 | MEDIUM | Too high — Jackson is extremely mature |
 
 ---
 
-### 3. Release Anomalies — USEFUL (69% = 0pts, 31% = 1pt)
+## Critical Issues Found
 
-**What it checks**: Release history, commit frequency, dormancy detection.
+### ISSUE 1: `package_maturity` — Uses version publish date instead of package creation date [BUG]
 
-**Finding**: Good differentiation. Packages with recent commits score 0pts. Packages with no commit history (API rate limited) or dormant repos correctly score 1pt. The check detected real dormancy signals (e.g., mapstruct with 467 days since last commit).
+**Severity**: Critical — produces completely wrong results
+**Affected**: All ecosystems
+**File**: `pkg/analyzer/package_maturity.go:45-67`, `pkg/fetcher/npm.go:116-118`
 
-**Recommendation**: Check is useful. With GitHub API access, would likely show even better differentiation (dormant→reactivated patterns).
+**Problem**: The `PublishedAt` field stores the publish date of the *specific version being checked*, not the package's original creation date. The `scorePackageMaturity()` function uses this value as "time since first publish" for the age check.
 
----
+**Evidence**:
+- Express: `published_at: 2025-12-01` → "Package age: 88 days (very new, <6 months)" → 2 risk points
+  - Express was first published in **2010**, not 88 days ago. The date is for v5.2.1's latest release.
+- Lodash: `published_at: 2026-01-21` → "Package age: 37 days (very new)" → 2 risk points
+  - Lodash was first published in **2012**.
 
-### 4. Install Execution — SUSPECT (98% = 0pts)
+**Root cause in code**: `pkg/fetcher/npm.go:116-118`:
+```go
+if timeStr, ok := npmResp.Time[npmResp.DistTags.Latest]; ok {
+    pkg.PublishedAt = t  // This is the LATEST VERSION's date, not the package creation date
+}
+```
+The npm API `time` object has a `"created"` field with the original package creation timestamp, but it's not being used.
 
-**What it checks**: preinstall/install/postinstall scripts, setup.py execution, dangerous patterns.
-
-**Finding**: Only **2 out of 87 packages** (sharp, aws-sdk) had any install scripts at all. 98% of packages scored 0 risk points. The check provides almost zero differentiation.
-
-**However**: This is by design. Install scripts are a direct compromise vector (the event-stream attack used postinstall). The check is like a smoke detector — it SHOULD be quiet most of the time, but when it fires, it's critical. The 2 packages it flagged (sharp with native compilation, aws-sdk) are genuine cases where install-time execution occurs.
-
-**Root cause**: Most modern packages don't use install scripts. This is a GOOD thing. The check isn't broken — it's just that the attack surface it monitors is uncommon in well-maintained packages.
-
-**Recommendation**: Keep the check. Despite low differentiation in aggregate, it catches a real attack vector. Consider:
-- Not including it in "check effectiveness" metrics since it's designed to be an outlier detector
-- Adding detection of more subtle install-time behaviors (e.g., lifecycle script chains)
-
----
-
-### 5. Dependency Sprawl — USEFUL (good 3-way spread)
-
-**What it checks**: Transitive/direct dependency count from lock files and registry metadata.
-
-**Finding**: Good 3-way differentiation: 42 packages with few deps (0pts), 16 moderate (1pt), 29 heavy (2pts). This reflects real differences — packages like express (few deps) vs Spring Boot transitive trees (many deps).
-
-**Note**: 87/87 packages show `verified: false` because lock file analysis wasn't available (no lock files in the test directory). All counts come from registry metadata (direct deps only). With lock files present, the check would have even richer data.
-
-**Recommendation**: Check is useful. Consider encouraging lock file presence for more accurate transitive counts.
+**Fix**: Use `npmResp.Time["created"]` for package age calculation. Similar fixes needed for PyPI and Maven.
 
 ---
 
-### 6. Provenance — WEAK (87% = 2pts)
+### ISSUE 2: `ci_pipeline_security` — SHA-pinned actions flagged as "unpinned" [BUG]
 
-**What it checks**: Source code verification (tarball + git tag), SLSA attestations, Sigstore signatures, npm provenance.
+**Severity**: Critical — penalizes the most secure CI practice
+**Affected**: Any package using SHA-pinned GitHub Actions (industry best practice)
+**File**: `pkg/fetcher/ci_workflow_parser.go:62-87`
 
-**Finding**: 76/87 packages (87%) score maximum risk (2pts). Only 11 packages scored 1pt (had some attestations). **No packages scored 0pts**.
+**Problem**: Actions pinned to a full SHA with a trailing comment (e.g., `actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2`) are flagged as "unpinned". The regex captures the entire `ref` including the YAML comment, making the SHA check fail.
 
-**Root cause**: Two compounding factors:
-1. **API rate limiting**: Git tag verification failed for 93% of packages (429 errors), so source code could never be fully verified
-2. **Reality**: Very few packages have SLSA attestations or Sigstore signatures. The 11 packages with 1pt all had npm provenance or OSSF Signed-Releases signals.
+**Evidence**:
+- Express scores 2/2 with "8 unpinned actions" — but ALL 8 actions are SHA-pinned:
+  ```
+  actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+  ```
+  These use full 40-char SHA pins, which is the **most secure practice** per GitHub's security hardening guide.
 
-**With GitHub token**: The check would likely improve significantly. Many of these packages DO have matching git tags, but the check couldn't verify them.
+**Root cause in code**: `pkg/fetcher/ci_workflow_parser.go:78-86`:
+```go
+ref := strings.TrimSpace(matches[2])
+// ref = "de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2"
+//                                                 ^--- YAML comment included
+if !isSHAPin(ref) {  // Fails because len > 40 due to comment
+    risk.UnpinnedActions = append(...)
+}
+```
 
-**Recommendation**:
-- Re-run with GITHUB_TOKEN to get accurate results before concluding the check is weak
-- The check's design is sound — provenance IS rare — but it may need more granularity (e.g., distinguish "no source at all" from "source exists but unverified" from "fully verified")
-
----
-
-### 7. Health — WEAK (80% = 2pts)
-
-**What it checks**: Bus factor (commit distribution), required reviewers, branch protection, code review rate.
-
-**Finding**: 70/87 packages (80%) score maximum risk. The 17 packages scoring 1pt were ALL npm packages with multiple maintainers but no review oversight.
-
-**Root cause**: **100% data quality issue**. Bus factor is 0 for ALL 87 packages. Code review rate is 0 for ALL 87 packages. The check is entirely dependent on GitHub API data that was never fetched due to rate limiting. It falls back to using maintainer count from registry metadata as a proxy.
-
-**With GitHub token**: This check would have commit distribution data, code review rates, and branch protection info. It would almost certainly differentiate much better.
-
-**Recommendation**:
-- This check is **fundamentally broken without a GitHub token**
-- Re-run with GITHUB_TOKEN — the check's design measures real signals (bus factor, code review oversight) but can't access them without API access
-- Consider: should the check clearly communicate "insufficient data" vs "poor health"?
+**Fix**: Strip YAML comments from `ref` before checking: `ref = strings.Split(ref, "#")[0]` then `TrimSpace`.
 
 ---
 
-### 8. Governance — USEFUL (60% = 1pt, 40% = 2pts)
+### ISSUE 3: `publisher_control` — Always scores 2/2 even for well-maintained packages [SCORING]
 
-**What it checks**: SECURITY.md presence, issue response times, abandonment patterns.
+**Severity**: High — no differentiation between well-maintained and risky packages
+**Affected**: All ecosystems
+**File**: `pkg/analyzer/publisher_control.go:550-670`
 
-**Finding**: Decent 60/40 split. Packages with SECURITY.md (via OSSF scorecard) score 1pt. Those without score 2pts. The check correctly identified abandoned projects (python-jose: 267 days, mapstruct: 467 days).
+**Problem**: The scoring accumulates penalties from multiple independent sub-factors that almost always apply to open-source packages. Even with 5 maintainers (good!), a package gets penalized for: personal account (+0.3), personal emails (+0.3), no signing (+0.5), high package concentration (+0.2). Total: 1.3 → maps to 2/2 (HIGH risk).
 
-**Root cause of split**: The OSSF Scorecard data (which uses its own API) provides Security-Policy scores independently of GitHub API rate limits. This gives the check a data source that doesn't degrade.
+**Evidence**:
+- Express (5 maintainers, 16+ years old, massive community): **2/2 — "personal account; personal email; high-value target; no signing"**
+- `is-odd` (2 maintainers, archived, tiny): **2/2**
+- Both score identically despite vastly different risk profiles.
 
-**Recommendation**: Check is useful. The OSSF data provides a stable signal. Could be enhanced with more governance signals (CONTRIBUTING.md, CODE_OF_CONDUCT.md, governance documentation).
+**Root cause**: The threshold at line 664 (`if riskScore >= 1.3 → 2 points`) is too easy to reach. Personal emails and lack of GPG signing are the **norm** for open source, not risk signals. A package with 10 maintainers using gmail still gets the maximum penalty.
 
----
-
-### 9. Release Security — WEAK (84% = 2pts)
-
-**What it checks**: CI/CD publishing, branch protection, required PR reviews, signed tags, CI workflow risks.
-
-**Finding**: 73/87 packages (84%) score maximum risk. The 14 packages scoring 1pt had some controls (OSSF Branch-Protection, Code-Review, or Packaging scores).
-
-**Root cause**: CI detection failed for 90% of packages. Without being able to read `.github/workflows/` or `Jenkinsfile` from the repository, the check can't detect CI systems. It falls back to OSSF scorecard data where available.
-
-**With GitHub token**: Would be able to detect CI systems, branch protection rules, and required reviewers. The check's design is comprehensive — it just can't access the data.
-
-**Recommendation**:
-- Re-run with GITHUB_TOKEN before concluding the check is weak
-- The 14 packages that scored 1pt show the check CAN differentiate when OSSF data is available
-- Consider: ensuring OSSF scorecard is always queried as a fallback even when GitHub API is available
+**Fix options**:
+1. Don't penalize personal email domains at all (they're the norm in OSS)
+2. Give a stronger reward for high maintainer counts (negative risk score) that offsets email/signing penalties
+3. Only count signing penalty when combined with single maintainer
+4. Raise the HIGH threshold from 1.3 to 1.8
 
 ---
 
-### 10. Package Maturity — USEFUL (good 3-way spread)
+### ISSUE 4: `health` — Bus factor always wrong (1 for all packages) [DATA]
 
-**What it checks**: Time since first publish, last commit recency, release cadence consistency.
+**Severity**: High — health check has no useful data
+**Affected**: All packages when running without GITHUB_TOKEN
+**File**: `pkg/analyzer/health.go:35-74`
 
-**Finding**: Good 3-way differentiation: 43 packages mature (0pts), 15 maturing (1pt), 29 immature/stale (2pts). This correctly separates well-established packages (boto3, Spring Framework) from newer or stale ones.
+**Problem**: `BusFactor` is 1 and `TopContributorPct` is 100% for ALL packages, including express (300+ contributors) and flask (700+ contributors). The commit analysis API returns degraded data when rate-limited, producing "bus factor 1" for everything.
 
-**Note**: Some packages show inaccurate "package age" because the first-publish date isn't available and it falls back to the last-commit date. E.g., jest shows "144 days (very new)" when it's actually 10+ years old.
+**Evidence**:
+- Express: `bus_factor: 1, top_contributor_pct: 100` → "Poor health: concentrated development" → 2/2
+  - Reality: Express has 296 contributors and distributed development
+- All 13 tested packages: bus_factor=1 or 0, top_contributor_pct=100 or 0
 
-**Recommendation**: Check is useful. The fallback to last-commit date for package age can be misleading for established packages. Consider: using registry creation date when available, or noting when the age calculation is approximate.
+**Root cause**: The GitHub API's commit endpoint returns rate-limit errors (429). The fetcher falls back to scraping which returns minimal data. Only last 100 commits are sampled even when the API works, which can misrepresent large projects.
+
+Additionally, `CodeReviewRate` is 0 and `HasBranchProtection` is false for ALL packages. Branch protection requires admin API access (returns 404/401 for non-admins even with a token).
+
+**Fix options**:
+1. Use the OSSF Scorecard `Code-Review` and `Branch-Protection` scores as primary data source (these work without auth)
+2. If bus factor data is unavailable AND the package has many maintainers (e.g., 5+), award the bus factor point
+3. Clearly indicate when the health score is based on degraded data
 
 ---
 
-## Summary: Check Tiers
+### ISSUE 5: `provenance` — Always 1/2 because signature checks never find data [DATA]
 
-### Tier 1: Consistently Useful (good differentiation regardless of API access)
-- **dependency_sprawl** — 3-way split, uses registry data
-- **package_maturity** — 3-way split, uses registry + basic timestamps
-- **governance** — 60/40 split, leverages OSSF data
-- **ownership_changes** — 68/32 split, uses registry ownership data
-- **release_anomalies** — 69/31 split, uses basic commit timestamps
+**Severity**: Medium — check is correct but provides no differentiation
+**Affected**: All 13 packages
+**File**: `pkg/analyzer/provenance_scoring.go`
 
-### Tier 2: Useful But Data-Starved (would improve with GITHUB_TOKEN)
-- **provenance** — 87% max risk, but git tag verification couldn't run
-- **health** — 80% max risk, but bus_factor/code_review data is 100% missing
-- **release_security** — 84% max risk, but CI detection couldn't access repos
+**Problem**: Every package scores 1/2 ("source code available but build provenance unverifiable"). All sub-checks fail:
+- SLSA attestation: FAIL (13/13)
+- Sigstore signatures: FAIL (13/13)
+- npm/PyPI provenance: FAIL (13/13)
+- Signed releases: FAIL (13/13)
+- Reproducible build: FAIL (13/13)
+- OSSF Signed-Releases: FAIL (11/13)
 
-### Tier 3: Inherently Low-Signal
-- **publisher_control** — 72% score 1pt; scoring is too compressed
-- **install_execution** — 98% score 0pts; correct but rare signal (outlier detector by design)
+**Assessment**: Some of these are legitimately missing (SLSA/Sigstore adoption is still low). However, some packages DO have provenance data that Snyft isn't detecting:
+- npm packages published after 2023 may have npm provenance attestations
+- cryptography and urllib3 publish PGP signatures on PyPI
 
-## Key Recommendations
+**Fix**: Verify that the npm provenance API endpoint and PyPI signature checks are actually querying the right endpoints. The "all packages fail" pattern suggests the fetcher may not be calling these APIs at all.
 
-1. **Re-run this analysis with GITHUB_TOKEN** to separate data-quality issues from check-design issues. Tier 2 checks may move to Tier 1.
+---
 
-2. **install_execution is fine as-is** — it's an outlier detector, not a differentiator. Consider documenting this distinction.
+### ISSUE 6: `release_security` — Branch protection always fails [DATA]
 
-3. **publisher_control needs scoring refinement** — maintainer count is a strong signal being diluted by always-unknown signals (MFA, signing, account type).
+**Severity**: Medium — entire sub-check is non-functional
+**Affected**: All packages
+**File**: `pkg/analyzer/release_security.go:85-107`
 
-4. **health check is meaningless without GitHub API** — consider either requiring a token for this check or finding alternative data sources.
+**Problem**: `HasBranchProtection` is false for ALL 13 packages. GitHub's branch protection API requires admin-level repository access, which public API users never have. This means the sub-check always fails.
 
-5. **provenance scoring could be more granular** — distinguish "no source at all" vs "source exists, unverified" vs "partially verified" vs "fully verified".
+**Evidence**: Express, flask, cryptography, guava — all major projects with mandatory branch protection and required reviewers — all score FAIL.
+
+**Fix**: Use OSSF Scorecard's `Branch-Protection` score as the primary data source (it uses its own privileged access). The code already has fallback logic for this (line 93-100) but the OSSF score threshold (>= 7) may be too strict.
+
+---
+
+### ISSUE 7: `ownership_changes` — Commit author analysis always UNAVAILABLE [DATA]
+
+**Severity**: Medium — check degrades to only checking npm ownership history
+**Affected**: 12/13 packages
+**File**: `pkg/analyzer/ownership_changes.go:115-142`
+
+**Problem**: The `GetCommitAuthors()` function returns empty stats (not an error) on rate limit, so the caller can't distinguish "no data available" from "no ownership changes found."
+
+**Fix**: When the GitHub API returns 429, `GetCommitAuthors()` should return `fetcher.ErrDataUnavailable` instead of empty stats. This lets the scoring code properly mark the check as UNAVAILABLE rather than silently passing.
+
+---
+
+## Checks That Work Well
+
+### `dependency_sprawl` — GOOD
+Correctly identifies: express has many deps (2/2), lodash has few (0/2), flask moderate (1/2). Uses registry metadata that doesn't require GitHub API.
+
+### `install_execution` — GOOD
+Correctly identifies: pyyaml has setup.py with cmdclass overrides (2/2), requests has setup.py (1/2), most packages have no install scripts (0/2). Low-frequency signal but accurate.
+
+### `release_anomalies` — GOOD
+Correctly identifies: is-odd is dormant (1/2), event-stream is dormant (1/2), express shows dormancy reactivation (2/2 — though this could be debated). Active packages score 0/2.
+
+### `governance` — MOSTLY GOOD
+Uses OSSF Scorecard data for SECURITY.md detection, which works without GitHub tokens. Correctly identifies archived repos. The "abandoned project" flag for `requests` (a very actively maintained package) seems incorrect — may be a false positive from OSSF data.
+
+### `package_maturity` (staleness sub-check only) — GOOD
+The staleness check using `RepoLastCommit` works correctly for detecting stale packages. The problem is only with the age sub-check (Issue 1 above).
+
+---
+
+## Cross-Cutting Observations
+
+### 1. Universal Check Failures (13/13 packages)
+These checks fail for EVERY package tested, providing zero differentiation:
+- `health/Review oversight`: FAIL (13/13)
+- `provenance/SLSA attestation`: FAIL (13/13)
+- `provenance/Sigstore signatures`: FAIL (13/13)
+- `provenance/Signed releases`: FAIL (13/13)
+- `provenance/Reproducible build`: FAIL (13/13)
+- `release_security/Branch protection`: FAIL (13/13)
+- `release_security/Signed releases`: FAIL (13/13)
+
+A check that fails for every package — including the most well-maintained packages in the ecosystem — provides no useful signal.
+
+### 2. Personal Email/Account Penalties Are OSS-Hostile
+The publisher_control check penalizes personal email domains (+0.3) and personal accounts (+0.3). In the open-source world, this is the norm. Even Express (backed by the OpenJS Foundation) shows as "personal account" because the GitHub repo owner is a personal account. This penalty should be removed or only applied when combined with single-maintainer risk.
+
+### 3. No GitHub Token = Broken Analysis
+Without a `GITHUB_TOKEN`, 5 of 11 checks produce meaningless results (health, provenance, release_security, ownership_changes, ci_pipeline_security). The tool should either:
+- Warn prominently that results are degraded
+- Require a token for meaningful results
+- Fall back to OSSF Scorecard data more aggressively (it works without auth)
+
+---
+
+## Recommended Fixes (Priority Order)
+
+### P0 — Bugs Producing Wrong Results
+1. **Fix `PublishedAt` to use package creation date** instead of latest version date (`npm.go`, `pypi.go`, `maven.go`)
+2. **Fix SHA-pinned action detection** to strip YAML comments before checking (`ci_workflow_parser.go`)
+
+### P1 — Scoring That Doesn't Differentiate
+3. **Recalibrate `publisher_control` thresholds** — personal emails/accounts shouldn't push well-maintained packages to HIGH
+4. **Use OSSF Scorecard as primary data source for `health` and `release_security`** when GitHub API data is unavailable
+
+### P2 — Data Quality
+5. **Fix `GetCommitAuthors()` to return `ErrDataUnavailable` on rate limit** instead of empty stats
+6. **Verify npm provenance and PyPI signature API calls** are actually being made
+7. **Add prominent warning** when running without GITHUB_TOKEN
+
+### P3 — Design Improvements
+8. **Don't penalize personal email domains** in publisher_control (they're the norm for OSS)
+9. **Add OSSF fallback for branch protection** in release_security (lower threshold from >= 7 to >= 5)
+10. **Consider making health check score UNAVAILABLE** instead of MAX RISK when data is missing
