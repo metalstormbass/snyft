@@ -3,6 +3,7 @@ package analyzer
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -565,11 +566,19 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	}
 
 	// Factor 2: Account type & Email domain (combined for simplicity)
-	// Personal account OR personal email = risk
+	// Personal account OR personal email = minor risk signal.
 	// Note: only penalize when confirmed personal (API returned "User" type);
 	//       leave neutral when API check failed (no token / rate-limited).
+	//
+	// Weight rationale: Personal accounts and personal emails are the NORM in open
+	// source (~70% personal accounts, ~95% personal emails). Heavily penalizing
+	// baseline-normal practices causes nearly every package to max out at 2/2,
+	// destroying differentiation. These get small weights (0.15 each) so they only
+	// tip the scale when combined with stronger signals like single-maintainer.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019) - most npm
+	// maintainers use personal accounts and free email providers.
 	if analysis.IsPersonalAccount {
-		riskScore += 0.3
+		riskScore += 0.15
 		evidenceParts = append(evidenceParts, "personal account")
 	} else if analysis.IsOrganization {
 		evidenceParts = append(evidenceParts, fmt.Sprintf("organization: %s", analysis.OrgName))
@@ -582,7 +591,7 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	}
 
 	if analysis.HasExpirableDomains {
-		riskScore += 0.3
+		riskScore += 0.15
 		evidenceParts = append(evidenceParts, "personal email domains")
 	} else if analysis.HasOrgDomains {
 		evidenceParts = append(evidenceParts, "organizational email domains")
@@ -611,15 +620,21 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	// Factor 5: Signing practices
 	// Only penalize when we actually checked and found no signing.
 	// When signing wasn't checked (no repo URL / API failure), don't assume the worst.
+	//
+	// Weight rationale: ~90% of OSS projects don't sign commits or releases.
+	// The old weight of 0.5 was too aggressive for such a common practice gap,
+	// causing multi-maintainer packages to reach HIGH risk just because they don't
+	// sign. Reduced to 0.3 so it contributes meaningfully but doesn't dominate.
+	// Source: OSSF Scorecard data - signing adoption remains under 10% in most ecosystems.
 	if analysis.SigningChecked {
 		if !analysis.HasSignedCommits && !analysis.HasSignedReleases {
-			riskScore += 0.5
+			riskScore += 0.3
 			evidenceParts = append(evidenceParts, "no signing detected")
 		} else {
 			evidenceParts = append(evidenceParts, fmt.Sprintf("signing enabled (%d commits)", analysis.SignedCommitCount))
 			// Signing reduces risk slightly
-			if riskScore > 0.2 {
-				riskScore -= 0.2
+			if riskScore > 0.15 {
+				riskScore -= 0.15
 			}
 		}
 	} else {
@@ -629,6 +644,10 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	// Factor 6: MFA enforcement (when data is available)
 	// MFA is the single most impactful account security control.
 	// Only GitHub org-level MFA status is publicly verifiable.
+	//
+	// Weight rationale: Most orgs don't enforce MFA. The old +0.5 penalty for
+	// non-enforcement was too harsh given how common this is, and could push
+	// multi-maintainer packages to HIGH by itself. Reduced to +0.3.
 	if analysis.MFAChecked {
 		if analysis.MFAEnforced {
 			// Org enforces MFA - significant risk reduction
@@ -639,28 +658,39 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 				riskScore = 0
 			}
 		} else {
-			// Org does NOT enforce MFA - high risk signal
-			riskScore += 0.5
-			evidenceParts = append(evidenceParts, "org MFA NOT enforced (HIGH RISK)")
+			// Org does NOT enforce MFA - risk signal
+			riskScore += 0.3
+			evidenceParts = append(evidenceParts, "org MFA NOT enforced (risk)")
 		}
 	} else if analysis.MFAStatus == "unknown" {
 		evidenceParts = append(evidenceParts, "MFA status unknown (personal account or platform limitation)")
 	}
 
 	// Convert to 0-2 risk points scale
-	// Thresholds calibrated so that signing being unchecked (no repo URL) doesn't
-	// artificially inflate risk, while still catching real problems:
+	// Thresholds calibrated so that baseline-normal OSS practices (personal email,
+	// no signing, personal account) don't automatically push multi-maintainer
+	// packages to HIGH. Only single-maintainer packages with additional risk
+	// signals reach HIGH.
 	//
-	// Single maintainer + personal email + no signing (checked) = 1.0 + 0.3 + 0.5 = 1.8 → HIGH
-	// Single maintainer + personal email (signing not checked) = 1.0 + 0.3 = 1.3 → HIGH
-	// Single maintainer + no signing (checked, no email data) = 1.0 + 0.5 = 1.5 → HIGH
+	// Recalibrated weights (reduced for common OSS practices):
+	//   personal email: 0.15, personal account: 0.15, no signing: 0.3, MFA not enforced: 0.3
+	//
+	// Single maintainer + personal acct + personal email + no signing = 1.0+0.15+0.15+0.3 = 1.6 → HIGH
+	// Single maintainer + no signing (checked) = 1.0 + 0.3 = 1.3 → HIGH
+	// Single maintainer + personal acct + personal email = 1.0 + 0.15 + 0.15 = 1.3 → HIGH
+	// Single maintainer + personal email (signing not checked) = 1.0 + 0.15 = 1.15 → MEDIUM
 	// Single maintainer alone (bare username, no repo) = 1.0 → MEDIUM
-	// Single maintainer + signing = 1.0 - 0.2 = 0.8 → MEDIUM
-	// 2-3 maintainers + personal email = 0.3 + 0.3 = 0.6 → MEDIUM
+	// Single maintainer + signing = 1.0 - 0.15 = 0.85 → MEDIUM
+	// 2-3 maintainers + personal email + no signing = 0.3 + 0.15 + 0.3 = 0.75 → MEDIUM
+	// 5+ maintainers + personal email + no signing + personal acct = 0.15+0.3+0.15 = 0.6 → MEDIUM
+	// 2-3 maintainers + personal email = 0.3 + 0.15 = 0.45 → LOW
 	// 0 maintainers (ecosystem exposes list) = 0.6 → MEDIUM
 	// 0 maintainers (ecosystem doesn't expose) = 0.3 → LOW
 	// 4+ maintainers + org email = 0.0 → LOW
-	// 4+ maintainers + org email + signing = 0.0 - 0.2 = 0 → LOW
+	// Round to 2 decimal places to avoid IEEE 754 floating point precision issues.
+	// e.g. 1.0 + 0.15 + 0.15 = 1.2999999999999998 in float64, not 1.3
+	riskScore = math.Round(riskScore*100) / 100
+
 	if riskScore >= 1.3 {
 		analysis.RiskPoints = 2
 	} else if riskScore >= 0.6 {
