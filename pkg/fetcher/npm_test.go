@@ -269,6 +269,61 @@ func TestGetPackageInfo_PolymorphicFields(t *testing.T) {
 	}
 }
 
+// Test: GetPackageInfo uses "created" timestamp for PublishedAt, not the latest version time
+// Justification: Package maturity scoring depends on when the package was first published.
+//                Using the latest version's publish date makes old packages (e.g. Express,
+//                first published 2010) appear "88 days old, very new", inflating risk scores.
+// Source: npm registry API — the Time map includes a "created" key for original publish date
+// Methodology: Mock server returns a Time map with distinct "created" and version timestamps;
+//              verify PublishedAt matches "created", not the latest version.
+// Result: PublishedAt reflects the package creation date, not the latest release date.
+func TestGetPackageInfo_UsesCreatedDateForPublishedAt(t *testing.T) {
+	createdDate := "2010-06-15T00:00:00Z"
+	latestVersionDate := "2025-12-01T00:00:00Z"
+
+	rawJSON := `{
+		"name":"express",
+		"license":"MIT",
+		"dist-tags":{"latest":"5.0.0"},
+		"repository":{"type":"git","url":"git+https://github.com/expressjs/express.git"},
+		"maintainers":[{"name":"dougwilson"}],
+		"versions":{"5.0.0":{"version":"5.0.0"}},
+		"time":{
+			"created":"` + createdDate + `",
+			"modified":"2025-12-15T00:00:00Z",
+			"5.0.0":"` + latestVersionDate + `"
+		}
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(rawJSON))
+	}))
+	defer server.Close()
+
+	client := &NPMClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	pkg, err := client.GetPackageInfo("express")
+	if err != nil {
+		t.Fatalf("GetPackageInfo() unexpected error: %v", err)
+	}
+
+	expectedCreated, _ := time.Parse(time.RFC3339, createdDate)
+	if !pkg.PublishedAt.Equal(expectedCreated) {
+		t.Errorf("PublishedAt = %v, want %v (the created date, not the latest version date %s)",
+			pkg.PublishedAt, expectedCreated, latestVersionDate)
+	}
+
+	// Verify the package age is measured in years, not days
+	ageDays := time.Since(pkg.PublishedAt).Hours() / 24
+	if ageDays < 365 {
+		t.Errorf("Package age = %.0f days; Express (created 2010) should be years old, not days", ageDays)
+	}
+}
+
 func TestGetOwnershipHistory_NPM_NotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

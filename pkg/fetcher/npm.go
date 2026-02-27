@@ -112,8 +112,11 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 		pkg.DirectDepCount = len(latest.Dependencies) + len(latest.PeerDependencies)
 	}
 
-	// Get published time for the latest version
-	if timeStr, ok := npmResp.Time[npmResp.DistTags.Latest]; ok {
+	// Get the package creation date (when the package was first published).
+	// The npm registry Time map includes a special "created" key for this.
+	// Using the latest version's timestamp would incorrectly report old packages
+	// (e.g. Express, first published 2010) as brand new.
+	if timeStr, ok := npmResp.Time["created"]; ok {
 		if t, err := time.Parse(time.RFC3339, timeStr); err == nil {
 			pkg.PublishedAt = t
 		}
