@@ -65,10 +65,6 @@ Core scoring engine with 10 categories (0-2 points each, 0-20 total):
 
 Source code verification runs first (checks tarball/sdist/sources.jar + git tags), then each category is scored independently.
 
-### AI Layer (pkg/ai/)
-
-Optional Claude API integration for attack pattern matching (8 patterns) and executive summaries. Includes caching, rate limiting, and circuit breakers. See [docs/AI_FEATURES.md](docs/AI_FEATURES.md).
-
 ### Report Layer (pkg/report/)
 
 Generates output in text (colored tables), markdown, JSON, and HTML formats.

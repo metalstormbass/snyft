@@ -36,7 +36,6 @@ make build
 ./snyft scan --format html -o report.html
 ./snyft scan --workers 20                 # Increase concurrency
 ./snyft scan --verbose=false              # Quieter output
-./snyft scan --ai                         # Enable AI analysis (requires CLAUDE_API_KEY)
 ```
 
 ### Options
@@ -48,11 +47,6 @@ make build
 | `-v, --verbose` | Verbose output | `false` |
 | `-o, --output` | Write results to file | stdout |
 | `--include-transitive` | Analyze transitive dependencies | `false` |
-| `--ai` | Enable AI analysis | disabled |
-| `--ai-api-key` | Claude API key (or set `CLAUDE_API_KEY`) | - |
-| `--ai-timeout` | AI timeout in seconds | 60 |
-
-See [docs/AI_FEATURES.md](docs/AI_FEATURES.md) for full AI configuration.
 
 ## Supply Chain Scoring System
 
@@ -105,29 +99,6 @@ Repository analysis works across:
 - **GitHub**, **GitLab**, **Bitbucket** (auto-detected from URLs)
 - Web scraping fallbacks when APIs are unavailable
 
-## API Rate Limits
-
-| API | Unauthenticated | Authenticated |
-|-----|----------------|---------------|
-| GitHub | 60 req/hour | 5,000 req/hour |
-| npm/PyPI/OSSF | No strict limits | - |
-
-Set tokens for higher limits:
-
-```bash
-export GITHUB_TOKEN="ghp_..."
-export GITLAB_TOKEN="glpat_..."
-export BITBUCKET_TOKEN="..."
-```
-
 ## License
 
 MIT License - see LICENSE file for details.
-
-## Roadmap
-
-- [ ] Support for more ecosystems (Ruby, Rust, PHP, Go)
-- [ ] Historical tracking of dependency risk over time
-- [ ] CI/CD pipeline integration (GitHub Actions, GitLab CI)
-- [ ] Custom risk scoring profiles and policy enforcement
-- [ ] SBOM generation (CycloneDX/SPDX)
