@@ -93,6 +93,162 @@ func TestCheckSLSAAttestation(t *testing.T) {
 	}
 }
 
+// Test: checkSLSAAttestation detects SLSA via workflow content analysis
+// Justification: Most projects that generate SLSA provenance use GitHub Actions like
+//                actions/attest-build-provenance or slsa-framework/slsa-github-generator
+//                in generically-named workflows (release.yml, publish.yml), not in
+//                workflows with "slsa" in the filename. Content-based detection catches
+//                these common patterns.
+// Source: SLSA specification v1.0 — https://slsa.dev/spec/v1.0/
+//         GitHub attestation action — https://github.com/actions/attest-build-provenance
+// Methodology: Mock workflow directory listing (GET) and workflow content
+//              (via raw.githubusercontent.com pattern); verify detection.
+// Result: Returns (true, "SLSA_BUILD_LEVEL_2") when attestation actions found in content.
+func TestCheckSLSAAttestation_WorkflowContentDetection(t *testing.T) {
+	tests := []struct {
+		name          string
+		workflows     []string
+		workflowContent map[string]string // filename -> content
+		wantFound     bool
+		wantLevel     string
+	}{
+		{
+			name:      "actions/attest-build-provenance in release.yml",
+			workflows: []string{"release.yml", "ci.yml"},
+			workflowContent: map[string]string{
+				"release.yml": `
+name: Release
+on:
+  push:
+    tags: ['v*']
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/
+`,
+			},
+			wantFound: true,
+			wantLevel: "SLSA_BUILD_LEVEL_2",
+		},
+		{
+			name:      "slsa-framework/slsa-github-generator in publish.yml",
+			workflows: []string{"publish.yml"},
+			workflowContent: map[string]string{
+				"publish.yml": `
+name: Publish
+on:
+  release:
+    types: [published]
+jobs:
+  provenance:
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+`,
+			},
+			wantFound: true,
+			wantLevel: "SLSA_BUILD_LEVEL_2",
+		},
+		{
+			name:      "npm publish --provenance in release.yml",
+			workflows: []string{"release.yml"},
+			workflowContent: map[string]string{
+				"release.yml": `
+name: Release
+on:
+  push:
+    tags: ['v*']
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm publish --provenance --access public
+`,
+			},
+			wantFound: true,
+			wantLevel: "SLSA_BUILD_LEVEL_2",
+		},
+		{
+			name:      "no attestation actions in any workflow",
+			workflows: []string{"ci.yml", "test.yml"},
+			workflowContent: map[string]string{
+				"ci.yml": `
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm test
+`,
+				"test.yml": `
+name: Tests
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+`,
+			},
+			wantFound: false,
+			wantLevel: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// HEAD requests for file existence checks (tier 1)
+				if r.Method == "HEAD" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				// GET .github/workflows directory listing (tier 2)
+				if strings.HasSuffix(r.URL.Path, "/contents/.github/workflows") {
+					var files []GitHubContent
+					for _, wf := range tt.workflows {
+						files = append(files, GitHubContent{Name: wf})
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(files)
+					return
+				}
+				// GET workflow content via raw URL pattern
+				// The test server URL doesn't match raw.githubusercontent.com,
+				// but we serve content for the API path instead
+				for wfName, content := range tt.workflowContent {
+					if strings.HasSuffix(r.URL.Path, "/.github/workflows/"+wfName) {
+						w.Header().Set("Content-Type", "text/plain")
+						_, _ = w.Write([]byte(content))
+						return
+					}
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
+			}
+
+			gotFound, gotLevel := client.checkSLSAAttestation("owner", "repo")
+			if gotFound != tt.wantFound {
+				t.Errorf("checkSLSAAttestation() found = %v, want %v", gotFound, tt.wantFound)
+			}
+			if gotLevel != tt.wantLevel {
+				t.Errorf("checkSLSAAttestation() level = %q, want %q", gotLevel, tt.wantLevel)
+			}
+		})
+	}
+}
+
 // Test: checkSigstoreSignatures detects Sigstore/Cosign indicators
 // Justification: Sigstore provides keyless signing and transparency for software artifacts.
 //                Detecting .cosign, .sigstore, or .rekor directories, as well as .sig/.asc/.minisig
