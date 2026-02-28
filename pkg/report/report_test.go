@@ -480,11 +480,10 @@ func TestPackageSlug(t *testing.T) {
 	}
 }
 
-// Test: HTML report summary lists package names as clickable anchor links
-// Justification: When the summary shows "X packages are high risk", users need
+// Test: HTML report detail sections have navigable package IDs
+// Justification: Package detail sections need stable IDs so users can
 //
-//	to see which packages and quickly navigate to their details.
-//	Anchor links enable one-click triage from summary to details.
+//	navigate directly to specific packages for triage.
 //
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - rapid
 //
@@ -492,11 +491,10 @@ func TestPackageSlug(t *testing.T) {
 //
 // Methodology: Generate an HTML report with HIGH, MEDIUM, and LOW packages,
 //
-//	verify summary contains anchor links and detail sections have
-//	matching id attributes
+//	verify detail sections have id attributes and summary shows count only
 //
-// Result: Each package name in the summary links to its detail via #pkg-<slug>
-func TestHTMLReportPackageAnchorLinks(t *testing.T) {
+// Result: Each package detail section has an id="pkg-<slug>" attribute
+func TestHTMLReportPackageDetailIDs(t *testing.T) {
 	results := []models.AnalysisResult{
 		{
 			Dependency: models.Dependency{
@@ -552,29 +550,12 @@ func TestHTMLReportPackageAnchorLinks(t *testing.T) {
 
 	output := buf.String()
 
-	// Verify summary contains anchor links for each risk level
-	if !strings.Contains(output, `<a href="#pkg-express">express</a>`) {
-		t.Error("Summary missing anchor link for HIGH risk package 'express'")
-	}
-	if !strings.Contains(output, `<a href="#pkg-angular-core">@angular/core</a>`) {
-		t.Error("Summary missing anchor link for MEDIUM risk package '@angular/core'")
-	}
-	if !strings.Contains(output, `<a href="#pkg-react">react</a>`) {
-		t.Error("Summary missing anchor link for LOW risk package 'react'")
+	// Verify summary shows count only, not individual package names
+	if strings.Contains(output, `class="pkg-links"`) {
+		t.Error("Summary should not contain package name listings (pkg-links)")
 	}
 
-	// Verify risk level labels in the package links section
-	if !strings.Contains(output, `class="group-label high">High:</span>`) {
-		t.Error("Summary missing 'High:' group label")
-	}
-	if !strings.Contains(output, `class="group-label med">Medium:</span>`) {
-		t.Error("Summary missing 'Medium:' group label")
-	}
-	if !strings.Contains(output, `class="group-label low">Low:</span>`) {
-		t.Error("Summary missing 'Low:' group label")
-	}
-
-	// Verify package detail sections have matching id attributes
+	// Verify package detail sections have id attributes for navigation
 	if !strings.Contains(output, `id="pkg-express"`) {
 		t.Error("Package detail section missing id='pkg-express'")
 	}
