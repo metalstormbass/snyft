@@ -35,7 +35,7 @@ import (
 func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.CategoryScore {
 	const releaseSecSource = " [Source: SLSA v1.0 Build Level Requirements; Backstabber's Knife Collection (Ohm et al., 2020)]"
 
-	relSecMethodology := "Checked for: (1) automated CI/CD release process, (2) branch protection on default branch, (3) cryptographically signed releases/tags, (4) required PR reviewers, (5) CI/CD workflow security (unpinned actions, excessive permissions, script injection, secrets in logs, missing environment protection), (6) self-hosted runner detection. Data sources: GitHub/GitLab/Bitbucket APIs with OSSF Scorecard fallback."
+	relSecMethodology := "Checked for: (1) automated CI/CD release process, (2) branch protection on default branch, (3) cryptographically signed releases/tags, (4) required PR reviewers, (5) CI/CD workflow security (unpinned actions, excessive permissions, script injection, secrets in logs, missing environment protection), (6) self-hosted runner detection, (7) documented release process from contributing/release docs. Data sources: GitHub/GitLab/Bitbucket APIs with OSSF Scorecard fallback."
 
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
@@ -168,10 +168,42 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		}
 	}
 
-	// Component 5: CI/CD Workflow Security (parsed from config files)
+	// Component 5: Documented Release Process
+	// Release documentation that describes CI/CD automation or multi-approval
+	// requirements indicates formalized controls beyond what CI detection alone
+	// can verify. A documented process means the project has intentionally
+	// designed their release pipeline to resist compromise.
+	if result.Metadata.ReleaseDocumentation != nil {
+		relDocs := result.Metadata.ReleaseDocumentation
+		if relDocs.HasAutomatedReleaseProcess {
+			points++
+			evidence = append(evidence, "Documented automated release process in release/contributing docs")
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Documented release process", Status: "PASS", Detail: fmt.Sprintf("Release documentation describes automated CI/CD process (%s)", strings.Join(relDocs.FilesFound, ", "))})
+		} else if relDocs.HasMultiApprovalRequirement || relDocs.HasReleaseChecklist {
+			points++
+			details := []string{}
+			if relDocs.HasMultiApprovalRequirement {
+				details = append(details, "multi-approval requirement")
+			}
+			if relDocs.HasReleaseChecklist {
+				details = append(details, "release checklist")
+			}
+			evidence = append(evidence, fmt.Sprintf("Documented release controls: %s", strings.Join(details, ", ")))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Documented release process", Status: "PASS", Detail: fmt.Sprintf("Release documentation includes %s (%s)", strings.Join(details, " and "), strings.Join(relDocs.FilesFound, ", "))})
+		} else if relDocs.HasDocumentedReleaseProcess {
+			// Basic release docs exist but without specific control signals
+			evidence = append(evidence, "Basic release documentation exists")
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Documented release process", Status: "PASS", Detail: fmt.Sprintf("Release/contributing documentation found (%s) but no specific CI/CD or approval controls documented", strings.Join(relDocs.FilesFound, ", "))})
+		}
+	} else {
+		relSecChecks = append(relSecChecks, models.CheckResult{Name: "Documented release process", Status: "FAIL", Detail: "No release/contributing documentation found (checked CONTRIBUTING.md, RELEASING.md, RELEASE.md)"})
+	}
+
+	// Component 6: CI/CD Workflow Security (parsed from config files)
 	// Insecure CI configurations create direct attack vectors: unpinned actions can be
 	// hijacked, excessive permissions widen blast radius, script injection enables RCE.
 	// Source: GitHub Actions Security Hardening; SLSA Build Level Requirements
+	// (Note: was Component 5 before release docs check was added)
 	ciWorkflowRiskCount := 0
 	for _, ciRisk := range result.Metadata.CIWorkflowRisks {
 		ciWorkflowRiskCount += ciRisk.RiskCount
@@ -202,7 +234,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		}
 	}
 
-	// Component 6: Build System Location (self-hosted runner detection)
+	// Component 7: Build System Location (self-hosted runner detection)
 	// Self-hosted runners give attackers who compromise the runner full control over
 	// the build environment and published artifacts. Cloud-hosted runners are isolated.
 	// Source: SLSA Build L3 - https://slsa.dev/spec/v1.0/levels

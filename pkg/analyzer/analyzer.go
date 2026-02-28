@@ -289,6 +289,11 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		a.analyzeHealthMetrics(&result, repoURL)
 	}
 
+	// Analyze release documentation (CONTRIBUTING.md, RELEASING.md, etc.)
+	if repoURL != "" {
+		a.analyzeReleaseDocumentation(&result, repoURL)
+	}
+
 	// Get OSSF Scorecard (if available)
 	if repoURL != "" {
 		a.analyzeOSSFScorecard(&result, repoURL)
