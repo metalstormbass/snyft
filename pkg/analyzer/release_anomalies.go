@@ -12,20 +12,47 @@ import (
 // Detects dormant packages that suddenly reactivate, checks for unusual release patterns,
 // and analyzes commit frequency changes
 func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.CategoryScore {
-	anomalyMethodology := "Fetched release history (up to 20 releases) and commit activity (last 2 years) via Git API. Checked for: (1) dormancy reactivation (>1yr gap with recent release), (2) relative dormancy (gap >5x average cadence), (3) unusual release spikes (<10% of average cadence), (4) commit frequency anomalies (year-over-year comparison)."
+	anomalyMethodology := "Fetched release history (up to 20 releases) and commit activity (last 2 years) via Git API or package registry fallback. Checked for: (1) dormancy reactivation (>1yr gap with recent release), (2) relative dormancy (gap >5x average cadence), (3) unusual release spikes (<10% of average cadence), (4) commit frequency anomalies (year-over-year comparison)."
 
-	if result.Metadata.RepoLastCommit.IsZero() || result.RepositoryURL == "" {
+	hasRepoData := !result.Metadata.RepoLastCommit.IsZero() && result.RepositoryURL != ""
+
+	// When no repo data is available, try registry fallback for release pattern analysis
+	if !hasRepoData {
+		registryReleases := a.getRegistryVersionHistory(result.Dependency, 20)
+		if len(registryReleases) >= 2 {
+			// Estimate creation date from oldest registry release
+			createdAt := registryReleases[len(registryReleases)-1].PublishedAt
+			anomaly := a.detectReleaseAnomaly(registryReleases, createdAt)
+			if anomaly != nil {
+				anomaly.Methodology = "No repository URL available. Used package registry version history as fallback for release pattern analysis."
+				return *anomaly
+			}
+			// No anomalies found via registry data
+			return models.CategoryScore{
+				Score:       2,
+				RiskPoints:  0,
+				Description: "No release anomalies detected (via registry data)",
+				Evidence:    fmt.Sprintf("Analyzed %d versions from package registry; no dormancy reactivation or unusual spikes detected", len(registryReleases)),
+				Verified:    true,
+				Methodology: "No repository URL available. Used package registry version history as fallback for release pattern analysis.",
+				ChecksPerformed: []models.CheckResult{
+					{Name: "Release pattern analysis", Status: "PASS", Detail: fmt.Sprintf("Analyzed %d registry versions; no anomalies detected (registry fallback)", len(registryReleases))},
+					{Name: "Commit frequency analysis", Status: "SKIPPED", Detail: "No repository URL; commit analysis requires Git data"},
+				},
+			}
+		}
+		// No registry data either
 		return models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
 			Description: "Unable to verify release patterns",
-			Evidence:    "No commit history available",
+			Evidence:    "No commit history or registry version data available",
 			Verified:    false,
-			Methodology: "No repository URL or commit history available. Could not check for release anomalies or dormancy patterns.",
+			Methodology: "No repository URL or commit history available. Registry version history also unavailable. Could not check for release anomalies or dormancy patterns.",
 			ChecksPerformed: []models.CheckResult{
-				{Name: "Dormancy reactivation", Status: "SKIPPED", Detail: "No commit history or repository URL"},
-				{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "No commit history or repository URL"},
-				{Name: "Commit frequency analysis", Status: "SKIPPED", Detail: "No commit history or repository URL"},
+				{Name: "Dormancy reactivation", Status: "SKIPPED", Detail: "No commit history, repository URL, or registry version data"},
+				{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "No commit history, repository URL, or registry version data"},
+				{Name: "Commit frequency analysis", Status: "SKIPPED", Detail: "No commit history, repository URL, or registry version data"},
 			},
 		}
 	}
@@ -52,12 +79,20 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 	// For packages with recent activity, fetch detailed release and commit history
 	// to detect suspicious reactivation patterns
 	if daysSinceCreated > 365 {
+		// Try to get release history from Git platform first, fall back to registry
+		var registryReleases []fetcher.RegistryRelease
 		gitClient := a.getGitClient(result.RepositoryURL)
-		// Fetch release history
-		releases, err := gitClient.GetReleaseHistory(result.RepositoryURL, 20)
-		if err == nil && len(releases) > 0 {
+		ghReleases, err := gitClient.GetReleaseHistory(result.RepositoryURL, 20)
+		if err == nil && len(ghReleases) > 0 {
+			registryReleases = fetcher.GitHubReleasesToRegistryReleases(ghReleases)
+		}
+		// Fall back to registry version history when Git releases are unavailable
+		if len(registryReleases) == 0 {
+			registryReleases = a.getRegistryVersionHistory(result.Dependency, 20)
+		}
+		if len(registryReleases) > 0 {
 			// Analyze release pattern
-			anomaly := a.detectReleaseAnomaly(releases, result.Metadata.RepoCreatedAt)
+			anomaly := a.detectReleaseAnomaly(registryReleases, result.Metadata.RepoCreatedAt)
 			if anomaly != nil {
 				return *anomaly
 			}
@@ -109,15 +144,15 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 //         https://arxiv.org/abs/2005.09535
 //         "Towards Measuring Supply Chain Attacks on Package Managers" (NDSS 2020)
 // Methodology: Analyze release timestamps to detect gaps and frequency anomalies
-func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.GitHubRelease, repoCreatedAt time.Time) *models.CategoryScore {
+func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repoCreatedAt time.Time) *models.CategoryScore {
 	if len(releases) < 2 {
 		return nil
 	}
 
-	// Filter out draft and prerelease versions
-	validReleases := []fetcher.GitHubRelease{}
+	// Filter out prerelease versions
+	validReleases := []fetcher.RegistryRelease{}
 	for _, r := range releases {
-		if !r.Draft && !r.Prerelease && !r.PublishedAt.IsZero() {
+		if !r.IsPrerelease && !r.PublishedAt.IsZero() {
 			validReleases = append(validReleases, r)
 		}
 	}
@@ -126,7 +161,7 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.GitHubRelease, repoCr
 		return nil
 	}
 
-	// Releases are already sorted by GitHub API (most recent first)
+	// Releases are sorted newest first
 	mostRecent := validReleases[0].PublishedAt
 	daysSinceRecentRelease := time.Since(mostRecent).Hours() / 24
 

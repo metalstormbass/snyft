@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -367,6 +368,75 @@ type MavenMetadataVersioning struct {
 	Latest   string   `xml:"latest"`
 	Release  string   `xml:"release"`
 	Versions []string `xml:"versions>version"`
+}
+
+// GetVersionHistory fetches version publish timestamps from Maven Central.
+// Uses the Solr search API to query all versions of an artifact with their
+// timestamps. Falls back to maven-metadata.xml version list without timestamps
+// when the search API is unavailable.
+//
+// Justification: When a package has no GitHub releases/tags, this data provides
+// temporal release patterns needed for dormancy reactivation detection and
+// cadence regularity analysis.
+// Source: Maven Central Solr search API — timestamp field on version documents
+func (c *MavenClient) GetVersionHistory(packageName string) ([]RegistryRelease, error) {
+	parts := strings.Split(packageName, ":")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid Maven package name: %s (expected groupId:artifactId)", packageName)
+	}
+	groupID := parts[0]
+	artifactID := parts[1]
+
+	// Use Solr search API to get all versions with timestamps
+	searchURL := fmt.Sprintf("%s?q=g:%s+AND+a:%s&rows=50&wt=json&core=gav",
+		c.searchURL, url.QueryEscape(groupID), url.QueryEscape(artifactID))
+
+	resp, err := c.httpClient.Get(searchURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search Maven Central: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Maven Central search returned status %d", resp.StatusCode)
+	}
+
+	var searchResp struct {
+		Response struct {
+			Docs []struct {
+				V         string `json:"v"`
+				Timestamp int64  `json:"timestamp"`
+			} `json:"docs"`
+		} `json:"response"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return nil, fmt.Errorf("failed to decode Maven search response: %w", err)
+	}
+
+	releases := make([]RegistryRelease, 0, len(searchResp.Response.Docs))
+	for _, doc := range searchResp.Response.Docs {
+		if doc.V == "" || doc.Timestamp == 0 {
+			continue
+		}
+		publishedAt := time.Unix(doc.Timestamp/1000, 0)
+		// Detect prerelease versions (Maven convention: SNAPSHOT, RC, alpha, beta)
+		isPrerelease := strings.Contains(strings.ToLower(doc.V), "snapshot") ||
+			strings.Contains(strings.ToLower(doc.V), "-rc") ||
+			strings.Contains(strings.ToLower(doc.V), "-alpha") ||
+			strings.Contains(strings.ToLower(doc.V), "-beta")
+		releases = append(releases, RegistryRelease{
+			Version:      doc.V,
+			PublishedAt:  publishedAt,
+			IsPrerelease: isPrerelease,
+		})
+	}
+
+	// Sort newest first (matching GitHub release ordering)
+	sort.Slice(releases, func(i, j int) bool {
+		return releases[i].PublishedAt.After(releases[j].PublishedAt)
+	})
+
+	return releases, nil
 }
 
 // VerifySourceAvailability verifies that source code exists for the exact version

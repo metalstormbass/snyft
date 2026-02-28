@@ -470,6 +470,67 @@ func (c *PyPIClient) scrapePyPIPackageInfo(packageName string) (*PyPIPackage, er
 }
 
 
+// GetVersionHistory fetches version publish timestamps from the PyPI registry.
+// The PyPI JSON API includes a "releases" map where each version key maps to an
+// array of release files, each with an upload_time_iso_8601 timestamp.
+// Returns all versions sorted by publish date (newest first).
+//
+// Justification: When a package has no GitHub releases/tags, this data provides
+// temporal release patterns needed for dormancy reactivation detection and
+// cadence regularity analysis.
+// Source: PyPI JSON API — the "releases" field on /pypi/{package}/json responses
+func (c *PyPIClient) GetVersionHistory(packageName string) ([]RegistryRelease, error) {
+	apiURL := fmt.Sprintf("%s/%s/json", c.baseURL, packageName)
+
+	resp, err := c.httpClient.Get(apiURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch PyPI package: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("PyPI API returned status %d", resp.StatusCode)
+	}
+
+	var pypiResp PyPIFullResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pypiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode PyPI response: %w", err)
+	}
+
+	releases := make([]RegistryRelease, 0, len(pypiResp.Releases))
+	for version, files := range pypiResp.Releases {
+		if len(files) == 0 {
+			continue
+		}
+		// Use the earliest file upload time as the release time
+		earliest := files[0].UploadTime
+		for _, f := range files[1:] {
+			if !f.UploadTime.IsZero() && f.UploadTime.Before(earliest) {
+				earliest = f.UploadTime
+			}
+		}
+		if earliest.IsZero() {
+			continue
+		}
+		// Detect prerelease versions (PEP 440 convention: contains a/b/rc/dev)
+		isPrerelease := strings.ContainsAny(version, "abrc") &&
+			(strings.Contains(version, "a") || strings.Contains(version, "b") ||
+				strings.Contains(version, "rc") || strings.Contains(version, "dev"))
+		releases = append(releases, RegistryRelease{
+			Version:      version,
+			PublishedAt:  earliest,
+			IsPrerelease: isPrerelease,
+		})
+	}
+
+	// Sort newest first (matching GitHub release ordering)
+	sort.Slice(releases, func(i, j int) bool {
+		return releases[i].PublishedAt.After(releases[j].PublishedAt)
+	})
+
+	return releases, nil
+}
+
 // PyPIOwnershipHistory represents ownership/maintainer changes over time
 type PyPIOwnershipHistory struct {
 	CurrentAuthor     string

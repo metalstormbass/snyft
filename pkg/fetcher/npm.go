@@ -634,6 +634,60 @@ func contains(slice []string, str string) bool {
 	return false
 }
 
+// GetVersionHistory fetches version publish timestamps from the npm registry.
+// The npm registry Time map contains RFC3339 timestamps for every version,
+// plus special keys "created" and "modified". This method returns all version
+// entries sorted by publish date (newest first), matching the ordering convention
+// used by GitHub releases.
+//
+// Justification: When a package has no GitHub releases/tags, this data provides
+// temporal release patterns needed for dormancy reactivation detection and
+// cadence regularity analysis.
+// Source: npm registry API — the "time" field on /{package} responses
+func (c *NPMClient) GetVersionHistory(packageName string) ([]RegistryRelease, error) {
+	url := fmt.Sprintf("%s/%s", c.baseURL, packageName)
+
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch npm package: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("npm registry returned status %d", resp.StatusCode)
+	}
+
+	var npmResp NPMRegistryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&npmResp); err != nil {
+		return nil, fmt.Errorf("failed to decode npm response: %w", err)
+	}
+
+	releases := make([]RegistryRelease, 0, len(npmResp.Time))
+	for version, timeStr := range npmResp.Time {
+		// Skip special keys
+		if version == "created" || version == "modified" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, timeStr)
+		if err != nil {
+			continue
+		}
+		// Detect prerelease versions (semver convention: contains hyphen after digits)
+		isPrerelease := strings.Contains(version, "-")
+		releases = append(releases, RegistryRelease{
+			Version:      version,
+			PublishedAt:  t,
+			IsPrerelease: isPrerelease,
+		})
+	}
+
+	// Sort newest first (matching GitHub release ordering)
+	sort.Slice(releases, func(i, j int) bool {
+		return releases[i].PublishedAt.After(releases[j].PublishedAt)
+	})
+
+	return releases, nil
+}
 
 // GetOwnershipHistory analyzes package owner/maintainer changes over time.
 // Falls back to scraping the npm page when the API is rate-limited.

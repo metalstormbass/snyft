@@ -36,7 +36,7 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 	evidenceParts := []string{}
 	maturityChecks := []models.CheckResult{}
 	verified := false
-	maturityMethodology := "Checked package age (time since first publish), staleness (time since last commit or registry update), and release cadence regularity (coefficient of variation of inter-release intervals). Thresholds: age <6mo = high risk, 6mo-2yr = moderate; staleness >1yr = high risk, 6-12mo = moderate; CV > 2.0 = highly irregular cadence."
+	maturityMethodology := "Checked package age (time since first publish), staleness (time since last commit or registry update), and release cadence regularity (coefficient of variation of inter-release intervals). Release cadence uses Git platform releases when available, falling back to registry version history (npm time field, PyPI releases, Maven Central timestamps). Thresholds: age <6mo = high risk, 6mo-2yr = moderate; staleness >1yr = high risk, 6-12mo = moderate; CV > 2.0 = highly irregular cadence."
 
 	now := time.Now()
 
@@ -113,31 +113,38 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 	}
 
 	// Sub-check 3: Release cadence regularity
+	// Try Git platform releases first, fall back to registry version history
 	cadenceRisk := 0
+	var registryReleases []fetcher.RegistryRelease
 	if result.RepositoryURL != "" {
 		gitClient := a.getGitClient(result.RepositoryURL)
-		releases, err := gitClient.GetReleaseHistory(result.RepositoryURL, 20)
-		if err == nil && len(releases) >= 3 {
-			verified = true
-			var cadenceEvidence string
-			cadenceRisk, cadenceEvidence = scoreCadenceRegularity(releases)
-			if cadenceEvidence != "" {
-				evidenceParts = append(evidenceParts, cadenceEvidence)
-			}
-			status := "PASS"
-			if cadenceRisk >= 2 {
-				status = "FAIL"
-			} else if cadenceRisk == 1 {
-				status = "FAIL"
-			}
-			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: status, Detail: cadenceEvidence})
-		} else if err != nil {
-			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: "UNAVAILABLE", Detail: "Could not fetch release history from Git API"})
-		} else {
-			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: "SKIPPED", Detail: fmt.Sprintf("Insufficient releases for cadence analysis (%d < 3 required)", len(releases))})
+		ghReleases, err := gitClient.GetReleaseHistory(result.RepositoryURL, 20)
+		if err == nil && len(ghReleases) > 0 {
+			registryReleases = fetcher.GitHubReleasesToRegistryReleases(ghReleases)
 		}
+	}
+	// Fall back to registry version history when Git releases are unavailable
+	if len(registryReleases) == 0 {
+		registryReleases = a.getRegistryVersionHistory(result.Dependency, 20)
+	}
+	if len(registryReleases) >= 3 {
+		verified = true
+		var cadenceEvidence string
+		cadenceRisk, cadenceEvidence = scoreCadenceRegularity(registryReleases)
+		if cadenceEvidence != "" {
+			evidenceParts = append(evidenceParts, cadenceEvidence)
+		}
+		status := "PASS"
+		if cadenceRisk >= 1 {
+			status = "FAIL"
+		}
+		maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: status, Detail: cadenceEvidence})
+	} else if len(registryReleases) > 0 {
+		maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: "SKIPPED", Detail: fmt.Sprintf("Insufficient releases for cadence analysis (%d < 3 required)", len(registryReleases))})
+	} else if result.RepositoryURL != "" {
+		maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: "UNAVAILABLE", Detail: "Could not fetch release history from Git API or package registry"})
 	} else {
-		maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: "SKIPPED", Detail: "No repository URL available"})
+		maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: "SKIPPED", Detail: "No repository URL available and registry version history unavailable"})
 	}
 
 	// Combine sub-checks: take the maximum risk across the three sub-checks.
@@ -193,11 +200,11 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 // intervals. High CV = highly irregular cadence = elevated risk.
 // A CV > 2.0 indicates releases are clustered or bursty rather than steady,
 // which can indicate sudden reactivation of a dormant package.
-func scoreCadenceRegularity(releases []fetcher.GitHubRelease) (int, string) {
-	// Filter to valid, non-draft, non-prerelease versions with publish dates
-	valid := []fetcher.GitHubRelease{}
+func scoreCadenceRegularity(releases []fetcher.RegistryRelease) (int, string) {
+	// Filter to valid, non-prerelease versions with publish dates
+	valid := []fetcher.RegistryRelease{}
 	for _, r := range releases {
-		if !r.Draft && !r.Prerelease && !r.PublishedAt.IsZero() {
+		if !r.IsPrerelease && !r.PublishedAt.IsZero() {
 			valid = append(valid, r)
 		}
 	}
