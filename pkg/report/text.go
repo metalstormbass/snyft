@@ -99,6 +99,11 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		icon, ColorBold, nameVer, ColorReset, eco,
 		scoreStr, rc+ColorBold, result.RiskLevel, ColorReset, transitive)
 
+	// OpenSSF Scorecard link (dimmed/gray)
+	if result.ScorecardURL != "" {
+		f(w, "     %s%s%s\n", ColorDim, result.ScorecardURL, ColorReset)
+	}
+
 	// Verbose: show metadata
 	if r.config.Verbose {
 		var meta []string

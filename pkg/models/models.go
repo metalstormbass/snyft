@@ -55,6 +55,7 @@ type AnalysisResult struct {
 	RiskScore             int                    `json:"risk_score"` // 0-100
 	RiskFactors           []string               `json:"risk_factors"`
 	RepositoryURL         string                 `json:"repository_url"`
+	ScorecardURL          string                 `json:"scorecard_url,omitempty"`
 	SourceCodeAvailable   bool                   `json:"source_code_available"`
 	SourceVerification    *SourceVerification    `json:"source_verification,omitempty"`
 	BuildInfrastructure   string                 `json:"build_infrastructure"`
