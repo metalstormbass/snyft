@@ -242,7 +242,9 @@ type ProvenanceInfo struct {
 
 // SupplyChainScore represents a 0-22 point supply chain security scoring rubric
 type SupplyChainScore struct {
-	TotalScore         int            `json:"total_score"`                      // 0-22 points
+	TotalScore         int            `json:"total_score"`                      // 0-22 points (or fewer when --check filters active)
+	MaxScore           int            `json:"max_score"`                        // Maximum possible score (active_checks * 2)
+	ActiveChecks       int            `json:"active_checks"`                    // Number of checks that were run (11 normally, fewer with --check)
 	RiskLevel          string         `json:"risk_level"`                       // LOW (0-9), MEDIUM (10-13), HIGH (14+)
 	CategoryScores     CategoryScores `json:"category_scores"`
 }
@@ -278,6 +280,7 @@ type CategoryScore struct {
 	Description     string             `json:"description"`                     // Human-readable description
 	Evidence        string             `json:"evidence"`                        // Evidence for the score
 	Verified        bool               `json:"verified"`                        // Whether data was available to verify
+	Skipped         bool               `json:"skipped,omitempty"`              // True when check was excluded via --check flag
 	Methodology     string             `json:"methodology,omitempty"`           // How this check was performed (data sources, APIs)
 	ChecksPerformed []CheckResult      `json:"checks_performed,omitempty"`      // Individual sub-check outcomes
 }

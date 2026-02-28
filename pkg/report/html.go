@@ -306,7 +306,11 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 		result.Dependency.Ecosystem)
 
 	if result.SupplyChainScore != nil {
-		scoreStr := fmt.Sprintf("%d/22", result.SupplyChainScore.TotalScore)
+		maxScore := result.SupplyChainScore.MaxScore
+		if maxScore == 0 {
+			maxScore = 22
+		}
+		scoreStr := fmt.Sprintf("%d/%d", result.SupplyChainScore.TotalScore, maxScore)
 		_, _ = fmt.Fprintf(w, "          <span><span class=\"detail-label\">Score:</span> %s</span>\n", scoreStr)
 	}
 
@@ -349,6 +353,12 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 		}
 
 		for _, cat := range categories {
+			if cat.score.Skipped {
+				_, _ = fmt.Fprintf(w, "            <tr style=\"opacity: 0.5;\"><td>%s</td><td>-</td><td>⚪</td><td>SKIP</td></tr>\n",
+					html.EscapeString(cat.name))
+				continue
+			}
+
 			scoreIcon := "🟢"
 			switch cat.score.RiskPoints {
 			case 2:
