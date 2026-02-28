@@ -33,7 +33,7 @@ import (
 //        1 = some controls but gaps (medium risk)
 //        2 = CI publishing with full protections (low risk)
 func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.CategoryScore {
-	const releaseSecSource = " [Source: SLSA v1.0 Build Level Requirements; Backstabber's Knife Collection (Ohm et al., 2020)]"
+	// Source: SLSA v1.0 Build Level Requirements; Backstabber's Knife Collection (Ohm et al., 2020)
 
 	relSecMethodology := "Checked for: (1) automated CI/CD release process, (2) branch protection on default branch, (3) cryptographically signed releases/tags, (4) required PR reviewers, (5) CI/CD workflow security (unpinned actions, excessive permissions, script injection, secrets in logs, missing environment protection), (6) self-hosted runner detection, (7) documented release process from contributing/release docs. Data sources: GitHub/GitLab/Bitbucket APIs with OSSF Scorecard fallback."
 
@@ -42,7 +42,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 			Score:       1,
 			RiskPoints:  1,
 			Description: "No source repository URL found — unable to check for CI/CD automation, branch protection, signed releases, or review requirements. Release security is unknown.",
-			Evidence:    "No repository URL available; further investigation recommended" + releaseSecSource,
+			Evidence:    "No repository URL available; further investigation recommended",
 			Verified:    false,
 			Methodology: "No repository URL available. Could not check any release security controls.",
 			ChecksPerformed: []models.CheckResult{
@@ -290,7 +290,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		Score:           points,
 		RiskPoints:      riskPoints,
 		Description:     description,
-		Evidence:        strings.Join(evidence, "; ") + releaseSecSource,
+		Evidence:        strings.Join(evidence, "; "),
 		Verified:        verified,
 		Methodology:     relSecMethodology,
 		ChecksPerformed: relSecChecks,

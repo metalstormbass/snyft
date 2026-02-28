@@ -113,7 +113,7 @@ func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repo
 //   Total 0 points = 2 risk (no signals)
 //   Override: Archived repos and abandoned packages (>180 days) always get 2 risk
 func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.CategoryScore {
-	const govSource = " [Source: OSSF Scorecard; Backstabber's Knife Collection (Ohm et al., 2020)]"
+	// Source: OSSF Scorecard; Backstabber's Knife Collection (Ohm et al., 2020)
 	govMethodology := "Checked for SECURITY.md (and .github/SECURITY.md) via Git API. Analyzed issue response times via GitHub API. Checked OSSF Scorecard Security-Policy score. Detected abandonment via last commit date. Checked for contributing/release documentation (CONTRIBUTING.md, RELEASING.md, RELEASE.md)."
 
 	// Early return if no repository URL
@@ -122,7 +122,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Score:       1,
 			RiskPoints:  1,
 			Description: "No source repository URL found — unable to check for SECURITY.md, issue response times, or abandonment patterns. Governance quality is unknown.",
-			Evidence:    "No source repository URL found; further investigation recommended" + govSource,
+			Evidence:    "No source repository URL found; further investigation recommended",
 			Verified:    false,
 			Methodology: "No repository URL available. Could not check for SECURITY.md, issue response times, or abandonment patterns.",
 			ChecksPerformed: []models.CheckResult{
@@ -140,7 +140,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Score:       0,
 			RiskPoints:  2,
 			Description: "Repository is archived and no longer accepting contributions. Archived projects have no active governance, no vulnerability disclosure process, and no maintainers monitoring for compromises.",
-			Evidence:    "Repository is archived and no longer accepting contributions" + govSource,
+			Evidence:    "Repository is archived and no longer accepting contributions",
 			Verified:    true,
 			Methodology: govMethodology,
 			ChecksPerformed: []models.CheckResult{
@@ -157,7 +157,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 				Score:       0,
 				RiskPoints:  2,
 				Description: fmt.Sprintf("No commits in %.0f days (last commit: %s). Abandoned projects have no active governance — maintainer accounts may be unmonitored and vulnerable to takeover.", daysSince, result.Metadata.RepoLastCommit.Format("2006-01-02")),
-				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince) + govSource,
+				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince),
 				Verified:    true,
 				Methodology: govMethodology,
 				ChecksPerformed: []models.CheckResult{
@@ -175,7 +175,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Score:       0,
 			RiskPoints:  1,
 			Description: "Could not fetch repository information to assess governance. Unable to check for SECURITY.md or issue response times.",
-			Evidence:    "Could not fetch repository information" + govSource,
+			Evidence:    "Could not fetch repository information",
 			Verified:    false,
 			Methodology: govMethodology,
 			ChecksPerformed: []models.CheckResult{
@@ -295,7 +295,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		Score:           2 - riskPoints,
 		RiskPoints:      riskPoints,
 		Description:     description,
-		Evidence:        strings.Join(evidenceParts, "; ") + govSource,
+		Evidence:        strings.Join(evidenceParts, "; "),
 		Verified:        true,
 		Methodology:     govMethodology,
 		ChecksPerformed: govChecks,
