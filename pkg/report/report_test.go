@@ -445,3 +445,151 @@ func TestExtractCriticalIssuesLimit(t *testing.T) {
 		t.Errorf("Expected 3 issues, got %d", len(issues))
 	}
 }
+
+// Test: packageSlug generates valid HTML-safe slugs from package names
+// Justification: Package names in anchor links must be valid HTML IDs so that
+//
+//	clicking a package name in the summary correctly navigates to
+//	the package's detail section, enabling quick risk triage
+//
+// Source: HTML Living Standard, "The id attribute" (WHATWG)
+// Methodology: Convert package names containing @, /, and other special
+//
+//	characters into lowercase alphanumeric slugs with hyphens
+//
+// Result: Slugs contain only [a-z0-9-] and have no leading/trailing hyphens
+func TestPackageSlug(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"express", "express"},
+		{"lodash", "lodash"},
+		{"@angular/core", "angular-core"},
+		{"@types/node", "types-node"},
+		{"my-package", "my-package"},
+		{"CamelCase", "camelcase"},
+		{"some_pkg_123", "some-pkg-123"},
+	}
+
+	for _, tt := range tests {
+		got := packageSlug(tt.input)
+		if got != tt.want {
+			t.Errorf("packageSlug(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// Test: HTML report summary lists package names as clickable anchor links
+// Justification: When the summary shows "X packages are high risk", users need
+//
+//	to see which packages and quickly navigate to their details.
+//	Anchor links enable one-click triage from summary to details.
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - rapid
+//
+//	identification of risky packages is critical for incident response
+//
+// Methodology: Generate an HTML report with HIGH, MEDIUM, and LOW packages,
+//
+//	verify summary contains anchor links and detail sections have
+//	matching id attributes
+//
+// Result: Each package name in the summary links to its detail via #pkg-<slug>
+func TestHTMLReportPackageAnchorLinks(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{
+				Name:      "express",
+				Version:   "4.17.1",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "HIGH",
+			Findings: []models.Finding{
+				{Severity: "HIGH", Description: "Single maintainer"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 10, RiskLevel: "HIGH"},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "@angular/core",
+				Version:   "16.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "MEDIUM",
+			Findings: []models.Finding{
+				{Severity: "MEDIUM", Description: "Missing provenance"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 6, RiskLevel: "MEDIUM"},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "react",
+				Version:   "18.2.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "LOW",
+			Findings: []models.Finding{
+				{Severity: "LOW", Description: "Well maintained"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 2, RiskLevel: "LOW"},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format: FormatHTML,
+		Writer: buf,
+	})
+	reporter.stats.StartTime = time.Now().Add(-5 * time.Second)
+	reporter.stats.EndTime = time.Now()
+	reporter.AddResults(results)
+
+	err := reporter.Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// Verify summary contains anchor links for each risk level
+	if !strings.Contains(output, `<a href="#pkg-express">express</a>`) {
+		t.Error("Summary missing anchor link for HIGH risk package 'express'")
+	}
+	if !strings.Contains(output, `<a href="#pkg-angular-core">@angular/core</a>`) {
+		t.Error("Summary missing anchor link for MEDIUM risk package '@angular/core'")
+	}
+	if !strings.Contains(output, `<a href="#pkg-react">react</a>`) {
+		t.Error("Summary missing anchor link for LOW risk package 'react'")
+	}
+
+	// Verify risk level labels in the package links section
+	if !strings.Contains(output, `class="group-label high">High:</span>`) {
+		t.Error("Summary missing 'High:' group label")
+	}
+	if !strings.Contains(output, `class="group-label med">Medium:</span>`) {
+		t.Error("Summary missing 'Medium:' group label")
+	}
+	if !strings.Contains(output, `class="group-label low">Low:</span>`) {
+		t.Error("Summary missing 'Low:' group label")
+	}
+
+	// Verify package detail sections have matching id attributes
+	if !strings.Contains(output, `id="pkg-express"`) {
+		t.Error("Package detail section missing id='pkg-express'")
+	}
+	if !strings.Contains(output, `id="pkg-angular-core"`) {
+		t.Error("Package detail section missing id='pkg-angular-core'")
+	}
+	if !strings.Contains(output, `id="pkg-react"`) {
+		t.Error("Package detail section missing id='pkg-react'")
+	}
+
+	// Verify toggle function uses string-based slugs
+	if !strings.Contains(output, `onclick="toggle('express')"`) {
+		t.Error("Package header missing onclick with slug-based toggle")
+	}
+	if !strings.Contains(output, `onclick="toggle('angular-core')"`) {
+		t.Error("Package header missing onclick with slug-based toggle for scoped package")
+	}
+}
