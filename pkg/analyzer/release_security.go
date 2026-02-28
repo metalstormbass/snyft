@@ -35,7 +35,7 @@ import (
 func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.CategoryScore {
 	const releaseSecSource = " [Source: SLSA v1.0 Build Level Requirements; Backstabber's Knife Collection (Ohm et al., 2020)]"
 
-	relSecMethodology := "Checked for: (1) automated CI/CD release process, (2) branch protection on default branch, (3) cryptographically signed releases/tags, (4) required PR reviewers, (5) CI/CD workflow security (unpinned actions, excessive permissions, script injection), (6) self-hosted runner detection. Data sources: GitHub/GitLab/Bitbucket APIs with OSSF Scorecard fallback."
+	relSecMethodology := "Checked for: (1) automated CI/CD release process, (2) branch protection on default branch, (3) cryptographically signed releases/tags, (4) required PR reviewers, (5) CI/CD workflow security (unpinned actions, excessive permissions, script injection, secrets in logs, missing environment protection), (6) self-hosted runner detection. Data sources: GitHub/GitLab/Bitbucket APIs with OSSF Scorecard fallback."
 
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
@@ -189,6 +189,9 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		}
 		if ciRisk.MissingEnvironmentProtection {
 			evidence = append(evidence, fmt.Sprintf("No environment protection on %s publish workflow", ciRisk.Platform))
+		}
+		if ciRisk.SecretsInLogs {
+			evidence = append(evidence, fmt.Sprintf("Secrets may be exposed in %s logs", ciRisk.Platform))
 		}
 	}
 	// Penalize for significant CI workflow risks (3+ signals = -1 point)

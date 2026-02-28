@@ -293,7 +293,6 @@ func categoryList(scores models.CategoryScores) []categoryEntry {
 		{"Governance", scores.Governance},
 		{"Release Security", scores.ReleaseSecurity},
 		{"Package Maturity", scores.PackageMaturity},
-		{"CI Pipeline Security", scores.CIPipelineSecurity},
 	}
 }
 
@@ -375,23 +374,23 @@ func (r *Reporter) generateRiskAreas() []riskArea {
 		})
 	}
 
-	// CI pipeline security
-	var ciRisks int
-	var ciRiskPkgs []string
+	// Release security (includes CI pipeline configuration risks)
+	var releaseSecRisks int
+	var releaseSecPkgs []string
 	for _, result := range r.results {
-		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.CIPipelineSecurity.RiskPoints > 1 {
-			ciRisks++
-			if len(ciRiskPkgs) < 3 {
-				ciRiskPkgs = append(ciRiskPkgs, result.Dependency.Name)
+		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.ReleaseSecurity.RiskPoints > 1 {
+			releaseSecRisks++
+			if len(releaseSecPkgs) < 3 {
+				releaseSecPkgs = append(releaseSecPkgs, result.Dependency.Name)
 			}
 		}
 	}
-	if ciRisks > 0 {
+	if releaseSecRisks > 0 {
 		areas = append(areas, riskArea{
-			Tag:         "CI PIPELINE SECURITY",
-			Summary:     fmt.Sprintf("%d package%s have critical CI/CD configuration issues", ciRisks, pluralize(ciRisks)),
-			Explanation: "Unpinned actions can be hijacked, script injection enables remote code execution, and self-hosted runners give attackers control over build environments.",
-			Examples:    joinExamples(ciRiskPkgs),
+			Tag:         "RELEASE SECURITY",
+			Summary:     fmt.Sprintf("%d package%s have critical release security issues", releaseSecRisks, pluralize(releaseSecRisks)),
+			Explanation: "Missing CI/CD automation, no branch protection, unsigned releases, or insecure CI configurations (unpinned actions, script injection, self-hosted runners).",
+			Examples:    joinExamples(releaseSecPkgs),
 		})
 	}
 

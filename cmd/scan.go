@@ -54,7 +54,7 @@ func init() {
 	scanCmd.Flags().StringVar(&checkFilter, "check", "", `Comma-separated list of checks to run. Valid check names:
   publisher-control, ownership-changes, release-anomalies,
   install-execution, dependency-sprawl, provenance, health,
-  governance, release-security, package-maturity, ci-pipeline-security`)
+  governance, release-security, package-maturity`)
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
