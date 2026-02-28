@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/metalstormbass/snyft/pkg/models"
 )
 
 // Test: normalizeSCMURL strips extra path segments from known hosting prefixes
@@ -1147,5 +1149,226 @@ func TestGetPackageInfoDirect_VersionCount(t *testing.T) {
 
 	if pkg.VersionCount != 4 {
 		t.Errorf("VersionCount = %d, want 4", pkg.VersionCount)
+	}
+}
+
+// Test: ResolveBOMVersions resolves unknown versions from parent BOM chain
+// Justification: Maven projects using parent BOMs (e.g. spring-boot-starter-parent)
+//
+//	have dependencies without explicit versions. Without resolving these,
+//	source verification constructs URLs like .../unknown/artifact-unknown-sources.jar
+//	which always fail, falsely inflating risk scores for all BOM-managed packages.
+//
+// Source: Maven POM reference — dependency management inheritance
+// Methodology: Mock Maven Central with parent BOM containing dependencyManagement
+//
+//	and properties. Verify that unknown versions are resolved correctly.
+//
+// Result: Dependencies with "unknown" versions are resolved from parent BOM.
+func TestResolveBOMVersions_ParentChain(t *testing.T) {
+	// Parent POM with properties and dependencyManagement
+	parentPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>parent-bom</artifactId>
+  <version>2.0.0</version>
+  <properties>
+    <spring.version>5.3.20</spring.version>
+    <guava.version>31.1-jre</guava.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-core</artifactId>
+        <version>${spring.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>${guava.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/parent-bom/2.0.0/parent-bom-2.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = fmt.Fprint(w, parentPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	deps := []models.Dependency{
+		{Name: "org.springframework:spring-core", Version: "unknown", Ecosystem: models.EcosystemMaven},
+		{Name: "com.google.guava:guava", Version: "unknown", Ecosystem: models.EcosystemMaven},
+		{Name: "com.example:already-resolved", Version: "1.0.0", Ecosystem: models.EcosystemMaven},
+	}
+
+	resolved := client.ResolveBOMVersions(deps, "com.example", "parent-bom", "2.0.0")
+
+	if resolved[0].Version != "5.3.20" {
+		t.Errorf("spring-core version = %q, want %q", resolved[0].Version, "5.3.20")
+	}
+	if resolved[1].Version != "31.1-jre" {
+		t.Errorf("guava version = %q, want %q", resolved[1].Version, "31.1-jre")
+	}
+	// Already-resolved deps should not be modified
+	if resolved[2].Version != "1.0.0" {
+		t.Errorf("already-resolved version = %q, want %q", resolved[2].Version, "1.0.0")
+	}
+}
+
+// Test: ResolveBOMVersions follows grandparent POM chain
+// Justification: Spring Boot projects typically have:
+//
+//	project → spring-boot-starter-parent → spring-boot-dependencies
+//	The actual version definitions are in the grandparent BOM. If we only
+//	fetch one level, most Spring dependencies remain unresolved.
+//
+// Source: Spring Boot BOM architecture
+// Methodology: Mock a two-level parent chain. Verify versions from grandparent
+//
+//	are resolved for dependencies not defined in the immediate parent.
+//
+// Result: Versions from grandparent BOM are correctly resolved.
+func TestResolveBOMVersions_GrandparentChain(t *testing.T) {
+	// Direct parent with its own parent reference
+	parentPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>grandparent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>parent-defined</artifactId>
+        <version>1.1.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`
+
+	// Grandparent with additional dependency management
+	grandparentPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>grandparent</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <deep.version>9.9.9</deep.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>grandparent-defined</artifactId>
+        <version>${deep.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/parent/1.0.0/parent-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, parentPOM)
+	})
+	mux.HandleFunc("/com/example/grandparent/1.0.0/grandparent-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, grandparentPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	deps := []models.Dependency{
+		{Name: "com.example:parent-defined", Version: "unknown", Ecosystem: models.EcosystemMaven},
+		{Name: "com.example:grandparent-defined", Version: "unknown", Ecosystem: models.EcosystemMaven},
+	}
+
+	resolved := client.ResolveBOMVersions(deps, "com.example", "parent", "1.0.0")
+
+	if resolved[0].Version != "1.1.0" {
+		t.Errorf("parent-defined version = %q, want %q", resolved[0].Version, "1.1.0")
+	}
+	if resolved[1].Version != "9.9.9" {
+		t.Errorf("grandparent-defined version = %q, want %q", resolved[1].Version, "9.9.9")
+	}
+}
+
+// Test: ResolveBOMVersions degrades gracefully on network failure
+// Justification: Parent BOM may be unreachable (rate limiting, network error).
+//
+//	Failure to fetch BOM must not crash the scan or change existing versions.
+//	Deps should remain "unknown" rather than producing errors.
+//
+// Source: Snyft design principle — degrade gracefully, never fail completely.
+// Methodology: Mock server returns 500 for all requests.
+// Result: All deps retain their original versions.
+func TestResolveBOMVersions_NetworkFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	deps := []models.Dependency{
+		{Name: "com.example:lib", Version: "unknown", Ecosystem: models.EcosystemMaven},
+	}
+
+	resolved := client.ResolveBOMVersions(deps, "com.example", "parent", "1.0.0")
+
+	// Should remain unknown, not crash
+	if resolved[0].Version != "unknown" {
+		t.Errorf("version = %q, want %q (should remain unknown on network failure)", resolved[0].Version, "unknown")
+	}
+}
+
+// Test: ResolveBOMVersions returns deps unchanged when no parent info
+// Justification: If parent coordinates are empty, no BOM resolution should
+//
+//	be attempted, and the original deps should be returned as-is.
+//
+// Source: Maven POM reference — parent is optional
+// Methodology: Call with empty parent coordinates.
+// Result: Deps unchanged.
+func TestResolveBOMVersions_NoParent(t *testing.T) {
+	client := NewMavenClient()
+
+	deps := []models.Dependency{
+		{Name: "com.example:lib", Version: "unknown", Ecosystem: models.EcosystemMaven},
+	}
+
+	resolved := client.ResolveBOMVersions(deps, "", "", "")
+
+	if resolved[0].Version != "unknown" {
+		t.Errorf("version = %q, want %q (no parent = no resolution)", resolved[0].Version, "unknown")
 	}
 }

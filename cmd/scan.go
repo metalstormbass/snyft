@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/analyzer"
+	"github.com/metalstormbass/snyft/pkg/fetcher"
 	"github.com/metalstormbass/snyft/pkg/models"
 	"github.com/metalstormbass/snyft/pkg/parser"
 	"github.com/metalstormbass/snyft/pkg/report"
@@ -141,6 +142,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse manifests: %w", err)
 	}
+
+	// Resolve Maven BOM-managed versions from parent POMs
+	dependencies = resolveMavenBOMVersions(dependencies, statusOut, verbose)
 
 	reporter.SetManifestCount(manifestCount)
 
@@ -389,4 +393,51 @@ func deduplicateDependencies(deps []models.Dependency) []models.Dependency {
 	}
 
 	return unique
+}
+
+// resolveMavenBOMVersions resolves "unknown" versions in Maven dependencies
+// by fetching parent BOMs from Maven Central. Groups dependencies by their
+// source pom.xml file and resolves each group using its parent POM chain.
+func resolveMavenBOMVersions(deps []models.Dependency, statusOut *os.File, verbose bool) []models.Dependency {
+	// Group Maven deps with unknown versions by source pom.xml
+	pomFiles := make(map[string][]int) // source path -> dep indices
+	for i, dep := range deps {
+		if dep.Ecosystem == models.EcosystemMaven && dep.Version == "unknown" {
+			pomFiles[dep.Source] = append(pomFiles[dep.Source], i)
+		}
+	}
+
+	if len(pomFiles) == 0 {
+		return deps
+	}
+
+	mavenClient := fetcher.NewMavenClient()
+
+	for pomPath, indices := range pomFiles {
+		parent, err := parser.ParsePomParent(pomPath)
+		if err != nil || parent == nil {
+			continue
+		}
+
+		if verbose {
+			_, _ = fmt.Fprintf(statusOut, "  Resolving BOM versions from %s:%s:%s\n",
+				parent.GroupID, parent.ArtifactID, parent.Version)
+		}
+
+		// Collect the deps for this POM
+		pomDeps := make([]models.Dependency, len(indices))
+		for j, idx := range indices {
+			pomDeps[j] = deps[idx]
+		}
+
+		// Resolve via parent BOM chain
+		resolved := mavenClient.ResolveBOMVersions(pomDeps, parent.GroupID, parent.ArtifactID, parent.Version)
+
+		// Update original deps
+		for j, idx := range indices {
+			deps[idx] = resolved[j]
+		}
+	}
+
+	return deps
 }
