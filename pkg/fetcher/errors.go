@@ -8,6 +8,7 @@ import "errors"
 var ErrPackageNotFound = errors.New("package not found")
 
 // ErrRateLimited is returned when an API call fails due to rate limiting (HTTP 403/429).
-// Callers should treat this as "data unavailable" and clearly report that the check
-// could not be performed, rather than interpreting empty results as "no issues found".
+// Since web scraping is the primary data source, this typically only occurs for
+// API-only operations (commit history, tag checks). Callers should treat this as
+// "data unavailable" rather than interpreting empty results as "no issues found".
 var ErrRateLimited = errors.New("API rate limited")

@@ -97,7 +97,8 @@ Typosquatting findings are reported as informational warnings and do not affect 
 
 Repository analysis works across:
 - **GitHub**, **GitLab**, **Bitbucket** (auto-detected from URLs)
-- Web scraping fallbacks when APIs are unavailable
+- Works out of the box with zero configuration — web scraping is the primary data source
+- Optional API tokens (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `BITBUCKET_TOKEN`) for richer data and higher rate limits
 
 ## License
 

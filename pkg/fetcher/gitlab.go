@@ -14,14 +14,19 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// GitLabClient handles interactions with GitLab API (both gitlab.com and self-hosted)
+// GitLabClient handles interactions with GitLab API and web scraping.
+// By default, web scraping is the primary data-fetching method, with API calls
+// used to supplement when a GITLAB_TOKEN is available.
 type GitLabClient struct {
 	token      string
 	httpClient *http.Client
 	baseURL    string
+	preferAPI  bool // when true, always try API first (used by test helpers)
 }
 
-// NewGitLabClient creates a new GitLab API client
+// NewGitLabClient creates a new GitLab client. Web scraping is the primary
+// data-fetching method. When GITLAB_TOKEN is set, API calls supplement
+// scraped data with richer metadata and higher rate limits.
 func NewGitLabClient() *GitLabClient {
 	return &GitLabClient{
 		token: os.Getenv("GITLAB_TOKEN"),
@@ -32,25 +37,42 @@ func NewGitLabClient() *GitLabClient {
 	}
 }
 
+// shouldPreferScraping returns true when web scraping should be tried first.
+// Custom base URLs (test servers) always use API-first since scraping
+// targets real gitlab.com regardless of the base URL.
+func (c *GitLabClient) shouldPreferScraping() bool {
+	return c.token == "" && !c.preferAPI && c.baseURL == "https://gitlab.com/api/v4"
+}
+
 // GetPlatformName returns "GitLab"
 func (c *GitLabClient) GetPlatformName() string {
 	return "GitLab"
 }
 
-// GetRepositoryInfo fetches repository information from GitLab
+// GetRepositoryInfo fetches repository information from GitLab.
+// When no GITLAB_TOKEN is set, web scraping is tried first. With a token,
+// the API provides richer data (exact dates, issue counts, license, topics).
 func (c *GitLabClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo, error) {
 	owner, repo, instance, err := parseGitLabURL(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
-	// Use custom instance base URL if not gitlab.com
+	// Scraping-first path: when no token, scrape the GitLab web page.
+	if c.shouldPreferScraping() {
+		info, scrapeErr := c.scrapeRepositoryInfo(instance, owner, repo)
+		if scrapeErr == nil {
+			return info, nil
+		}
+		// Scraping failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when scraping fails.
 	baseURL := c.baseURL
 	if instance != "gitlab.com" {
 		baseURL = fmt.Sprintf("https://%s/api/v4", instance)
 	}
 
-	// Encode the project path (owner/repo)
 	projectPath := url.PathEscape(fmt.Sprintf("%s/%s", owner, repo))
 	apiURL := fmt.Sprintf("%s/projects/%s", baseURL, projectPath)
 
@@ -65,14 +87,17 @@ func (c *GitLabClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Network error — try scraping fallback
-		return c.scrapeRepositoryInfo(instance, owner, repo)
+		// Network error — try scraping if we haven't already
+		if !c.shouldPreferScraping() {
+			return c.scrapeRepositoryInfo(instance, owner, repo)
+		}
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Try scraping fallback on rate limit or auth errors
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
+		// Try scraping on rate limit or auth errors (if we haven't already)
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			return c.scrapeRepositoryInfo(instance, owner, repo)
 		}
 		body, _ := io.ReadAll(resp.Body)
@@ -91,7 +116,7 @@ func (c *GitLabClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		Description:   glProject.Description,
 		Stars:         glProject.StarCount,
 		Forks:         glProject.ForksCount,
-		Watchers:      glProject.StarCount, // GitLab doesn't have separate watchers
+		Watchers:      glProject.StarCount,
 		OpenIssues:    glProject.OpenIssuesCount,
 		DefaultBranch: glProject.DefaultBranch,
 		Archived:      glProject.Archived,
@@ -103,7 +128,8 @@ func (c *GitLabClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 	}, nil
 }
 
-// scrapeRepositoryInfo scrapes repository information from the GitLab web page
+// scrapeRepositoryInfo scrapes repository information from the GitLab web page.
+// This is the primary data source when no GITLAB_TOKEN is set.
 func (c *GitLabClient) scrapeRepositoryInfo(instance, owner, repo string) (*models.RepositoryInfo, error) {
 	pageURL := fmt.Sprintf("https://%s/%s/%s", instance, owner, repo)
 	doc, err := scrapeWithUserAgent(pageURL)
@@ -385,13 +411,24 @@ func (c *GitLabClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 }
 
 // GetFileContent fetches the content of a file from a GitLab repository.
-// Falls back to scraping the raw file URL when the API is rate-limited.
+// When no token is set, the raw file URL is tried first. With a token,
+// the API is used for reliability.
 func (c *GitLabClient) GetFileContent(repoURL, filePath string) (string, error) {
 	owner, repo, instance, err := parseGitLabURL(repoURL)
 	if err != nil {
 		return "", err
 	}
 
+	// Raw-URL-first path: when no token, use raw endpoint to avoid API rate limits.
+	if c.shouldPreferScraping() {
+		content, rawErr := c.getFileContentViaRawURL(instance, owner, repo, filePath)
+		if rawErr == nil {
+			return content, nil
+		}
+		// Raw URL failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when raw URL fails.
 	baseURL := c.baseURL
 	if instance != "gitlab.com" {
 		baseURL = fmt.Sprintf("https://%s/api/v4", instance)
@@ -412,14 +449,17 @@ func (c *GitLabClient) GetFileContent(repoURL, filePath string) (string, error) 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Network error — try raw URL fallback
-		return c.getFileContentViaRawURL(instance, owner, repo, filePath)
+		// Network error — try raw URL if we haven't already
+		if !c.shouldPreferScraping() {
+			return c.getFileContentViaRawURL(instance, owner, repo, filePath)
+		}
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit or auth errors — try raw URL fallback
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
+		// Rate limit or auth errors — try raw URL if we haven't already
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			return c.getFileContentViaRawURL(instance, owner, repo, filePath)
 		}
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
@@ -675,8 +715,14 @@ func (c *GitLabClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 }
 
 // fileExists checks if a file exists in the repository.
-// Falls back to the raw file URL when the API is rate-limited.
+// When no token is set, the raw file URL is tried first to avoid API rate limits.
 func (c *GitLabClient) fileExists(instance, owner, repo, path string) bool {
+	// Raw-URL-first path: when no token, check via raw endpoint.
+	if c.shouldPreferScraping() {
+		return c.checkFileViaRawURL(instance, owner, repo, path)
+	}
+
+	// API path: primary when token is set.
 	baseURL := c.baseURL
 	if instance != "gitlab.com" {
 		baseURL = fmt.Sprintf("https://%s/api/v4", instance)
