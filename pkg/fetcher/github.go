@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,10 +16,10 @@ import (
 // repoCache stores API responses in memory to prevent redundant network calls
 // within a single scan session.
 //
-// Without a GITHUB_TOKEN, GitHub enforces a 60 req/hour unauthenticated rate
-// limit. A single package analysis makes 40+ API calls per repository
-// (DetectCISystems alone issues ~20 HEAD requests). Caching responses
-// eliminates repeated round-trips for the same repo across multiple checks.
+// GitHub enforces a 60 req/hour unauthenticated rate limit. A single package
+// analysis makes 40+ API calls per repository (DetectCISystems alone issues
+// ~20 HEAD requests). Caching responses eliminates repeated round-trips for
+// the same repo across multiple checks.
 type repoCache struct {
 	mu         sync.RWMutex
 	repoInfo   map[string]*models.RepositoryInfo // key: "owner/repo"
@@ -77,16 +76,16 @@ func (rc *repoCache) setFileExists(key string, exists bool) {
 
 // GitHubClient handles interactions with GitHub API
 type GitHubClient struct {
-	token      string
 	httpClient *http.Client
 	baseURL    string
 	cache      *repoCache
 }
 
-// NewGitHubClient creates a new GitHub API client
+// NewGitHubClient creates a new GitHub API client.
+// All requests are unauthenticated (60 req/hour rate limit). Caching minimizes
+// API calls, and scraping fallbacks handle rate-limit responses gracefully.
 func NewGitHubClient() *GitHubClient {
 	return &GitHubClient{
-		token: os.Getenv("GITHUB_TOKEN"),
 		httpClient: &http.Client{
 			// 10s timeout instead of 30s: when rate-limited the API returns
 			// 403 immediately, but the scraping fallback can stall on slow
@@ -131,9 +130,6 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -314,9 +310,6 @@ func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -366,9 +359,6 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 			continue
 		}
 
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
 		req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 		resp, err := c.httpClient.Do(req)
@@ -410,9 +400,6 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		return false
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -743,9 +730,6 @@ func (c *GitHubClient) getWorkflowContent(owner, repo, path string) string {
 	apiURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err == nil {
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
 		req.Header.Set("Accept", "application/vnd.github.v3.raw")
 		resp, err := c.httpClient.Do(req)
 		if err == nil {
@@ -876,9 +860,6 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -991,9 +972,6 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 		return "", err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3.raw")
 
 	resp, err := c.httpClient.Do(req)
@@ -1072,9 +1050,6 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 			return nil, err
 		}
 
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
 		req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 		resp, err := c.httpClient.Do(req)
@@ -1174,9 +1149,6 @@ func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 		return false, 0, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -1335,9 +1307,6 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -1479,9 +1448,6 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -1535,9 +1501,6 @@ func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 		return false
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -1574,9 +1537,6 @@ func (c *GitHubClient) getBranchProtection(owner, repo string) (*GitHubBranchPro
 		return nil, false
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -1659,9 +1619,6 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -1758,9 +1715,6 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 		return 0, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -1804,9 +1758,6 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 			continue
 		}
 
-		if c.token != "" {
-			commentsReq.Header.Set("Authorization", "Bearer "+c.token)
-		}
 		commentsReq.Header.Set("Accept", "application/vnd.github.v3+json")
 
 		commentsResp, err := c.httpClient.Do(commentsReq)
@@ -1886,9 +1837,6 @@ func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
 		return false, ""
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -1964,9 +1912,6 @@ func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
 		return false
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -2011,9 +1956,6 @@ func (c *GitHubClient) CheckOrgMFARequired(owner string) (required bool, availab
 		return false, false
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)
@@ -2053,9 +1995,6 @@ func (c *GitHubClient) GetUserAccountCreatedDate(username string) (time.Time, er
 		return time.Time{}, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := c.httpClient.Do(req)

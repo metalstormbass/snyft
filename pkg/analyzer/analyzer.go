@@ -88,8 +88,7 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 	}
 
 	// AI is opt-in only: callers must explicitly use WithAIConfig to enable it.
-	// Without the --ai flag (or equivalent option), AI analysis stays disabled
-	// regardless of environment variables like CLAUDE_API_KEY.
+	// Without the --ai flag (or equivalent option), AI analysis stays disabled.
 
 	return a
 }

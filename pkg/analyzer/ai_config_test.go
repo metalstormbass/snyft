@@ -77,8 +77,7 @@ func TestNewAnalyzer_WithEmptyAPIKey(t *testing.T) {
 }
 
 // TestNewAnalyzer_DefaultBehavior verifies default behavior without options
-// AI must be opt-in only: NewAnalyzer() without options must NOT auto-enable AI
-// even if CLAUDE_API_KEY or ANTHROPIC_API_KEY environment variables are set.
+// AI must be opt-in only: NewAnalyzer() without options must NOT auto-enable AI.
 func TestNewAnalyzer_DefaultBehavior(t *testing.T) {
 	a := NewAnalyzer()
 

@@ -28,7 +28,6 @@ var (
 
 	// AI configuration flags
 	aiEnabled      bool
-	aiAPIKey       string
 	aiTimeout      int
 	aiDisableCache bool
 	aiDisableRetry bool
@@ -54,8 +53,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&includeTransitive, "include-transitive", false, "Include transitive dependencies in analysis (default: direct only)")
 
 	// AI feature flags
-	scanCmd.Flags().BoolVar(&aiEnabled, "ai", false, "Enable AI-powered analysis (requires CLAUDE_API_KEY or --ai-api-key)")
-	scanCmd.Flags().StringVar(&aiAPIKey, "ai-api-key", "", "Claude API key for AI analysis (alternative to CLAUDE_API_KEY env var)")
+	scanCmd.Flags().BoolVar(&aiEnabled, "ai", false, "Enable AI-powered analysis (requires CLAUDE_API_KEY env var)")
 	scanCmd.Flags().IntVar(&aiTimeout, "ai-timeout", 60, "Timeout in seconds for AI operations")
 	scanCmd.Flags().BoolVar(&aiDisableCache, "ai-disable-cache", false, "Disable AI response caching")
 	scanCmd.Flags().BoolVar(&aiDisableRetry, "ai-disable-retry", false, "Disable retry on AI API failures")
@@ -166,13 +164,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 			aiConfig = ai.DefaultConfig()
 		}
 
-		// Override with CLI flags if provided
-		if aiAPIKey != "" {
-			aiConfig.APIKey = aiAPIKey
-		}
-
 		if aiConfig.APIKey == "" {
-			fmt.Println("⚠️  AI analysis enabled but no API key provided. Set CLAUDE_API_KEY or use --ai-api-key")
+			fmt.Println("⚠️  AI analysis enabled but no API key found. Set CLAUDE_API_KEY env var")
 			fmt.Println("    Continuing without AI analysis...")
 			aiConfig = nil
 		} else {

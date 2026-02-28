@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -16,15 +15,14 @@ import (
 
 // BitbucketClient handles interactions with Bitbucket API
 type BitbucketClient struct {
-	token      string
 	httpClient *http.Client
 	baseURL    string
 }
 
-// NewBitbucketClient creates a new Bitbucket API client
+// NewBitbucketClient creates a new Bitbucket API client.
+// All requests are unauthenticated with scraping fallbacks for rate limits.
 func NewBitbucketClient() *BitbucketClient {
 	return &BitbucketClient{
-		token: os.Getenv("BITBUCKET_TOKEN"),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -51,9 +49,6 @@ func (c *BitbucketClient) GetRepositoryInfo(repoURL string) (*models.RepositoryI
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -163,9 +158,6 @@ func (c *BitbucketClient) CheckGitTag(repoURL, version string) (bool, string, er
 			continue
 		}
 
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -221,9 +213,6 @@ func (c *BitbucketClient) HasAutomatedReleases(repoURL string) (bool, error) {
 		return false, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -258,9 +247,6 @@ func (c *BitbucketClient) GetReleaseHistory(repoURL string, limit int) ([]GitHub
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -310,9 +296,6 @@ func (c *BitbucketClient) GetCommitActivity(repoURL string, since time.Time) ([]
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -382,9 +365,6 @@ func (c *BitbucketClient) GetFileContent(repoURL, filePath string) (string, erro
 		return "", err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -557,9 +537,6 @@ func (c *BitbucketClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -643,9 +620,6 @@ func (c *BitbucketClient) fileExists(owner, repo, path string) bool {
 			continue
 		}
 
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {

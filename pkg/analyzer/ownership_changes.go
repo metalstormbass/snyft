@@ -123,7 +123,7 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 		} else if errors.Is(err, fetcher.ErrRateLimited) {
 			evidenceParts = append(evidenceParts, fmt.Sprintf(
 				"%s: commit author analysis could not be performed (API rate limited)", gitClient.GetPlatformName()))
-			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "UNAVAILABLE", Detail: "Could not check: API rate limited (set GITHUB_TOKEN for higher limits)"})
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "UNAVAILABLE", Detail: "Could not check: API rate limited"})
 		} else if err == nil && commitStats != nil {
 			verified = true
 			pts, ev := classifyOwnershipFromCommitStats(commitStats)

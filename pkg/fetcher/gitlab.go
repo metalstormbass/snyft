@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -16,15 +15,14 @@ import (
 
 // GitLabClient handles interactions with GitLab API (both gitlab.com and self-hosted)
 type GitLabClient struct {
-	token      string
 	httpClient *http.Client
 	baseURL    string
 }
 
-// NewGitLabClient creates a new GitLab API client
+// NewGitLabClient creates a new GitLab API client.
+// All requests are unauthenticated with scraping fallbacks for rate limits.
 func NewGitLabClient() *GitLabClient {
 	return &GitLabClient{
-		token: os.Getenv("GITLAB_TOKEN"),
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -59,9 +57,6 @@ func (c *GitLabClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -175,9 +170,6 @@ func (c *GitLabClient) CheckGitTag(repoURL, version string) (bool, string, error
 			continue
 		}
 
-		if c.token != "" {
-			req.Header.Set("PRIVATE-TOKEN", c.token)
-		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -238,9 +230,6 @@ func (c *GitLabClient) HasAutomatedReleases(repoURL string) (bool, error) {
 		return false, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -283,9 +272,6 @@ func (c *GitLabClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRel
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -342,9 +328,6 @@ func (c *GitLabClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -406,9 +389,6 @@ func (c *GitLabClient) GetFileContent(repoURL, filePath string) (string, error) 
 		return "", err
 	}
 
-	if c.token != "" {
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -595,9 +575,6 @@ func (c *GitLabClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 		return nil, err
 	}
 
-	if c.token != "" {
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -691,9 +668,6 @@ func (c *GitLabClient) fileExists(instance, owner, repo, path string) bool {
 		return false
 	}
 
-	if c.token != "" {
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

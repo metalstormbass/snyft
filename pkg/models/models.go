@@ -218,7 +218,7 @@ type PackageMetadata struct {
 	// Dependency metrics
 	DependencyMetrics *DependencyMetrics `json:"dependency_metrics,omitempty"`
 
-	// Libraries.io enrichment data (optional, requires LIBRARIES_IO_API_KEY)
+	// Libraries.io enrichment data (optional)
 	DependentsCount     int    `json:"dependents_count,omitempty"`      // Number of packages depending on this
 	DependentReposCount int    `json:"dependent_repos_count,omitempty"` // Number of repos depending on this
 	ContributionsCount  int    `json:"contributions_count,omitempty"`   // Contribution count from libraries.io

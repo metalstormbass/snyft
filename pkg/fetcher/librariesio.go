@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 )
 
 // LibrariesIOClient handles interactions with the Libraries.io API.
 // Used to enrich package metadata with ecosystem-wide adoption data
-// (dependents count, contribution activity) that helps AI assess blast radius.
+// (dependents count, contribution activity) that helps assess blast radius.
 //
 // Justification: A package with 10,000 dependents is a higher-value target for
 // supply chain attackers than one with 10 dependents. This data is unavailable
@@ -21,7 +20,6 @@ import (
 type LibrariesIOClient struct {
 	httpClient *http.Client
 	baseURL    string
-	apiKey     string
 }
 
 // LibrariesIOPackageInfo contains package information from Libraries.io
@@ -35,19 +33,17 @@ type LibrariesIOPackageInfo struct {
 }
 
 // NewLibrariesIOClient creates a new Libraries.io API client.
-// The API key is read from the LIBRARIES_IO_API_KEY environment variable.
-// If no key is set, the client will be non-functional (IsAvailable() returns false).
+// Uses unauthenticated requests (lower rate limits but zero config).
 func NewLibrariesIOClient() *LibrariesIOClient {
 	return &LibrariesIOClient{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		baseURL:    "https://libraries.io/api",
-		apiKey:     os.Getenv("LIBRARIES_IO_API_KEY"),
 	}
 }
 
-// IsAvailable returns true if the Libraries.io API key is configured.
+// IsAvailable returns true — Libraries.io supports unauthenticated requests.
 func (c *LibrariesIOClient) IsAvailable() bool {
-	return c.apiKey != ""
+	return true
 }
 
 // ecosystemPlatform maps our internal ecosystem names to Libraries.io platform names.
@@ -67,12 +63,8 @@ func ecosystemPlatform(ecosystem string) string {
 // GetPackageInfo fetches package information from the Libraries.io API.
 // Returns nil on any error (graceful degradation — this is optional enrichment).
 func (c *LibrariesIOClient) GetPackageInfo(ecosystem, name string) *LibrariesIOPackageInfo {
-	if !c.IsAvailable() {
-		return nil
-	}
-
 	platform := ecosystemPlatform(ecosystem)
-	url := fmt.Sprintf("%s/%s/%s?api_key=%s", c.baseURL, platform, name, c.apiKey)
+	url := fmt.Sprintf("%s/%s/%s", c.baseURL, platform, name)
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {

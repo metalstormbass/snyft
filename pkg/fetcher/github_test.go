@@ -1152,7 +1152,7 @@ func TestGetCommitAuthors_RateLimited429(t *testing.T) {
 }
 
 // Test: GetRepositoryInfo returns cached result on second call without hitting the server
-// Justification: Without GITHUB_TOKEN the unauthenticated rate limit is 60 req/hour.
+// Justification: The unauthenticated rate limit is 60 req/hour.
 //
 //	A single package analysis calls GetRepositoryInfo at least twice
 //	(analyzeRepository + getBranchProtection), so caching is critical to
