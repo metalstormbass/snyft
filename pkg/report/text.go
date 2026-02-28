@@ -77,7 +77,7 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 	icon := riskIcon(result.RiskLevel)
 
 	// Package name@version
-	nameVer := fmt.Sprintf("%s@%s", result.Dependency.Name, result.Dependency.Version)
+	nameVer := fmt.Sprintf("%s@%s", result.Dependency.Name, result.Dependency.DisplayVersion())
 	eco := string(result.Dependency.Ecosystem)
 
 	// Score with color based on numeric value

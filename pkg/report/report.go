@@ -234,7 +234,7 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 			}
 			issues = append(issues, CriticalIssue{
 				PackageName:    result.Dependency.Name,
-				PackageVersion: result.Dependency.Version,
+				PackageVersion: result.Dependency.DisplayVersion(),
 				Ecosystem:      string(result.Dependency.Ecosystem),
 				RiskLevel:      result.RiskLevel,
 				Description:    finding.Description,

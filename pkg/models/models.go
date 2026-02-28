@@ -20,6 +20,22 @@ type Dependency struct {
 	IsTransitive bool     `json:"is_transitive"` // True if this is a transitive (indirect) dependency
 }
 
+// IsVersionUnknown returns true when the dependency's version could not be
+// determined by the parser (e.g. Maven BOM imports, unresolved property
+// references). Version-dependent checks should be skipped for such packages.
+func (d Dependency) IsVersionUnknown() bool {
+	return d.Version == "" || d.Version == "unknown"
+}
+
+// DisplayVersion returns a human-readable version string. When the version
+// is unknown/undetermined it returns "-" instead of the raw sentinel value.
+func (d Dependency) DisplayVersion() string {
+	if d.IsVersionUnknown() {
+		return "-"
+	}
+	return d.Version
+}
+
 // SourceVerification contains detailed results of source code availability verification
 type SourceVerification struct {
 	Verified           bool     `json:"verified"`              // Overall verification status

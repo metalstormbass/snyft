@@ -120,7 +120,7 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 		transitive = " *(transitive)*"
 	}
 
-	f(w, "### %s %s@%s (%s)%s\n", icon, result.Dependency.Name, result.Dependency.Version,
+	f(w, "### %s %s@%s (%s)%s\n", icon, result.Dependency.Name, result.Dependency.DisplayVersion(),
 		result.Dependency.Ecosystem, transitive)
 	p(w, "")
 

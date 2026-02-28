@@ -332,7 +332,7 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 			defer wg.Done()
 			for idx := range jobs {
 				dep := deps[idx]
-				pkgLabel := fmt.Sprintf("%s@%s", dep.Name, dep.Version)
+				pkgLabel := fmt.Sprintf("%s@%s", dep.Name, dep.DisplayVersion())
 
 				mu.Lock()
 				currentPkg = pkgLabel
