@@ -301,10 +301,10 @@ func categoryList(scores models.CategoryScores) []categoryEntry {
 // riskArea describes one aggregated risk finding across all packages.
 // It uses plain text (no ANSI) so all formats can consume it directly.
 type riskArea struct {
-	Tag         string // e.g. "HIGH RISK", "UNVERIFIABLE SOURCE"
-	Summary     string // one-line count summary
-	Explanation string // why it matters
-	Examples    string // up to 3 example package names, may be empty
+	Tag         string   // e.g. "HIGH RISK", "UNVERIFIABLE SOURCE"
+	Summary     string   // one-line count summary
+	Explanation string   // why it matters
+	Examples    []string // affected package names (up to 3)
 }
 
 // generateRiskAreas collects cross-cutting risk patterns from results.
@@ -312,12 +312,21 @@ func (r *Reporter) generateRiskAreas() []riskArea {
 	var areas []riskArea
 
 	if r.stats.HighRisk > 0 {
+		var highPkgs []string
+		for _, result := range r.results {
+			if result.RiskLevel == "HIGH" {
+				if len(highPkgs) < 3 {
+					highPkgs = append(highPkgs, result.Dependency.Name)
+				}
+			}
+		}
 		areas = append(areas, riskArea{
 			Tag:     "HIGH RISK",
 			Summary: fmt.Sprintf("%d package%s with HIGH supply chain compromise risk", r.stats.HighRisk, pluralize(r.stats.HighRisk)),
 			Explanation: "Patterns matching known supply chain attack vectors, " +
 				"weak publisher controls or single points of compromise, " +
 				"missing build integrity verification.",
+			Examples: highPkgs,
 		})
 	}
 
@@ -337,7 +346,7 @@ func (r *Reporter) generateRiskAreas() []riskArea {
 			Tag:         "UNVERIFIABLE SOURCE",
 			Summary:     fmt.Sprintf("%d package%s lack public source code", missingSource, pluralize(missingSource)),
 			Explanation: "Published artifacts cannot be audited or compared to source, preventing independent verification of package contents.",
-			Examples:    joinExamples(missingSourcePkgs),
+			Examples:    missingSourcePkgs,
 		})
 	}
 
@@ -357,15 +366,19 @@ func (r *Reporter) generateRiskAreas() []riskArea {
 			Tag:         "INSTALL-TIME EXECUTION",
 			Summary:     fmt.Sprintf("%d package%s execute code during installation", installScripts, pluralize(installScripts)),
 			Explanation: "Install scripts are a primary supply chain attack vector. Compromised scripts execute arbitrary code before any application-level security controls.",
-			Examples:    joinExamples(installScriptPkgs),
+			Examples:    installScriptPkgs,
 		})
 	}
 
 	// Missing provenance
 	var missingProvenance int
+	var missingProvenancePkgs []string
 	for _, result := range r.results {
 		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.Provenance.RiskPoints > 1 {
 			missingProvenance++
+			if len(missingProvenancePkgs) < 3 {
+				missingProvenancePkgs = append(missingProvenancePkgs, result.Dependency.Name)
+			}
 		}
 	}
 	if missingProvenance > 0 {
@@ -373,6 +386,7 @@ func (r *Reporter) generateRiskAreas() []riskArea {
 			Tag:         "MISSING PROVENANCE",
 			Summary:     fmt.Sprintf("%d package%s lack build provenance verification", missingProvenance, pluralize(missingProvenance)),
 			Explanation: "Without SLSA attestations, Sigstore signatures, or reproducible builds, there is no way to verify that published artifacts were produced from the claimed source code.",
+			Examples:    missingProvenancePkgs,
 		})
 	}
 
@@ -392,7 +406,7 @@ func (r *Reporter) generateRiskAreas() []riskArea {
 			Tag:         "RELEASE SECURITY",
 			Summary:     fmt.Sprintf("%d package%s have critical release security issues", releaseSecRisks, pluralize(releaseSecRisks)),
 			Explanation: "Missing CI/CD automation, no branch protection, unsigned releases, or insecure CI configurations (unpinned actions, script injection, self-hosted runners).",
-			Examples:    joinExamples(releaseSecPkgs),
+			Examples:    releaseSecPkgs,
 		})
 	}
 

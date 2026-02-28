@@ -103,8 +103,8 @@ func (r *Reporter) generateMarkdown() error {
 		for i, area := range areas {
 			f(w, "%d. **[%s]** %s\n", i+1, area.Tag, area.Summary)
 			f(w, "   %s\n", area.Explanation)
-			if area.Examples != "" {
-				f(w, "   Affected: %s\n", area.Examples)
+			if len(area.Examples) > 0 {
+				f(w, "   Affected: %s\n", joinExamples(area.Examples))
 			}
 			p(w, "")
 		}

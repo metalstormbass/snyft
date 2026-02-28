@@ -192,6 +192,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .risk-area-summary{font-size:14px;font-weight:600;color:#1e293b;margin-bottom:2px}
 .risk-area-explain{font-size:13px;color:#64748b}
 .risk-area-examples{font-size:12px;color:#94a3b8;margin-top:4px}
+.risk-area-examples a{color:#475569;text-decoration:none}
+.risk-area-examples a:hover{text-decoration:underline;color:#6366f1}
 
 /* Package cards */
 .pkg-card{border:1px solid #e2e8f0;border-radius:10px;margin-bottom:12px;overflow:hidden;background:#fff;transition:box-shadow 0.15s}
@@ -456,8 +458,16 @@ func (r *Reporter) printHTMLRiskAreas(w io.Writer) {
 			f(w, "<div class=\"risk-area-tag\">%s</div>\n", html.EscapeString(area.Tag))
 			f(w, "<div class=\"risk-area-summary\">%s</div>\n", html.EscapeString(area.Summary))
 			f(w, "<div class=\"risk-area-explain\">%s</div>\n", html.EscapeString(area.Explanation))
-			if area.Examples != "" {
-				f(w, "<div class=\"risk-area-examples\">Affected: %s</div>\n", html.EscapeString(area.Examples))
+			if len(area.Examples) > 0 {
+				f(w, "<div class=\"risk-area-examples\">Affected: ")
+				for i, name := range area.Examples {
+					if i > 0 {
+						f(w, ", ")
+					}
+					slug := packageSlug(name)
+					f(w, "<a href=\"#pkg-%s\">%s</a>", slug, html.EscapeString(name))
+				}
+				f(w, "</div>\n")
 			}
 			f(w, "</div>\n")
 		}

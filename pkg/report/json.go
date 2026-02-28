@@ -44,10 +44,10 @@ type JSONCriticalIssue struct {
 
 // JSONRiskArea represents a risk area in JSON format
 type JSONRiskArea struct {
-	Tag         string `json:"tag"`
-	Summary     string `json:"summary"`
-	Explanation string `json:"explanation"`
-	Examples    string `json:"examples,omitempty"`
+	Tag         string   `json:"tag"`
+	Summary     string   `json:"summary"`
+	Explanation string   `json:"explanation"`
+	Examples    []string `json:"examples,omitempty"`
 }
 
 func (r *Reporter) generateJSON() error {
