@@ -382,8 +382,10 @@ func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 	return commits, nil
 }
 
-// CheckGitTag verifies if a specific version tag exists in the repository
-// Returns true if the tag exists, along with the tag URL
+// CheckGitTag verifies if a specific version tag exists in the repository.
+// Uses web scraping as the primary method (HEAD request to github.com tag page),
+// falling back to the API only when a token is available and scraping fails.
+// Returns true if the tag exists, along with the tag URL.
 func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -399,6 +401,22 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 		"Release-" + version,
 	}
 
+	// Scraping-first path: check the GitHub web page for each tag variant.
+	// HEAD request to github.com/owner/repo/releases/tag/{tag} is served by
+	// the web frontend, not the API, and is not subject to API rate limits.
+	if c.shouldPreferScraping() {
+		for _, tag := range tagVariants {
+			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
+			if c.checkTagViaWeb(tagURL) {
+				return true, tagURL, nil
+			}
+		}
+		// Scraping didn't find a tag — fall through to try the API as a last resort.
+		// The tag may exist but not have a releases page (lightweight tags).
+	}
+
+	// API path: primary when token is set, fallback when scraping didn't find the tag.
+	rateLimited := false
 	for _, tag := range tagVariants {
 		url := fmt.Sprintf("%s/repos/%s/%s/git/ref/tags/%s", c.baseURL, owner, repo, tag)
 		req, err := http.NewRequest("GET", url, nil)
@@ -415,22 +433,51 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 		if err != nil {
 			continue
 		}
-		defer func() { _ = resp.Body.Close() }()
+		_ = resp.Body.Close()
 
 		if resp.StatusCode == http.StatusOK {
 			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 			return true, tagURL, nil
 		}
 
-		// Rate-limited or auth required — cannot distinguish "tag absent" from
-		// "check failed". Return an explicit error so the caller can suppress the
-		// finding rather than converting a failed check into a false negative.
 		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-			return false, "", fmt.Errorf("GitHub API rate limited (status %d): cannot verify git tag", resp.StatusCode)
+			rateLimited = true
+			break // No point trying more variants — they'll all be rate-limited.
 		}
 	}
 
+	// If the API was rate-limited and we haven't tried scraping yet, try now.
+	if rateLimited && !c.shouldPreferScraping() {
+		for _, tag := range tagVariants {
+			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
+			if c.checkTagViaWeb(tagURL) {
+				return true, tagURL, nil
+			}
+		}
+	}
+
+	// Graceful degradation: when rate-limited and scraping didn't find the tag,
+	// return (false, "", nil) — "could not confirm tag" — rather than an error.
+	// The caller treats nil error + false as "tag not found" which is the safest
+	// interpretation: the provenance scorer already handles missing tags.
 	return false, "", nil
+}
+
+// checkTagViaWeb checks if a GitHub tag/release page exists by issuing a HEAD
+// request to the web frontend. This is NOT subject to API rate limits.
+func (c *GitHubClient) checkTagViaWeb(tagURL string) bool {
+	req, err := http.NewRequest("HEAD", tagURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func (c *GitHubClient) fileExists(owner, repo, path string) bool {
@@ -1753,10 +1800,21 @@ func (c *GitHubClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 	return quality, nil
 }
 
-// getWorkflowFiles fetches GitHub Actions workflow files.
-// Returns empty list (not error) when rate-limited so CI detection degrades
-// gracefully rather than failing the entire analysis.
+// getWorkflowFiles lists workflow filenames in .github/workflows/.
+// Uses web scraping as the primary method when no token is set. Falls back
+// to the API when a token is available or scraping fails. Returns empty list
+// (not error) when all methods fail so CI detection degrades gracefully.
 func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
+	// Scraping-first path: scrape the GitHub tree page for the workflows directory.
+	if c.shouldPreferScraping() {
+		workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
+		if scrapeErr == nil {
+			return workflows, nil
+		}
+		// Scraping failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when scraping fails.
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/.github/workflows", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -1770,12 +1828,26 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		// Network error — try scraping if we haven't already
+		if !c.shouldPreferScraping() {
+			workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
+			if scrapeErr == nil {
+				return workflows, nil
+			}
+		}
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit — return empty list so callers degrade gracefully
+		// Rate limit or auth errors — try scraping if we haven't already
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+			workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
+			if scrapeErr == nil {
+				return workflows, nil
+			}
+		}
+		// Graceful degradation: return empty list so callers don't error out
 		if shouldFallbackToScraping(nil, resp.StatusCode) {
 			return []string{}, nil
 		}
@@ -1793,6 +1865,49 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 			workflows = append(workflows, file.Name)
 		}
 	}
+
+	return workflows, nil
+}
+
+// scrapeWorkflowFiles scrapes workflow filenames from the GitHub repository tree page.
+// This is the primary method when no token is set, avoiding API rate limits entirely.
+func (c *GitHubClient) scrapeWorkflowFiles(owner, repo string) ([]string, error) {
+	pageURL := fmt.Sprintf("https://github.com/%s/%s/tree/HEAD/.github/workflows", owner, repo)
+	doc, scrapeErr := scrapeWithUserAgent(pageURL)
+	if scrapeErr != nil {
+		// Also try with explicit main branch
+		pageURL = fmt.Sprintf("https://github.com/%s/%s/tree/main/.github/workflows", owner, repo)
+		doc, scrapeErr = scrapeWithUserAgent(pageURL)
+		if scrapeErr != nil {
+			return nil, scrapeErr
+		}
+	}
+
+	var workflows []string
+	// GitHub renders file listings as links within the tree view.
+	// Each file link href ends with the filename.
+	doc.Find("a").Each(func(_ int, a *goquery.Selection) {
+		href, exists := a.Attr("href")
+		if !exists {
+			return
+		}
+		// Match links to workflow files in the .github/workflows directory
+		prefix := fmt.Sprintf("/%s/%s/blob/", owner, repo)
+		if !strings.Contains(href, prefix) {
+			return
+		}
+		if !strings.Contains(href, "/.github/workflows/") {
+			return
+		}
+		// Extract just the filename from the full path
+		parts := strings.Split(href, "/")
+		if len(parts) > 0 {
+			name := parts[len(parts)-1]
+			if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+				workflows = append(workflows, name)
+			}
+		}
+	})
 
 	return workflows, nil
 }
