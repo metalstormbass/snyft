@@ -970,114 +970,169 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 	}
 
 	// API path: primary when token is set, fallback when scraping fails.
-	url := fmt.Sprintf("%s/repos/%s/%s/releases", c.baseURL, owner, repo)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
+	// Paginate through all pages (up to maxPaginationPages) to get full release
+	// history. This is critical for release anomaly detection — we need the complete
+	// version timeline to spot dormancy reactivation and cadence irregularities.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — dormancy
+	// reactivation is a key supply chain attack pattern.
+	var allReleases []GitHubRelease
+	nextURL := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=100", c.baseURL, owner, repo)
 
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScraping() {
-			releases, scrapeErr := c.scrapeReleases(owner, repo)
-			if scrapeErr == nil && c.cache != nil {
-				c.cache.setCachedReleases(cacheKey, releases)
-			}
-			return releases, scrapeErr
+	for page := 0; page < maxPaginationPages && nextURL != ""; page++ {
+		req, err := http.NewRequest("GET", nextURL, nil)
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		// Rate limit or auth errors — try scraping if we haven't already
-		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
-			releases, scrapeErr := c.scrapeReleases(owner, repo)
-			if scrapeErr == nil && c.cache != nil {
-				c.cache.setCachedReleases(cacheKey, releases)
-			}
-			return releases, scrapeErr
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
 		}
-		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
-	}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	var releases []GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, err
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			// Network error — try scraping if we haven't already
+			if page == 0 && !c.shouldPreferScraping() {
+				releases, scrapeErr := c.scrapeReleases(owner, repo)
+				if scrapeErr == nil && c.cache != nil {
+					c.cache.setCachedReleases(cacheKey, releases)
+				}
+				return releases, scrapeErr
+			}
+			break
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			// Rate limit or auth errors — try scraping if we haven't already
+			_ = resp.Body.Close()
+			if page == 0 && !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+				releases, scrapeErr := c.scrapeReleases(owner, repo)
+				if scrapeErr == nil && c.cache != nil {
+					c.cache.setCachedReleases(cacheKey, releases)
+				}
+				return releases, scrapeErr
+			}
+			if page == 0 {
+				return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+			}
+			break
+		}
+
+		var pageReleases []GitHubRelease
+		if err := json.NewDecoder(resp.Body).Decode(&pageReleases); err != nil {
+			_ = resp.Body.Close()
+			if page == 0 {
+				return nil, err
+			}
+			break
+		}
+
+		// Parse Link header for next page URL
+		nextURL = parseLinkHeaderNextURL(resp.Header.Get("Link"))
+		_ = resp.Body.Close()
+
+		allReleases = append(allReleases, pageReleases...)
+
+		// Stop if there's no next page link AND we got fewer results than per_page
+		if nextURL == "" || len(pageReleases) == 0 {
+			break
+		}
 	}
 
 	if c.cache != nil {
-		c.cache.setCachedReleases(cacheKey, releases)
+		c.cache.setCachedReleases(cacheKey, allReleases)
 	}
-	return releases, nil
+	return allReleases, nil
 }
 
 // scrapeReleases scrapes release information from the GitHub releases page.
 // This is the primary release data source when no GITHUB_TOKEN is set.
+// Paginates through all release pages (up to maxPaginationPages) to get the
+// full release history needed for release anomaly detection.
 func (c *GitHubClient) scrapeReleases(owner, repo string) ([]GitHubRelease, error) {
-	pageURL := fmt.Sprintf("https://github.com/%s/%s/releases", owner, repo)
-	doc, err := scrapeWithUserAgent(pageURL)
-	if err != nil {
-		return nil, fmt.Errorf("scraping releases fallback failed: %w", err)
+	var allReleases []GitHubRelease
+	nextPageURL := fmt.Sprintf("https://github.com/%s/%s/releases", owner, repo)
+
+	for page := 0; page < maxPaginationPages && nextPageURL != ""; page++ {
+		doc, err := scrapeWithUserAgent(nextPageURL)
+		if err != nil {
+			if page == 0 {
+				return nil, fmt.Errorf("scraping releases fallback failed: %w", err)
+			}
+			break // Return what we have so far
+		}
+
+		pageHadReleases := false
+
+		// Each release is in a section with the release tag name and date
+		doc.Find("div[data-hpc] section").Each(func(i int, s *goquery.Selection) {
+			var release GitHubRelease
+
+			// Extract tag name from the release heading link
+			s.Find("a[href*='/releases/tag/']").First().Each(func(_ int, a *goquery.Selection) {
+				if href, exists := a.Attr("href"); exists {
+					parts := strings.Split(href, "/tag/")
+					if len(parts) == 2 {
+						release.TagName = parts[1]
+						release.Name = strings.TrimSpace(a.Text())
+					}
+				}
+			})
+
+			// Extract date from relative-time element
+			s.Find("relative-time").First().Each(func(_ int, rt *goquery.Selection) {
+				if datetime, exists := rt.Attr("datetime"); exists {
+					if t, parseErr := time.Parse(time.RFC3339, datetime); parseErr == nil {
+						release.PublishedAt = t
+						release.CreatedAt = t
+					}
+				}
+			})
+
+			// Check for pre-release label
+			s.Find("span:contains('Pre-release')").Each(func(_ int, _ *goquery.Selection) {
+				release.Prerelease = true
+			})
+
+			// Extract asset names from the assets list
+			s.Find("a[href*='/releases/download/']").Each(func(_ int, a *goquery.Selection) {
+				if href, exists := a.Attr("href"); exists {
+					name := strings.TrimSpace(a.Text())
+					if name != "" {
+						release.Assets = append(release.Assets, GitHubAsset{
+							Name:               name,
+							BrowserDownloadURL: "https://github.com" + href,
+						})
+					}
+				}
+			})
+
+			if release.TagName != "" {
+				allReleases = append(allReleases, release)
+				pageHadReleases = true
+			}
+		})
+
+		// Look for the "Next" pagination link
+		nextPageURL = ""
+		doc.Find("a.next_page, a[rel='next']").Each(func(_ int, a *goquery.Selection) {
+			if href, exists := a.Attr("href"); exists && href != "" {
+				// Handle relative URLs
+				if strings.HasPrefix(href, "/") {
+					nextPageURL = "https://github.com" + href
+				} else if strings.HasPrefix(href, "http") {
+					nextPageURL = href
+				}
+			}
+		})
+
+		// If no releases were found on this page, stop paginating
+		if !pageHadReleases {
+			break
+		}
 	}
 
-	var releases []GitHubRelease
-
-	// Each release is in a section with the release tag name and date
-	doc.Find("div[data-hpc] section").Each(func(i int, s *goquery.Selection) {
-		var release GitHubRelease
-
-		// Extract tag name from the release heading link
-		s.Find("a[href*='/releases/tag/']").First().Each(func(_ int, a *goquery.Selection) {
-			if href, exists := a.Attr("href"); exists {
-				parts := strings.Split(href, "/tag/")
-				if len(parts) == 2 {
-					release.TagName = parts[1]
-					release.Name = strings.TrimSpace(a.Text())
-				}
-			}
-		})
-
-		// Extract date from relative-time element
-		s.Find("relative-time").First().Each(func(_ int, rt *goquery.Selection) {
-			if datetime, exists := rt.Attr("datetime"); exists {
-				if t, parseErr := time.Parse(time.RFC3339, datetime); parseErr == nil {
-					release.PublishedAt = t
-					release.CreatedAt = t
-				}
-			}
-		})
-
-		// Check for pre-release label
-		s.Find("span:contains('Pre-release')").Each(func(_ int, _ *goquery.Selection) {
-			release.Prerelease = true
-		})
-
-		// Extract asset names from the assets list
-		s.Find("a[href*='/releases/download/']").Each(func(_ int, a *goquery.Selection) {
-			if href, exists := a.Attr("href"); exists {
-				name := strings.TrimSpace(a.Text())
-				if name != "" {
-					release.Assets = append(release.Assets, GitHubAsset{
-						Name:               name,
-						BrowserDownloadURL: "https://github.com" + href,
-					})
-				}
-			}
-		})
-
-		if release.TagName != "" {
-			releases = append(releases, release)
-		}
-	})
-
-	return releases, nil
+	return allReleases, nil
 }
 
 // GetFileContent fetches the content of a file from a GitHub repository.

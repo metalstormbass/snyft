@@ -12,6 +12,244 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
+// TestParseLinkHeaderNextURL tests extraction of the "next" URL from Link headers.
+//
+// Test: parseLinkHeaderNextURL correctly extracts pagination URLs
+// Justification: Pagination is essential for fetching complete release histories;
+//                incomplete release data can mask dormancy reactivation patterns
+// Source: RFC 8288 — Web Linking; GitHub/GitLab API pagination docs
+// Methodology: Test against real-world Link header formats from GitHub/GitLab
+// Result: Correctly extracts next URL when present, returns "" when absent
+func TestParseLinkHeaderNextURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		header   string
+		expected string
+	}{
+		{
+			name:     "GitHub style with next and last",
+			header:   `<https://api.github.com/repos/o/r/releases?page=2>; rel="next", <https://api.github.com/repos/o/r/releases?page=5>; rel="last"`,
+			expected: "https://api.github.com/repos/o/r/releases?page=2",
+		},
+		{
+			name:     "GitLab style",
+			header:   `<https://gitlab.com/api/v4/projects/1/releases?page=2&per_page=100>; rel="next"`,
+			expected: "https://gitlab.com/api/v4/projects/1/releases?page=2&per_page=100",
+		},
+		{
+			name:     "no next link",
+			header:   `<https://api.github.com/repos/o/r/releases?page=1>; rel="prev", <https://api.github.com/repos/o/r/releases?page=5>; rel="last"`,
+			expected: "",
+		},
+		{
+			name:     "empty header",
+			header:   "",
+			expected: "",
+		},
+		{
+			name:     "next only",
+			header:   `<https://example.com/page2>; rel="next"`,
+			expected: "https://example.com/page2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseLinkHeaderNextURL(tt.header)
+			if result != tt.expected {
+				t.Errorf("parseLinkHeaderNextURL() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGitHubGetReleases_PaginatesAllPages tests that getReleases follows
+// pagination links to fetch complete release history.
+//
+// Test: GitHub API release fetching paginates through multiple pages
+// Justification: Packages with many releases (e.g. 100+) need full history
+//                for accurate dormancy reactivation detection and cadence analysis
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — dormancy
+//         reactivation requires temporal release data across the full timeline
+// Methodology: Mock GitHub API returns 3 pages of releases with Link headers
+// Result: All releases from all pages are returned
+func TestGitHubGetReleases_PaginatesAllPages(t *testing.T) {
+	callCount := 0
+	// Use a mux so the handler can reference the server URL via the request host
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var releases []GitHubRelease
+		switch callCount {
+		case 1:
+			releases = []GitHubRelease{
+				{TagName: "v3.0.0", Name: "v3.0.0", PublishedAt: time.Now()},
+				{TagName: "v2.0.0", Name: "v2.0.0", PublishedAt: time.Now().AddDate(0, -1, 0)},
+			}
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/test/repo/releases?page=2&per_page=100>; rel="next"`, server.URL))
+		case 2:
+			releases = []GitHubRelease{
+				{TagName: "v1.0.0", Name: "v1.0.0", PublishedAt: time.Now().AddDate(0, -6, 0)},
+			}
+			// No Link header = last page
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(releases)
+	})
+
+	client := NewGitHubClientWithBaseURL(server.URL)
+
+	releases, err := client.getReleases("test", "repo")
+	if err != nil {
+		t.Fatalf("getReleases() error = %v", err)
+	}
+
+	if len(releases) != 3 {
+		t.Errorf("getReleases() returned %d releases, want 3", len(releases))
+	}
+
+	if callCount != 2 {
+		t.Errorf("getReleases() made %d API calls, want 2", callCount)
+	}
+
+	// Verify all tag names are present
+	tags := map[string]bool{}
+	for _, r := range releases {
+		tags[r.TagName] = true
+	}
+	for _, expected := range []string{"v3.0.0", "v2.0.0", "v1.0.0"} {
+		if !tags[expected] {
+			t.Errorf("missing release tag %q", expected)
+		}
+	}
+}
+
+// TestGitLabGetReleaseHistory_PaginatesAllPages tests that GetReleaseHistory
+// follows pagination links to fetch complete release history.
+//
+// Test: GitLab API release fetching paginates through multiple pages
+// Justification: Packages with many releases need full history for
+//                accurate dormancy reactivation detection
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Mock GitLab API returns 2 pages of releases with Link headers
+// Result: All releases from all pages are returned
+func TestGitLabGetReleaseHistory_PaginatesAllPages(t *testing.T) {
+	callCount := 0
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var releases []GitLabRelease
+		switch callCount {
+		case 1:
+			releases = []GitLabRelease{
+				{TagName: "v2.0.0", Name: "v2.0.0", CreatedAt: time.Now(), ReleasedAt: time.Now()},
+			}
+			w.Header().Set("Link", fmt.Sprintf(`<%s/projects/test%%2Frepo/releases?page=2&per_page=100>; rel="next"`, server.URL))
+		case 2:
+			releases = []GitLabRelease{
+				{TagName: "v1.0.0", Name: "v1.0.0", CreatedAt: time.Now().AddDate(0, -6, 0), ReleasedAt: time.Now().AddDate(0, -6, 0)},
+			}
+			// No Link header = last page
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(releases)
+	})
+
+	client := NewGitLabClient()
+	client.baseURL = server.URL
+	client.preferAPI = true
+
+	releases, err := client.GetReleaseHistory("https://gitlab.com/test/repo", 0)
+	if err != nil {
+		t.Fatalf("GetReleaseHistory() error = %v", err)
+	}
+
+	if len(releases) != 2 {
+		t.Errorf("GetReleaseHistory() returned %d releases, want 2", len(releases))
+	}
+
+	if callCount != 2 {
+		t.Errorf("GetReleaseHistory() made %d API calls, want 2", callCount)
+	}
+}
+
+// TestMavenGetVersionHistory_PaginatesAllPages tests that GetVersionHistory
+// paginates through Solr search results to get all versions.
+//
+// Test: Maven version history fetching paginates through Solr API
+// Justification: Long-lived Maven packages (e.g. Spring, Guava) can have
+//                hundreds of versions; truncating at 50 misses patterns
+// Source: Maven Central Solr API — start/rows pagination
+// Methodology: Mock Solr API returns 2 pages of version documents
+// Result: All versions from all pages are returned
+func TestMavenGetVersionHistory_PaginatesAllPages(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		now := time.Now().UnixMilli()
+		var resp struct {
+			Response struct {
+				NumFound int `json:"numFound"`
+				Docs     []struct {
+					V         string `json:"v"`
+					Timestamp int64  `json:"timestamp"`
+				} `json:"docs"`
+			} `json:"response"`
+		}
+		resp.Response.NumFound = 3 // Total versions
+		switch callCount {
+		case 1:
+			resp.Response.Docs = []struct {
+				V         string `json:"v"`
+				Timestamp int64  `json:"timestamp"`
+			}{
+				{V: "3.0.0", Timestamp: now},
+				{V: "2.0.0", Timestamp: now - 86400000},
+			}
+		case 2:
+			resp.Response.Docs = []struct {
+				V         string `json:"v"`
+				Timestamp int64  `json:"timestamp"`
+			}{
+				{V: "1.0.0", Timestamp: now - 172800000},
+			}
+		default:
+			resp.Response.Docs = nil
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewMavenClient()
+	client.searchURL = server.URL
+
+	releases, err := client.GetVersionHistory("com.example:test")
+	if err != nil {
+		t.Fatalf("GetVersionHistory() error = %v", err)
+	}
+
+	if len(releases) != 3 {
+		t.Errorf("GetVersionHistory() returned %d releases, want 3", len(releases))
+	}
+}
+
 // TestGitHubScrapingFallback_APIRateLimit tests that GetRepositoryInfo returns
 // a scraping-based error (not an API error) when the API returns 403.
 //

@@ -78,6 +78,36 @@ func extractNumber(text string) int {
 	return int(floatNum * float64(multiplier))
 }
 
+// maxPaginationPages is the upper bound on the number of pages fetched during
+// paginated API calls or web scraping. This prevents infinite loops when an
+// API returns a "next" link indefinitely and bounds the total request count.
+const maxPaginationPages = 50
+
+// parseLinkHeaderNextURL extracts the "next" URL from an HTTP Link header.
+// GitHub and GitLab APIs use RFC 8288 Link headers for pagination, e.g.:
+//
+//	Link: <https://api.github.com/repos/o/r/releases?page=2>; rel="next", ...
+//
+// Returns "" when there is no "next" relation.
+func parseLinkHeaderNextURL(header string) string {
+	if header == "" {
+		return ""
+	}
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if !strings.Contains(part, `rel="next"`) {
+			continue
+		}
+		// Extract URL between < and >
+		start := strings.Index(part, "<")
+		end := strings.Index(part, ">")
+		if start >= 0 && end > start {
+			return part[start+1 : end]
+		}
+	}
+	return ""
+}
+
 // shouldFallbackToScraping checks if the API response warrants trying an
 // alternative data source (scraping or raw URLs). Used when the API is the
 // primary path (token set) and needs to fall back.
