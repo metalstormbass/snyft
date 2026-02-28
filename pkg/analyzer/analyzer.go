@@ -255,6 +255,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	}
 
 	result.RepositoryURL = repoURL
+	result.ScorecardURL = ossfScorecardURL(repoURL)
 	result.Metadata = metadata
 
 	// Enrich with Libraries.io data (if API key is available)

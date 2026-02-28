@@ -123,6 +123,9 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 	if result.RepositoryURL != "" {
 		f(w, "**Repo:** %s\n", result.RepositoryURL)
 	}
+	if result.ScorecardURL != "" {
+		f(w, "**OpenSSF Scorecard:** [View Scorecard](%s)\n", result.ScorecardURL)
+	}
 	f(w, "**Source Available:** %v\n", result.SourceCodeAvailable)
 	if result.BuildInfrastructure != "" {
 		f(w, "**Build:** %s\n", result.BuildInfrastructure)
