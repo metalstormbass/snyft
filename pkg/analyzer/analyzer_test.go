@@ -814,59 +814,59 @@ func TestDetectReleaseAnomaly(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		releases     []fetcher.GitHubRelease
+		releases     []fetcher.RegistryRelease
 		expectedRisk *int // nil if no anomaly expected
 		expectedDesc string
 	}{
 		{
 			name:         "No releases",
-			releases:     []fetcher.GitHubRelease{},
+			releases:     []fetcher.RegistryRelease{},
 			expectedRisk: nil,
 		},
 		{
 			name: "Single release",
-			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -1, 0), Draft: false, Prerelease: false},
+			releases: []fetcher.RegistryRelease{
+				{PublishedAt: time.Now().AddDate(0, -1, 0)},
 			},
 			expectedRisk: nil,
 		},
 		{
 			name: "Suspicious reactivation - long dormancy then recent release",
-			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -1, 0), Draft: false, Prerelease: false},  // 1 month ago
-				{PublishedAt: time.Now().AddDate(-2, 0, 0), Draft: false, Prerelease: false}, // 2 years ago
+			releases: []fetcher.RegistryRelease{
+				{PublishedAt: time.Now().AddDate(0, -1, 0)},  // 1 month ago
+				{PublishedAt: time.Now().AddDate(-2, 0, 0)},  // 2 years ago
 			},
 			expectedRisk: intPtr(2),
 			expectedDesc: "Suspicious reactivation",
 		},
 		{
 			name: "Regular release pattern - consistent frequency",
-			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -3, 0), Draft: false, Prerelease: false},  // 3 months ago
-				{PublishedAt: time.Now().AddDate(0, -6, 0), Draft: false, Prerelease: false},  // 6 months ago
-				{PublishedAt: time.Now().AddDate(0, -9, 0), Draft: false, Prerelease: false},  // 9 months ago
-				{PublishedAt: time.Now().AddDate(-1, 0, 0), Draft: false, Prerelease: false}, // 12 months ago
+			releases: []fetcher.RegistryRelease{
+				{PublishedAt: time.Now().AddDate(0, -3, 0)},  // 3 months ago
+				{PublishedAt: time.Now().AddDate(0, -6, 0)},  // 6 months ago
+				{PublishedAt: time.Now().AddDate(0, -9, 0)},  // 9 months ago
+				{PublishedAt: time.Now().AddDate(-1, 0, 0)},  // 12 months ago
 			},
 			expectedRisk: nil, // No anomaly
 		},
 		{
 			name: "Unusual pattern - sudden spike in release frequency",
-			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, 0, -3), Draft: false, Prerelease: false},  // 3 days ago
-				{PublishedAt: time.Now().AddDate(0, 0, -8), Draft: false, Prerelease: false},  // 8 days ago (very close!)
-				{PublishedAt: time.Now().AddDate(0, -4, 0), Draft: false, Prerelease: false},  // 4 months ago
-				{PublishedAt: time.Now().AddDate(0, -8, 0), Draft: false, Prerelease: false},  // 8 months ago
-				{PublishedAt: time.Now().AddDate(-1, -2, 0), Draft: false, Prerelease: false}, // 14 months ago
+			releases: []fetcher.RegistryRelease{
+				{PublishedAt: time.Now().AddDate(0, 0, -3)},  // 3 days ago
+				{PublishedAt: time.Now().AddDate(0, 0, -8)},  // 8 days ago (very close!)
+				{PublishedAt: time.Now().AddDate(0, -4, 0)},  // 4 months ago
+				{PublishedAt: time.Now().AddDate(0, -8, 0)},  // 8 months ago
+				{PublishedAt: time.Now().AddDate(-1, -2, 0)}, // 14 months ago
 			},
 			expectedRisk: intPtr(2),
 			expectedDesc: "Unusual release pattern",
 		},
 		{
-			name: "Drafts and prereleases are ignored",
-			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -1, 0), Draft: true, Prerelease: false},   // Draft
-				{PublishedAt: time.Now().AddDate(0, -2, 0), Draft: false, Prerelease: true},   // Prerelease
-				{PublishedAt: time.Now().AddDate(0, -3, 0), Draft: false, Prerelease: false}, // Valid
+			name: "Prereleases are ignored",
+			releases: []fetcher.RegistryRelease{
+				{PublishedAt: time.Now().AddDate(0, -1, 0), IsPrerelease: true},  // Prerelease
+				{PublishedAt: time.Now().AddDate(0, -2, 0), IsPrerelease: true},  // Prerelease
+				{PublishedAt: time.Now().AddDate(0, -3, 0)},                      // Valid
 			},
 			expectedRisk: nil, // Only 1 valid release after filtering
 		},
@@ -877,13 +877,13 @@ func TestDetectReleaseAnomaly(t *testing.T) {
 			// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020)
 			// Methodology: Check max gap > 5x average cadence AND > 180 days AND recent < 120 days
 			name: "Relative dormancy - bi-weekly package with 8-month gap then recent release",
-			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -1, 0), Draft: false, Prerelease: false},   // 1 month ago
-				{PublishedAt: time.Now().AddDate(0, -9, 0), Draft: false, Prerelease: false},   // 9 months ago (8-mo gap)
-				{PublishedAt: time.Now().AddDate(0, -9, -14), Draft: false, Prerelease: false}, // +2 wk
-				{PublishedAt: time.Now().AddDate(0, -9, -28), Draft: false, Prerelease: false}, // +4 wk
-				{PublishedAt: time.Now().AddDate(0, -9, -42), Draft: false, Prerelease: false}, // +6 wk
-				{PublishedAt: time.Now().AddDate(0, -9, -56), Draft: false, Prerelease: false}, // +8 wk
+			releases: []fetcher.RegistryRelease{
+				{PublishedAt: time.Now().AddDate(0, -1, 0)},    // 1 month ago
+				{PublishedAt: time.Now().AddDate(0, -9, 0)},    // 9 months ago (8-mo gap)
+				{PublishedAt: time.Now().AddDate(0, -9, -14)},  // +2 wk
+				{PublishedAt: time.Now().AddDate(0, -9, -28)},  // +4 wk
+				{PublishedAt: time.Now().AddDate(0, -9, -42)},  // +6 wk
+				{PublishedAt: time.Now().AddDate(0, -9, -56)},  // +8 wk
 			},
 			// avg cadence ≈ (9mo+8wk / 5 gaps) ≈ ~320 days/5 ≈ 64 days
 			// max gap = 8 months ≈ 243 days; 5x avg = 320 days; 243 < 320 → no anomaly
@@ -896,13 +896,13 @@ func TestDetectReleaseAnomaly(t *testing.T) {
 			// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 			// Methodology: max gap = 13 months > 7*5=35 days AND > 180 days AND < 120 days since release
 			name: "Extreme relative dormancy - weekly package dormant 13 months then reactivated",
-			releases: []fetcher.GitHubRelease{
-				{PublishedAt: time.Now().AddDate(0, -2, 0), Draft: false, Prerelease: false},   // 2 months ago
-				{PublishedAt: time.Now().AddDate(-1, -3, 0), Draft: false, Prerelease: false},  // 15 months ago (13-mo gap)
-				{PublishedAt: time.Now().AddDate(-1, -3, -7), Draft: false, Prerelease: false}, // +1wk
-				{PublishedAt: time.Now().AddDate(-1, -3, -14), Draft: false, Prerelease: false},
-				{PublishedAt: time.Now().AddDate(-1, -3, -21), Draft: false, Prerelease: false},
-				{PublishedAt: time.Now().AddDate(-1, -3, -28), Draft: false, Prerelease: false},
+			releases: []fetcher.RegistryRelease{
+				{PublishedAt: time.Now().AddDate(0, -2, 0)},    // 2 months ago
+				{PublishedAt: time.Now().AddDate(-1, -3, 0)},   // 15 months ago (13-mo gap)
+				{PublishedAt: time.Now().AddDate(-1, -3, -7)},  // +1wk
+				{PublishedAt: time.Now().AddDate(-1, -3, -14)},
+				{PublishedAt: time.Now().AddDate(-1, -3, -21)},
+				{PublishedAt: time.Now().AddDate(-1, -3, -28)},
 			},
 			// avg cadence ≈ (15mo+4wk / 5 gaps) ≈ ~500/5 = 100 days
 			// max gap = 13 months ≈ 396 days > 5*100=500? 396 < 500 → no relative trigger
