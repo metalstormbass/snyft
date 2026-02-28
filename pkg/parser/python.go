@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -526,4 +527,207 @@ func countRequirementsTxtDependencies(requirementsPath string) (*models.Dependen
 	}
 
 	return metrics, nil
+}
+
+// parseSetupPy parses a setup.py file to extract dependencies.
+// setup.py is executable Python, so we use regex-based extraction for common patterns
+// including install_requires, setup_requires, extras_require, and dependency_links.
+func parseSetupPy(path string) ([]models.Dependency, error) {
+	return parseSetupPyContent(path, "")
+}
+
+// parseSetupPyContent parses setup.py content for dependencies. If content is empty,
+// reads from path. This allows testing with inline content.
+func parseSetupPyContent(path string, content string) ([]models.Dependency, error) {
+	if content == "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read setup.py: %w", err)
+		}
+		content = string(data)
+	}
+
+	var deps []models.Dependency
+
+	// Check if deps are read from a file (e.g., open('requirements.txt').readlines())
+	fileReadDeps := extractFileReadDeps(path, content)
+	deps = append(deps, fileReadDeps...)
+
+	// Extract from install_requires=[...] (literal list)
+	installReqs := extractSetupPyList(content, "install_requires")
+	for _, req := range installReqs {
+		name, version := parsePythonRequirement(req)
+		if name != "" {
+			deps = append(deps, models.Dependency{
+				Name:      name,
+				Version:   version,
+				Ecosystem: models.EcosystemPyPI,
+				Source:    path,
+			})
+		}
+	}
+
+	// Extract from setup_requires=[...]
+	setupReqs := extractSetupPyList(content, "setup_requires")
+	for _, req := range setupReqs {
+		name, version := parsePythonRequirement(req)
+		if name != "" {
+			deps = append(deps, models.Dependency{
+				Name:      name,
+				Version:   version,
+				Ecosystem: models.EcosystemPyPI,
+				Source:    path,
+			})
+		}
+	}
+
+	// Extract from extras_require={...}
+	extrasReqs := extractExtrasRequire(content)
+	for _, req := range extrasReqs {
+		name, version := parsePythonRequirement(req)
+		if name != "" {
+			deps = append(deps, models.Dependency{
+				Name:      name,
+				Version:   version,
+				Ecosystem: models.EcosystemPyPI,
+				Source:    path,
+			})
+		}
+	}
+
+	// Extract from dependency_links=[...]
+	depLinks := extractSetupPyList(content, "dependency_links")
+	for _, link := range depLinks {
+		// dependency_links are URLs, try to extract package name from the URL
+		name := extractPackageFromDepLink(link)
+		if name != "" {
+			deps = append(deps, models.Dependency{
+				Name:      name,
+				Version:   "latest",
+				Ecosystem: models.EcosystemPyPI,
+				Source:    path,
+			})
+		}
+	}
+
+	return deps, nil
+}
+
+// extractSetupPyList extracts a Python list assigned to a keyword argument in setup().
+// Handles both single-line and multi-line lists:
+//   install_requires=['pkg1>=1.0', 'pkg2'],
+//   install_requires=[
+//       'pkg1>=1.0',
+//       'pkg2',
+//   ],
+func extractSetupPyList(content string, keyword string) []string {
+	// Match keyword=[ ... ] including multi-line
+	// First try: keyword followed by = and [
+	pattern := regexp.MustCompile(`(?s)` + regexp.QuoteMeta(keyword) + `\s*=\s*\[([^\]]*)\]`)
+	matches := pattern.FindStringSubmatch(content)
+	if len(matches) < 2 {
+		return nil
+	}
+
+	return parseQuotedStrings(matches[1])
+}
+
+// extractExtrasRequire extracts dependencies from extras_require={...}.
+// extras_require={'dev': ['pytest'], 'test': ['coverage>=5.0']}
+func extractExtrasRequire(content string) []string {
+	// Match extras_require = { ... }
+	pattern := regexp.MustCompile(`(?s)extras_require\s*=\s*\{([^}]*)\}`)
+	matches := pattern.FindStringSubmatch(content)
+	if len(matches) < 2 {
+		return nil
+	}
+
+	// Extract all lists within the dict value
+	listPattern := regexp.MustCompile(`(?s)\[([^\]]*)\]`)
+	listMatches := listPattern.FindAllStringSubmatch(matches[1], -1)
+
+	var allDeps []string
+	for _, lm := range listMatches {
+		if len(lm) >= 2 {
+			allDeps = append(allDeps, parseQuotedStrings(lm[1])...)
+		}
+	}
+	return allDeps
+}
+
+// extractFileReadDeps detects when setup.py reads dependencies from a file
+// (e.g., open('requirements.txt').readlines() or read().splitlines())
+// and falls back to parsing that file if it exists alongside setup.py.
+func extractFileReadDeps(setupPath string, content string) []models.Dependency {
+	// Common patterns for reading deps from files:
+	// open('requirements.txt').readlines()
+	// open('requirements.txt').read().splitlines()
+	// open('requirements.txt').read().strip().split('\n')
+	// Path('requirements.txt').read_text().splitlines()
+	fileReadPattern := regexp.MustCompile(`(?:open|Path)\s*\(\s*['"]([^'"]+\.txt)['"]\s*\)`)
+	matches := fileReadPattern.FindAllStringSubmatch(content, -1)
+
+	var deps []models.Dependency
+	seen := make(map[string]bool)
+
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		reqFile := match[1]
+		if seen[reqFile] {
+			continue
+		}
+		seen[reqFile] = true
+
+		// Try to find the referenced file relative to setup.py
+		reqPath := filepath.Join(filepath.Dir(setupPath), reqFile)
+		if _, err := os.Stat(reqPath); err == nil {
+			if fileDeps, err := parseRequirementsTxt(reqPath); err == nil {
+				deps = append(deps, fileDeps...)
+			}
+		}
+	}
+
+	return deps
+}
+
+// parseQuotedStrings extracts quoted strings from a Python list body.
+// Input like: "'pkg1>=1.0', 'pkg2', \"pkg3\""
+// Returns: ["pkg1>=1.0", "pkg2", "pkg3"]
+func parseQuotedStrings(listBody string) []string {
+	var results []string
+
+	// Match both single and double quoted strings
+	quotedPattern := regexp.MustCompile(`['"]([^'"]+)['"]`)
+	matches := quotedPattern.FindAllStringSubmatch(listBody, -1)
+
+	for _, match := range matches {
+		if len(match) >= 2 {
+			s := strings.TrimSpace(match[1])
+			if s != "" {
+				results = append(results, s)
+			}
+		}
+	}
+	return results
+}
+
+// extractPackageFromDepLink extracts a package name from a dependency_links URL.
+// e.g., "https://github.com/user/package/tarball/master#egg=package-1.0"
+func extractPackageFromDepLink(link string) string {
+	// Try to extract from #egg=name-version
+	if idx := strings.Index(link, "#egg="); idx != -1 {
+		egg := link[idx+5:]
+		// Remove version suffix (name-1.0.0 -> name)
+		if dashIdx := strings.LastIndex(egg, "-"); dashIdx != -1 {
+			// Check if what follows the dash looks like a version
+			afterDash := egg[dashIdx+1:]
+			if len(afterDash) > 0 && afterDash[0] >= '0' && afterDash[0] <= '9' {
+				return egg[:dashIdx]
+			}
+		}
+		return egg
+	}
+	return ""
 }

