@@ -831,6 +831,47 @@ func deriveRepoFromGroupID(groupID, artifactID string) string {
 	return ""
 }
 
+// apacheGitboxToGitHub converts Apache gitbox.apache.org (and git.apache.org)
+// URLs to their GitHub mirror equivalents.  All Apache Software Foundation
+// projects are mirrored on GitHub under the "apache" organisation.  Using the
+// GitHub mirror enables full risk assessment via the GitHub API (maintainers,
+// releases, PRs, signed commits, etc.) instead of the limited GenericGitClient.
+//
+// Handles two URL styles found in the wild:
+//
+//	Path-based:  https://gitbox.apache.org/repos/asf/commons-io.git
+//	Query-param: https://gitbox.apache.org/repos/asf?p=commons-io.git
+//
+// Source: https://infra.apache.org/github-actions-policy.html
+func apacheGitboxToGitHub(rawURL string) string {
+	lower := strings.ToLower(rawURL)
+	if !strings.Contains(lower, "gitbox.apache.org") &&
+		!strings.Contains(lower, "git.apache.org") {
+		return ""
+	}
+
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+
+	// Query-param style: ?p=commons-io or ?p=commons-io.git
+	if p := u.Query().Get("p"); p != "" {
+		repoName := strings.TrimSuffix(p, ".git")
+		return "https://github.com/apache/" + repoName
+	}
+
+	// Path-based style: /repos/asf/commons-io.git
+	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+	// Expected layout: repos/asf/<repo-name>
+	if len(segments) >= 3 && segments[0] == "repos" && segments[1] == "asf" {
+		repoName := strings.TrimSuffix(segments[2], ".git")
+		return "https://github.com/apache/" + repoName
+	}
+
+	return ""
+}
+
 // normalizeSCMURL trims SCM URLs to the canonical repository root.
 // Some POM files contain extra path segments after the owner/repo portion
 // (e.g. "https://github.com/mapstruct/mapstruct/mapstruct/"). Keeping these
@@ -839,6 +880,14 @@ func normalizeSCMURL(rawURL string) string {
 	if rawURL == "" {
 		return ""
 	}
+
+	// Convert Apache gitbox/git URLs to GitHub mirrors before any other
+	// processing.  This ensures that wherever a gitbox URL appears (SCM,
+	// POM <url>, issue tracker) it is resolved to the GitHub mirror.
+	if gh := apacheGitboxToGitHub(rawURL); gh != "" {
+		return gh
+	}
+
 	// Strip trailing .git for uniform handling, restore later if needed
 	clean := strings.TrimSuffix(strings.TrimRight(rawURL, "/"), ".git")
 
