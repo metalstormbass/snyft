@@ -267,6 +267,10 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult) {
 			f(w, "          <div class=\"finding %s\">\n", fc)
 			f(w, "            <span class=\"finding-sev\">[%s]</span> %s\n",
 				html.EscapeString(finding.Severity), html.EscapeString(finding.Description))
+			if finding.SourceURL != "" {
+				f(w, "            <div style=\"margin-top:3px;font-size:12px\">Source: <a href=\"%s\" target=\"_blank\">%s</a></div>\n",
+					html.EscapeString(finding.SourceURL), html.EscapeString(finding.SourceURL))
+			}
 			if finding.Evidence != "" && r.config.Verbose {
 				f(w, "            <div class=\"dim\" style=\"margin-top:3px\">Evidence: %s</div>\n",
 					html.EscapeString(finding.Evidence))

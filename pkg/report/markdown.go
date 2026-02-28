@@ -175,6 +175,9 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 		p(w, "")
 		for _, finding := range result.Findings {
 			f(w, "- **[%s]** %s\n", finding.Severity, finding.Description)
+			if finding.SourceURL != "" {
+				f(w, "  - *Source:* [%s](%s)\n", finding.SourceURL, finding.SourceURL)
+			}
 			if finding.Evidence != "" && r.config.Verbose {
 				f(w, "  - *Evidence:* %s\n", finding.Evidence)
 			}

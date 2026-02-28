@@ -39,6 +39,7 @@ type JSONCriticalIssue struct {
 	Severity       string `json:"severity"`
 	Description    string `json:"description"`
 	Evidence       string `json:"evidence,omitempty"`
+	SourceURL      string `json:"source_url,omitempty"`
 }
 
 // JSONRiskArea represents a risk area in JSON format
@@ -81,6 +82,7 @@ func (r *Reporter) generateJSON() error {
 			Severity:       issue.Severity,
 			Description:    issue.Description,
 			Evidence:       issue.Evidence,
+			SourceURL:      issue.SourceURL,
 		}
 	}
 

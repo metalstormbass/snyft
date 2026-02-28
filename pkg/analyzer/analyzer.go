@@ -126,12 +126,14 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	case models.EcosystemNPM:
 		npmPkg, err := a.npmClient.GetPackageInfo(dep.Name)
 		if err != nil {
+			npmURL := registryURL(dep)
 			if errors.Is(err, fetcher.ErrPackageNotFound) {
 				result.Findings = append(result.Findings, models.Finding{
 					Severity:    "HIGH",
 					Category:    "Package Not Found",
 					Description: fmt.Sprintf("Package does not exist in npm registry: %v", err),
 					Check:       "Package Registry Validation",
+					SourceURL:   npmURL,
 				})
 				result.RiskLevel = "HIGH"
 				result.RiskScore = 100
@@ -142,6 +144,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Description: fmt.Sprintf("Failed to fetch package from npm (API error, not confirmed missing): %v", err),
 					Check:       "Package Registry Validation",
 					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
+					SourceURL:   npmURL,
 				})
 				result.RiskLevel = "UNKNOWN"
 				result.RiskScore = 0
@@ -164,12 +167,14 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	case models.EcosystemPyPI:
 		pypiPkg, err := a.pypiClient.GetPackageInfo(dep.Name)
 		if err != nil {
+			pypiURL := registryURL(dep)
 			if errors.Is(err, fetcher.ErrPackageNotFound) {
 				result.Findings = append(result.Findings, models.Finding{
 					Severity:    "HIGH",
 					Category:    "Package Not Found",
 					Description: fmt.Sprintf("Package does not exist in PyPI registry: %v", err),
 					Check:       "Package Registry Validation",
+					SourceURL:   pypiURL,
 				})
 				result.RiskLevel = "HIGH"
 				result.RiskScore = 100
@@ -180,6 +185,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Description: fmt.Sprintf("Failed to fetch package from PyPI (API error, not confirmed missing): %v", err),
 					Check:       "Package Registry Validation",
 					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
+					SourceURL:   pypiURL,
 				})
 				result.RiskLevel = "UNKNOWN"
 				result.RiskScore = 0
@@ -203,12 +209,14 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	case models.EcosystemMaven:
 		mavenPkg, err := a.mavenClient.GetPackageInfo(dep.Name)
 		if err != nil {
+			mavenURL := registryURL(dep)
 			if errors.Is(err, fetcher.ErrPackageNotFound) {
 				result.Findings = append(result.Findings, models.Finding{
 					Severity:    "HIGH",
 					Category:    "Package Not Found",
 					Description: fmt.Sprintf("Package does not exist in Maven Central: %v", err),
 					Check:       "Package Registry Validation",
+					SourceURL:   mavenURL,
 				})
 				result.RiskLevel = "HIGH"
 				result.RiskScore = 100
@@ -219,6 +227,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Description: fmt.Sprintf("Failed to fetch package from Maven Central (API error, not confirmed missing): %v", err),
 					Check:       "Package Registry Validation",
 					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
+					SourceURL:   mavenURL,
 				})
 				result.RiskLevel = "UNKNOWN"
 				result.RiskScore = 0
@@ -272,6 +281,7 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 			Category:    "Missing Source Code",
 			Description: "No repository URL found in package metadata",
 			Check:       "Repository Availability Check",
+			SourceURL:   registryURL(dep),
 		})
 		result.SourceCodeAvailable = false
 		result.RiskFactors = append(result.RiskFactors, "No public source code repository")
@@ -343,6 +353,7 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 				Check:       cat.name + " Assessment",
 				Evidence:    cat.score.Evidence,
 				Methodology: cat.score.Methodology,
+				SourceURL:   cat.score.SourceURL,
 			})
 		} else if cat.score.RiskPoints == 1 {
 			result.Findings = append(result.Findings, models.Finding{
@@ -352,6 +363,7 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 				Check:       cat.name + " Assessment",
 				Evidence:    cat.score.Evidence,
 				Methodology: cat.score.Methodology,
+				SourceURL:   cat.score.SourceURL,
 			})
 		}
 	}
@@ -444,6 +456,28 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		score.CategoryScores.PackageMaturity = a.scorePackageMaturity(result)
 	} else {
 		score.CategoryScores.PackageMaturity = skippedScore
+	}
+
+	// Set source URLs for each category so findings link to the data source
+	categoryNames := []struct {
+		name string
+		cat  *models.CategoryScore
+	}{
+		{"Publisher Control", &score.CategoryScores.PublisherControl},
+		{"Ownership Changes", &score.CategoryScores.OwnershipChanges},
+		{"Release Anomalies", &score.CategoryScores.ReleaseAnomalies},
+		{"Install Execution", &score.CategoryScores.InstallExecution},
+		{"Dependency Sprawl", &score.CategoryScores.DependencySprawl},
+		{"Provenance", &score.CategoryScores.Provenance},
+		{"Health", &score.CategoryScores.Health},
+		{"Governance", &score.CategoryScores.Governance},
+		{"Release Security", &score.CategoryScores.ReleaseSecurity},
+		{"Package Maturity", &score.CategoryScores.PackageMaturity},
+	}
+	for _, cn := range categoryNames {
+		if !cn.cat.Skipped && cn.cat.SourceURL == "" {
+			cn.cat.SourceURL = categorySourceURL(cn.name, result)
+		}
 	}
 
 	// Prefix each category's evidence with the specific package identifier
