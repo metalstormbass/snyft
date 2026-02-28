@@ -51,7 +51,10 @@ func init() {
 	scanCmd.Flags().BoolVar(&includeTransitive, "include-transitive", false, "Include transitive dependencies in analysis (default: direct only)")
 
 	// Check filter flag
-	scanCmd.Flags().StringVar(&checkFilter, "check", "", "Comma-separated list of checks to run (e.g., provenance,health,governance)")
+	scanCmd.Flags().StringVar(&checkFilter, "check", "", `Comma-separated list of checks to run. Valid check names:
+  publisher-control, ownership-changes, release-anomalies,
+  install-execution, dependency-sprawl, provenance, health,
+  governance, release-security, package-maturity, ci-pipeline-security`)
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
