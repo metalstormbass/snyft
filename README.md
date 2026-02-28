@@ -1,7 +1,7 @@
 # Snyft
 
 <p align="center">
-  <img src="assets/snyft.png" alt="Snyft Logo" width="400"/>
+  <img src="assets/snyft.png" alt="Snyft Logo" width="250"/>
 </p>
 
 <p align="center"><em>Does it pass the snyft test?</em></p>
