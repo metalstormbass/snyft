@@ -141,6 +141,9 @@ type PackageMetadata struct {
 	ContributionsCount  int    `json:"contributions_count,omitempty"`   // Contribution count from libraries.io
 	SecurityPolicyURL   string `json:"security_policy_url,omitempty"`   // URL to SECURITY.md or similar
 
+	// Release documentation signals
+	ReleaseDocumentation *ReleaseDocumentation `json:"release_documentation,omitempty"`
+
 	// OpenSSF Scorecard
 	OSSFScore        float64  `json:"ossf_score"`
 	OSSFChecks       map[string]int `json:"ossf_checks"`
@@ -195,6 +198,36 @@ type DependencyMetrics struct {
 	DirectCount     int `json:"direct_count"`     // Number of direct dependencies
 	MaxDepth        int `json:"max_depth"`        // Maximum depth of dependency tree
 	Verified        bool `json:"verified"`        // Whether metrics were computed from lock file
+}
+
+// ReleaseDocumentation contains signals parsed from contributing/release documentation files.
+//
+// Check: Release process documentation analysis
+// Justification: Projects with documented release processes have formalized controls
+//                that reduce the risk of a single compromised maintainer pushing
+//                malicious code. Documented multi-approval requirements, release
+//                checklists, and CI/CD automation create barriers an attacker must
+//                bypass beyond just compromising one account.
+// Source: SLSA Build Level Requirements (https://slsa.dev/spec/v1.0/levels)
+//         OSSF Scorecard Specification (Security Policy, Branch-Protection checks)
+//         "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Fetch CONTRIBUTING.md, RELEASING.md, RELEASE.md, .github/CONTRIBUTING.md,
+//              docs/RELEASING.md, docs/RELEASE.md from repository via web scraping.
+//              Parse content for release process keywords and patterns.
+// Result: Feeds into Governance (Category 8) and Release Security (Category 9) scoring
+type ReleaseDocumentation struct {
+	// Which files were found
+	FilesFound []string `json:"files_found"`
+
+	// Parsed signals
+	HasDocumentedReleaseProcess bool `json:"has_documented_release_process"` // Any release docs exist
+	HasMultiApprovalRequirement bool `json:"has_multi_approval_requirement"` // Requires multiple sign-offs
+	HasReleaseChecklist         bool `json:"has_release_checklist"`          // Structured release checklist
+	HasAutomatedReleaseProcess  bool `json:"has_automated_release_process"`  // CI/CD mentioned for releases
+	HasReleaseManagerRole       bool `json:"has_release_manager_role"`       // Dedicated release manager
+
+	// Raw evidence for debugging/display
+	Evidence []string `json:"evidence,omitempty"`
 }
 
 // RepositoryInfo contains information about a Git repository

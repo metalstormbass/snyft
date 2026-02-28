@@ -114,7 +114,7 @@ func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repo
 //   Override: Archived repos and abandoned packages (>180 days) always get 2 risk
 func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.CategoryScore {
 	const govSource = " [Source: OSSF Scorecard; Backstabber's Knife Collection (Ohm et al., 2020)]"
-	govMethodology := "Checked for SECURITY.md (and .github/SECURITY.md) via Git API. Analyzed issue response times via GitHub API. Checked OSSF Scorecard Security-Policy score. Detected abandonment via last commit date."
+	govMethodology := "Checked for SECURITY.md (and .github/SECURITY.md) via Git API. Analyzed issue response times via GitHub API. Checked OSSF Scorecard Security-Policy score. Detected abandonment via last commit date. Checked for contributing/release documentation (CONTRIBUTING.md, RELEASING.md, RELEASE.md)."
 
 	// Early return if no repository URL
 	if result.RepositoryURL == "" {
@@ -238,11 +238,20 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			evidenceParts = append(evidenceParts, "Branch protection enabled")
 			govChecks = append(govChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: "Branch protection enabled"})
 		}
+	} else if result.Metadata.ReleaseDocumentation != nil && result.Metadata.ReleaseDocumentation.HasDocumentedReleaseProcess {
+		// Documented contributing/release process is a positive governance signal:
+		// it indicates formalized project management even when issue response data
+		// and branch protection status are unavailable.
+		responsivenessPoints = 1
+		docFiles := strings.Join(result.Metadata.ReleaseDocumentation.FilesFound, ", ")
+		evidenceParts = append(evidenceParts, fmt.Sprintf("Documented release/contributing process (%s)", docFiles))
+		govChecks = append(govChecks, models.CheckResult{Name: "Release documentation", Status: "PASS", Detail: fmt.Sprintf("Contributing/release documentation found: %s", docFiles)})
 	} else if govMetrics.AvgIssueResponseDays > 14 {
 		evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days (slow)", govMetrics.AvgIssueResponseDays))
 		govChecks = append(govChecks, models.CheckResult{Name: "Issue response time", Status: "FAIL", Detail: fmt.Sprintf("Average response: %.1f days (> 14 day threshold)", govMetrics.AvgIssueResponseDays)})
 	} else {
 		govChecks = append(govChecks, models.CheckResult{Name: "Issue response time", Status: "UNAVAILABLE", Detail: "No issue response data available"})
+		govChecks = append(govChecks, models.CheckResult{Name: "Release documentation", Status: "FAIL", Detail: "No contributing/release documentation found"})
 	}
 
 	if govMetrics.RecentActivityGap > 90 {
