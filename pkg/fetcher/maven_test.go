@@ -56,9 +56,29 @@ func TestNormalizeSCMURL(t *testing.T) {
 			want:  "https://bitbucket.org/owner/repo",
 		},
 		{
-			name:  "non-hosting URL returned unchanged",
+			name:  "Apache gitbox path URL converted to GitHub mirror",
 			input: "https://gitbox.apache.org/repos/asf/commons-lang.git",
-			want:  "https://gitbox.apache.org/repos/asf/commons-lang.git",
+			want:  "https://github.com/apache/commons-lang",
+		},
+		{
+			name:  "Apache gitbox query-param URL converted to GitHub mirror",
+			input: "https://gitbox.apache.org/repos/asf?p=commons-io.git",
+			want:  "https://github.com/apache/commons-io",
+		},
+		{
+			name:  "Apache gitbox query-param without .git suffix",
+			input: "https://gitbox.apache.org/repos/asf?p=commons-io",
+			want:  "https://github.com/apache/commons-io",
+		},
+		{
+			name:  "Apache git.apache.org converted to GitHub mirror",
+			input: "https://git.apache.org/repos/asf/tomcat.git",
+			want:  "https://github.com/apache/tomcat",
+		},
+		{
+			name:  "Apache gitbox path without .git suffix",
+			input: "https://gitbox.apache.org/repos/asf/commons-io",
+			want:  "https://github.com/apache/commons-io",
 		},
 		{
 			name:  "empty string returns empty string",
@@ -74,6 +94,141 @@ func TestNormalizeSCMURL(t *testing.T) {
 				t.Errorf("normalizeSCMURL(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// Test: apacheGitboxToGitHub converts gitbox/git.apache.org URLs to GitHub mirrors
+// Justification: Apache gitbox URLs route to the GenericGitClient which returns
+//
+//	ErrDataUnavailable for most risk checks.  Converting to the GitHub
+//	mirror enables full risk assessment via the GitHub API.
+//
+// Source: https://infra.apache.org/github-actions-policy.html —
+//
+//	all Apache projects are mirrored on GitHub.
+//
+// Methodology: Unit test against known gitbox URL formats found in POM files.
+// Result: Gitbox URLs are converted to https://github.com/apache/<repo>.
+func TestApacheGitboxToGitHub(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "path-based with .git suffix",
+			input: "https://gitbox.apache.org/repos/asf/commons-lang.git",
+			want:  "https://github.com/apache/commons-lang",
+		},
+		{
+			name:  "path-based without .git suffix",
+			input: "https://gitbox.apache.org/repos/asf/commons-io",
+			want:  "https://github.com/apache/commons-io",
+		},
+		{
+			name:  "query-param style with .git",
+			input: "https://gitbox.apache.org/repos/asf?p=commons-io.git",
+			want:  "https://github.com/apache/commons-io",
+		},
+		{
+			name:  "query-param style without .git",
+			input: "https://gitbox.apache.org/repos/asf?p=commons-io",
+			want:  "https://github.com/apache/commons-io",
+		},
+		{
+			name:  "git.apache.org domain",
+			input: "https://git.apache.org/repos/asf/tomcat.git",
+			want:  "https://github.com/apache/tomcat",
+		},
+		{
+			name:  "trailing slash stripped",
+			input: "https://gitbox.apache.org/repos/asf/commons-math/",
+			want:  "https://github.com/apache/commons-math",
+		},
+		{
+			name:  "non-apache URL returns empty",
+			input: "https://github.com/apache/commons-lang",
+			want:  "",
+		},
+		{
+			name:  "empty string returns empty",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "listing page URL without repo returns empty",
+			input: "https://gitbox.apache.org/repos/asf",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := apacheGitboxToGitHub(tt.input)
+			if got != tt.want {
+				t.Errorf("apacheGitboxToGitHub(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// Test: enrichFromPOM converts gitbox SCM URL to GitHub mirror
+// Justification: When a POM's <scm><url> points to gitbox.apache.org, the
+//
+//	resulting RepositoryURL should be the GitHub mirror so that the tool
+//	can perform full risk assessment via the GitHub API.  Without this
+//	conversion, the GenericGitClient is used and most risk signals are
+//	unavailable (ErrDataUnavailable).
+//
+// Source: https://infra.apache.org/github-actions-policy.html —
+//
+//	all Apache projects are mirrored on GitHub.
+//
+// Methodology: Mock HTTP server serves a POM with a gitbox SCM URL.
+//
+//	Verify that enrichFromPOM converts it to the GitHub mirror.
+//
+// Result: pkg.RepositoryURL is set to https://github.com/apache/<repo>.
+func TestEnrichFromPOM_GitboxSCMConverted(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>org.apache.commons</groupId>
+  <artifactId>commons-io</artifactId>
+  <version>2.15.0</version>
+  <scm>
+    <url>https://gitbox.apache.org/repos/asf/commons-io.git</url>
+    <connection>scm:git:https://gitbox.apache.org/repos/asf/commons-io.git</connection>
+  </scm>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/apache/commons/commons-io/2.15.0/commons-io-2.15.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = fmt.Fprint(w, artifactPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{
+		GroupID:    "org.apache.commons",
+		ArtifactID: "commons-io",
+	}
+
+	err := client.enrichFromPOM(pkg, "org.apache.commons", "commons-io", "2.15.0")
+	if err != nil {
+		t.Fatalf("enrichFromPOM returned error: %v", err)
+	}
+
+	want := "https://github.com/apache/commons-io"
+	if pkg.RepositoryURL != want {
+		t.Errorf("RepositoryURL = %q, want %q", pkg.RepositoryURL, want)
 	}
 }
 
