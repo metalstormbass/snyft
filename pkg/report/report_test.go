@@ -11,12 +11,13 @@ import (
 
 // Test: Executive summary includes key findings with specific package examples
 // Justification: Users need to quickly identify the most critical issues without
-//                reading through all package details
+//
+//	reading through all package details
+//
 // Source: User requirements for improved report formatting
 // Methodology: Extract top 5 critical findings and display with package details
 // Result: Verifies executive summary shows package names, versions, and evidence
 func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
-	// Create test results with various risk levels
 	results := []models.AnalysisResult{
 		{
 			Dependency: models.Dependency{
@@ -80,7 +81,6 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		},
 	}
 
-	// Test text format
 	t.Run("Text format includes key findings", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{
@@ -99,33 +99,27 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 
 		output := buf.String()
 
-		// Verify executive summary exists
 		if !strings.Contains(output, "EXECUTIVE SUMMARY") {
 			t.Error("Output missing 'EXECUTIVE SUMMARY' section")
 		}
 
-		// Verify key findings section exists
 		if !strings.Contains(output, "Top Priority Findings:") {
 			t.Error("Output missing 'Top Priority Findings' section")
 		}
 
-		// Verify HIGH risk package is shown with specific details
 		if !strings.Contains(output, "express@4.17.1") {
 			t.Error("Output missing specific package 'express@4.17.1'")
 		}
 
-		// Verify evidence is included
 		if !strings.Contains(output, "Evidence:") {
 			t.Error("Output missing evidence details")
 		}
 
-		// Verify finding description is shown
 		if !strings.Contains(output, "Single maintainer") {
 			t.Error("Output missing finding description")
 		}
 	})
 
-	// Test markdown format
 	t.Run("Markdown format includes key findings", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{
@@ -144,12 +138,10 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 
 		output := buf.String()
 
-		// Verify key findings section
 		if !strings.Contains(output, "### Top Priority Findings") {
 			t.Error("Markdown output missing '### Top Priority Findings' section")
 		}
 
-		// Verify package with evidence
 		if !strings.Contains(output, "**express@4.17.1**") {
 			t.Error("Markdown output missing bold package name")
 		}
@@ -159,7 +151,6 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		}
 	})
 
-	// Test JSON format
 	t.Run("JSON format includes executive summary", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{
@@ -178,17 +169,14 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 
 		output := buf.String()
 
-		// Verify executive_summary field exists
 		if !strings.Contains(output, `"executive_summary"`) {
 			t.Error("JSON output missing 'executive_summary' field")
 		}
 
-		// Verify key_findings array exists
 		if !strings.Contains(output, `"key_findings"`) {
 			t.Error("JSON output missing 'key_findings' array")
 		}
 
-		// Verify package details in JSON
 		if !strings.Contains(output, `"express"`) {
 			t.Error("JSON output missing package name")
 		}
@@ -198,7 +186,6 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		}
 	})
 
-	// Test HTML format
 	t.Run("HTML format includes key findings", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{
@@ -217,17 +204,14 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 
 		output := buf.String()
 
-		// Verify key findings heading
 		if !strings.Contains(output, "<h3>Top Priority Findings</h3>") {
 			t.Error("HTML output missing top priority findings heading")
 		}
 
-		// Verify package is displayed
 		if !strings.Contains(output, "express@4.17.1") {
 			t.Error("HTML output missing package details")
 		}
 
-		// Verify finding description is included
 		if !strings.Contains(output, "Single maintainer") {
 			t.Error("HTML output missing finding description")
 		}
@@ -242,19 +226,19 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 func TestExtractCriticalIssuesPriority(t *testing.T) {
 	results := []models.AnalysisResult{
 		{
-			Dependency:  models.Dependency{Name: "low-pkg", Version: "1.0.0"},
-			RiskLevel:   "LOW",
-			Findings:    []models.Finding{{Severity: "LOW", Description: "Low issue"}},
+			Dependency: models.Dependency{Name: "low-pkg", Version: "1.0.0"},
+			RiskLevel:  "LOW",
+			Findings:   []models.Finding{{Severity: "LOW", Description: "Low issue"}},
 		},
 		{
-			Dependency:  models.Dependency{Name: "medium-pkg", Version: "2.0.0"},
-			RiskLevel:   "MEDIUM",
-			Findings:    []models.Finding{{Severity: "MEDIUM", Description: "Medium issue"}},
+			Dependency: models.Dependency{Name: "medium-pkg", Version: "2.0.0"},
+			RiskLevel:  "MEDIUM",
+			Findings:   []models.Finding{{Severity: "MEDIUM", Description: "Medium issue"}},
 		},
 		{
-			Dependency:  models.Dependency{Name: "high-pkg", Version: "3.0.0"},
-			RiskLevel:   "HIGH",
-			Findings:    []models.Finding{{Severity: "HIGH", Description: "High issue"}},
+			Dependency: models.Dependency{Name: "high-pkg", Version: "3.0.0"},
+			RiskLevel:  "HIGH",
+			Findings:   []models.Finding{{Severity: "HIGH", Description: "High issue"}},
 		},
 	}
 
@@ -263,12 +247,10 @@ func TestExtractCriticalIssuesPriority(t *testing.T) {
 
 	issues := reporter.extractCriticalIssues(5)
 
-	// Should extract 2 issues (HIGH and MEDIUM, not LOW)
 	if len(issues) != 2 {
 		t.Errorf("Expected 2 critical issues, got %d", len(issues))
 	}
 
-	// First issue should be HIGH risk
 	if issues[0].RiskLevel != "HIGH" {
 		t.Errorf("Expected first issue to be HIGH risk, got %s", issues[0].RiskLevel)
 	}
@@ -277,7 +259,6 @@ func TestExtractCriticalIssuesPriority(t *testing.T) {
 		t.Errorf("Expected first package to be 'high-pkg', got %s", issues[0].PackageName)
 	}
 
-	// Second issue should be MEDIUM risk
 	if issues[1].RiskLevel != "MEDIUM" {
 		t.Errorf("Expected second issue to be MEDIUM risk, got %s", issues[1].RiskLevel)
 	}
@@ -285,13 +266,19 @@ func TestExtractCriticalIssuesPriority(t *testing.T) {
 
 // Test: Progress bar writes to ProgressWriter, not report Writer, for non-text formats
 // Justification: When using HTML/JSON/markdown output, progress must not corrupt the
-//                structured output on stdout. Progress must go to a separate writer
-//                (stderr in production) so users see analysis progress without
-//                interfering with piped output.
+//
+//	structured output on stdout. Progress must go to a separate writer
+//	(stderr in production) so users see analysis progress without
+//	interfering with piped output.
+//
 // Source: Supply chain analysis UX requirement - users must see progress during slow
-//         AI-enriched scans to know the tool hasn't hung
+//
+//	scans to know the tool hasn't hung
+//
 // Methodology: Configure reporter with separate Writer and ProgressWriter, verify
-//              progress output goes only to ProgressWriter
+//
+//	progress output goes only to ProgressWriter
+//
 // Result: Progress bar output appears in ProgressWriter; report Writer is untouched
 func TestProgressBarUsesProgressWriter(t *testing.T) {
 	t.Run("Progress goes to ProgressWriter not report Writer", func(t *testing.T) {
@@ -308,7 +295,6 @@ func TestProgressBarUsesProgressWriter(t *testing.T) {
 		reporter.ShowProgress(1, 5, "express@4.17.1")
 		reporter.ShowProgress(2, 5, "lodash@4.17.21")
 
-		// Progress should be in progressBuf, not reportBuf
 		if progressBuf.Len() == 0 {
 			t.Error("Expected progress output in ProgressWriter, got nothing")
 		}
@@ -316,7 +302,6 @@ func TestProgressBarUsesProgressWriter(t *testing.T) {
 			t.Errorf("Expected no progress in report Writer, got %d bytes", reportBuf.Len())
 		}
 
-		// Progress should contain the package name
 		progressOutput := progressBuf.String()
 		if !strings.Contains(progressOutput, "lodash") {
 			t.Error("Progress output should contain package name 'lodash'")
@@ -363,9 +348,10 @@ func TestProgressBarUsesProgressWriter(t *testing.T) {
 
 // Test: Progress bar shows for HTML format with ShowProgress enabled
 // Justification: Non-text output formats need visible progress especially with
-//                AI analysis which can be slow. Without progress, users think the
-//                tool is hung during AI API calls.
-// Source: User report of missing progress bar with --ai --format html
+//
+//	slow scans. Without progress, users think the tool is hung.
+//
+// Source: User report of missing progress bar with --format html
 // Methodology: Verify ShowProgress produces output even for HTML format when enabled
 // Result: Progress bar contains spinner, percentage, and package name
 func TestProgressBarShowsForHTMLFormat(t *testing.T) {
@@ -383,22 +369,18 @@ func TestProgressBarShowsForHTMLFormat(t *testing.T) {
 
 	output := progressBuf.String()
 
-	// Should contain percentage
 	if !strings.Contains(output, "30%") {
 		t.Error("Progress bar should show 30% for 3/10")
 	}
 
-	// Should contain package name
 	if !strings.Contains(output, "express") {
 		t.Error("Progress bar should show package name")
 	}
 
-	// Should contain count
 	if !strings.Contains(output, "(3/10)") {
 		t.Error("Progress bar should show count (3/10)")
 	}
 
-	// HTML output should be empty (progress not mixed in)
 	if htmlBuf.Len() != 0 {
 		t.Error("Progress should not be written to HTML output writer")
 	}
@@ -406,7 +388,9 @@ func TestProgressBarShowsForHTMLFormat(t *testing.T) {
 
 // Test: Progress bar does not write when ShowProgress is false
 // Justification: Disabling progress must produce zero output to avoid
-//                corrupting piped or redirected structured output
+//
+//	corrupting piped or redirected structured output
+//
 // Source: Defensive test for ShowProgress guard
 // Methodology: Call ShowProgress and ClearProgress with ShowProgress=false
 // Result: Both ProgressWriter and Writer remain empty
@@ -455,7 +439,6 @@ func TestExtractCriticalIssuesLimit(t *testing.T) {
 	reporter := NewReporter(Config{})
 	reporter.AddResults(results)
 
-	// Request only 3 issues
 	issues := reporter.extractCriticalIssues(3)
 
 	if len(issues) != 3 {

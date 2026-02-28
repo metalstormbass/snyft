@@ -9,21 +9,10 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// ANSI color codes
-const (
-	ColorReset  = "\033[0m"
-	ColorRed    = "\033[31m"
-	ColorYellow = "\033[33m"
-	ColorGreen  = "\033[32m"
-	ColorCyan   = "\033[36m"
-	ColorBold   = "\033[1m"
-	ColorDim    = "\033[2m"
-)
-
 // Box drawing characters
 const (
 	BoxTopLeft     = "┌"
-	BoxTopRight    = "┓"
+	BoxTopRight    = "┐"
 	BoxBottomLeft  = "└"
 	BoxBottomRight = "┘"
 	BoxHorizontal  = "─"
@@ -32,418 +21,291 @@ const (
 	BoxTeeRight    = "┤"
 )
 
-// generateText generates a text report with professional formatting
 func (r *Reporter) generateText() error {
 	w := r.config.Writer
 
-	// Header
 	r.printHeader(w)
-
-	// Executive Summary
 	r.printExecutiveSummary(w)
 
 	if !r.config.Verbose {
-		// Summary-only mode: show header + executive summary + format hint
 		r.printFormatHint(w)
 		return nil
 	}
 
-	// Detailed Findings
-	_, _ = fmt.Fprintln(w)
+	p(w, "")
 	r.printSectionHeader(w, "DETAILED FINDINGS")
-	_, _ = fmt.Fprintln(w)
+	p(w, "")
 
 	for _, result := range r.results {
 		r.printPackageResult(w, result)
 	}
 
-	// Risk Summary
 	r.printRiskSummary(w)
-
 	return nil
 }
 
-// printFormatHint prints guidance on how to get more detailed output
+// --- sections ---
+
+func (r *Reporter) printHeader(w io.Writer) {
+	width := 80
+	title := " SNYFT SUPPLY CHAIN SECURITY REPORT "
+	timestamp := " Generated: " + time.Now().Format("2006-01-02 15:04:05") + " "
+	border := strings.Repeat(BoxHorizontal, width-2)
+
+	f(w, "%s%s%s%s%s\n", ColorBold+ColorCyan, BoxTopLeft, border, BoxTopRight, ColorReset)
+	f(w, "%s%s%s%s%s\n", ColorBold+ColorCyan+BoxVertical, centerText(title, width-2), BoxVertical, ColorReset, "")
+	f(w, "%s%s%s%s%s\n", ColorCyan+BoxVertical, centerText(timestamp, width-2), BoxVertical, ColorReset, "")
+	f(w, "%s%s%s%s%s\n", ColorCyan, BoxBottomLeft, border, BoxBottomRight, ColorReset)
+}
+
+func (r *Reporter) printExecutiveSummary(w io.Writer) {
+	p(w, "")
+	r.printSectionHeader(w, "EXECUTIVE SUMMARY")
+	p(w, "")
+
+	// Brief description
+	f(w, "  %sSupply Chain Risk Assessment%s\n", ColorBold, ColorReset)
+	p(w, "  Evaluates compromise likelihood through supply chain attacks—NOT known CVEs.")
+	p(w, "")
+
+	// Scan overview
+	f(w, "  %sPackages Scanned:%s  %d\n", ColorBold, ColorReset, r.stats.TotalPackages)
+	if r.stats.DirectDeps > 0 || r.stats.TransitiveDeps > 0 {
+		f(w, "  %sDirect / Transitive:%s %d / %d\n", ColorBold, ColorReset, r.stats.DirectDeps, r.stats.TransitiveDeps)
+	}
+	f(w, "  %sManifest Files:%s    %d\n", ColorBold, ColorReset, r.stats.ManifestFiles)
+	f(w, "  %sScan Path:%s         %s\n", ColorBold, ColorReset, r.stats.ScannedPath)
+	p(w, "")
+
+	// Risk distribution - compact table
+	f(w, "  %sRisk Distribution:%s\n", ColorBold, ColorReset)
+	r.printRiskLine(w, "HIGH", r.stats.HighRisk)
+	r.printRiskLine(w, "MEDIUM", r.stats.MediumRisk)
+	r.printRiskLine(w, "LOW", r.stats.LowRisk)
+	p(w, "")
+
+	// Overall risk + duration
+	overall := calculateOverallRisk(r.stats)
+	duration := r.stats.EndTime.Sub(r.stats.StartTime)
+	f(w, "  %sOverall Risk:%s %s%s%s", ColorBold, ColorReset, riskColor(overall)+ColorBold, overall, ColorReset)
+	f(w, "    %sDuration:%s %s\n", ColorBold, ColorReset, formatDuration(duration))
+
+	// Alerts
+	if r.stats.HighRisk > 0 {
+		p(w, "")
+		f(w, "  %s⚠  %d HIGH risk package%s — immediate review recommended%s\n",
+			ColorRed+ColorBold, r.stats.HighRisk, pluralize(r.stats.HighRisk), ColorReset)
+	}
+	if r.stats.MediumRisk > 0 {
+		if r.stats.HighRisk == 0 {
+			p(w, "")
+		}
+		f(w, "  %s⚠  %d MEDIUM risk package%s — monitoring recommended%s\n",
+			ColorYellow+ColorBold, r.stats.MediumRisk, pluralize(r.stats.MediumRisk), ColorReset)
+	}
+
+	// Top priority findings
+	criticalIssues := r.extractCriticalIssues(5)
+	if len(criticalIssues) > 0 {
+		p(w, "")
+		f(w, "  %sTop Priority Findings:%s\n", ColorBold, ColorReset)
+		p(w, "")
+
+		for i, issue := range criticalIssues {
+			ic := riskColor(issue.RiskLevel)
+			f(w, "    %s%d.%s %s%s@%s%s (%s)\n",
+				ColorBold, i+1, ColorReset,
+				ic+ColorBold, issue.PackageName, issue.PackageVersion, ColorReset,
+				issue.Ecosystem)
+			f(w, "       %s[%s]%s %s\n",
+				severityColor(issue.Severity), issue.Severity, ColorReset,
+				issue.Description)
+			if issue.Evidence != "" {
+				f(w, "       %sEvidence:%s %s\n", ColorDim, ColorReset, issue.Evidence)
+			}
+			if impact := riskImpactDescription(issue.Severity); impact != "" {
+				f(w, "       %sImpact:%s %s\n", ColorDim, ColorReset, impact)
+			}
+			if i < len(criticalIssues)-1 {
+				p(w, "")
+			}
+		}
+	}
+}
+
+func (r *Reporter) printRiskLine(w io.Writer, level string, count int) {
+	c := riskColor(level)
+	label := fmt.Sprintf("%-6s", level)
+	pct := ""
+	if count > 0 && r.stats.TotalPackages > 0 {
+		pct = fmt.Sprintf(" (%.0f%%)", float64(count)/float64(r.stats.TotalPackages)*100)
+	}
+	f(w, "    %s●%s %s  %s%3d%s%s\n", c, ColorReset, label, c, count, pct, ColorReset)
+}
+
 func (r *Reporter) printFormatHint(w io.Writer) {
 	scanPath := r.stats.ScannedPath
 	if scanPath == "" {
 		scanPath = "<path>"
 	}
 
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "%s%s%s\n", ColorDim, strings.Repeat("─", 78), ColorReset)
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "  %sFor the full detailed report:%s\n", ColorBold, ColorReset)
-	_, _ = fmt.Fprintf(w, "    snyft scan %s -v\n", scanPath)
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "  %sExport formats:%s\n", ColorBold, ColorReset)
-	_, _ = fmt.Fprintf(w, "    snyft scan %s -f html -o report.html\n", scanPath)
-	_, _ = fmt.Fprintf(w, "    snyft scan %s -f json -o report.json\n", scanPath)
-	_, _ = fmt.Fprintf(w, "    snyft scan %s -f markdown -o report.md\n", scanPath)
-	_, _ = fmt.Fprintln(w)
+	p(w, "")
+	f(w, "  %s%s%s\n", ColorDim, strings.Repeat("─", 78), ColorReset)
+	p(w, "")
+	f(w, "  %sDetailed report:%s  snyft scan %s -v\n", ColorBold, ColorReset, scanPath)
+	f(w, "  %sExport:%s          snyft scan %s -f html -o report.html\n", ColorBold, ColorReset, scanPath)
+	p(w, "")
 }
 
-// printHeader prints the report header
-func (r *Reporter) printHeader(w io.Writer) {
-	width := 80
-	title := " SNYFT SUPPLY CHAIN SECURITY REPORT "
-	timestamp := " Generated: " + time.Now().Format("2006-01-02 15:04:05") + " "
-
-	_, _ = fmt.Fprintf(w, "%s%s%s%s%s\n",
-		ColorBold+ColorCyan,
-		BoxTopLeft,
-		strings.Repeat(BoxHorizontal, width-2),
-		BoxTopRight,
-		ColorReset)
-
-	_, _ = fmt.Fprintf(w, "%s%s%s%s%s\n",
-		ColorBold+ColorCyan+BoxVertical,
-		centerText(title, width-2),
-		BoxVertical,
-		ColorReset,
-		"")
-
-	_, _ = fmt.Fprintf(w, "%s%s%s%s%s\n",
-		ColorCyan+BoxVertical,
-		centerText(timestamp, width-2),
-		BoxVertical,
-		ColorReset,
-		"")
-
-	_, _ = fmt.Fprintf(w, "%s%s%s%s%s\n",
-		ColorCyan,
-		BoxBottomLeft,
-		strings.Repeat(BoxHorizontal, width-2),
-		BoxBottomRight,
-		ColorReset)
-}
-
-// printExecutiveSummary prints the executive summary section
-func (r *Reporter) printExecutiveSummary(w io.Writer) {
-	_, _ = fmt.Fprintln(w)
-	r.printSectionHeader(w, "EXECUTIVE SUMMARY")
-	_, _ = fmt.Fprintln(w)
-
-	// Risk Assessment Overview
-	_, _ = fmt.Fprintf(w, "  %sSupply Chain Risk Assessment%s\n", ColorBold, ColorReset)
-	_, _ = fmt.Fprintln(w, "  This report evaluates the likelihood that software packages could be")
-	_, _ = fmt.Fprintln(w, "  compromised through supply chain attacks. It assesses risk factors such")
-	_, _ = fmt.Fprintln(w, "  as maintainer practices, ownership changes, and build integrity—NOT known")
-	_, _ = fmt.Fprintln(w, "  CVEs or code vulnerabilities.")
-	_, _ = fmt.Fprintln(w)
-
-	// Calculate overall risk level
-	overallRisk := r.calculateOverallRisk()
-
-	// Summary box
-	_, _ = fmt.Fprintf(w, "%s  Total Packages Scanned:%s %d\n", ColorBold, ColorReset, r.stats.TotalPackages)
-	if r.stats.DirectDeps > 0 || r.stats.TransitiveDeps > 0 {
-		_, _ = fmt.Fprintf(w, "%s  Direct Dependencies:%s    %d\n", ColorBold, ColorReset, r.stats.DirectDeps)
-		_, _ = fmt.Fprintf(w, "%s  Transitive Dependencies:%s %d\n", ColorBold, ColorReset, r.stats.TransitiveDeps)
-	}
-	_, _ = fmt.Fprintf(w, "%s  Manifest Files Found:%s   %d\n", ColorBold, ColorReset, r.stats.ManifestFiles)
-	_, _ = fmt.Fprintf(w, "%s  Scan Path:%s             %s\n", ColorBold, ColorReset, r.stats.ScannedPath)
-	_, _ = fmt.Fprintln(w)
-
-	// Risk distribution with colors
-	_, _ = fmt.Fprintf(w, "  %sRisk Distribution:%s\n", ColorBold, ColorReset)
-	_, _ = fmt.Fprintf(w, "    %s●%s HIGH Risk:   %s%3d packages%s ", ColorRed, ColorReset, ColorRed, r.stats.HighRisk, ColorReset)
-	if r.stats.HighRisk > 0 {
-		_, _ = fmt.Fprintf(w, "(%s%.1f%%%s)", ColorRed, float64(r.stats.HighRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
-	}
-	_, _ = fmt.Fprintln(w)
-
-	_, _ = fmt.Fprintf(w, "    %s●%s MEDIUM Risk: %s%3d packages%s ", ColorYellow, ColorReset, ColorYellow, r.stats.MediumRisk, ColorReset)
-	if r.stats.MediumRisk > 0 {
-		_, _ = fmt.Fprintf(w, "(%s%.1f%%%s)", ColorYellow, float64(r.stats.MediumRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
-	}
-	_, _ = fmt.Fprintln(w)
-
-	_, _ = fmt.Fprintf(w, "    %s●%s LOW Risk:    %s%3d packages%s ", ColorGreen, ColorReset, ColorGreen, r.stats.LowRisk, ColorReset)
-	if r.stats.LowRisk > 0 {
-		_, _ = fmt.Fprintf(w, "(%s%.1f%%%s)", ColorGreen, float64(r.stats.LowRisk)/float64(r.stats.TotalPackages)*100, ColorReset)
-	}
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w)
-
-	// Overall risk assessment
-	riskColor := ColorGreen
-	switch overallRisk {
-	case "HIGH":
-		riskColor = ColorRed
-	case "MEDIUM":
-		riskColor = ColorYellow
-	}
-	_, _ = fmt.Fprintf(w, "  %sOverall Risk Level:%s %s%s%s\n", ColorBold, ColorReset, riskColor+ColorBold, overallRisk, ColorReset)
-
-	// Performance stats
-	duration := r.stats.EndTime.Sub(r.stats.StartTime)
-	_, _ = fmt.Fprintf(w, "  %sScan Duration:%s      %s\n", ColorBold, ColorReset, formatDuration(duration))
-	if r.stats.TotalPackages > 0 {
-		avgTime := duration / time.Duration(r.stats.TotalPackages)
-		_, _ = fmt.Fprintf(w, "  %sAverage per Package:%s %s\n", ColorBold, ColorReset, formatDuration(avgTime))
-	}
-
-	// Risk Impact Summary
-	if r.stats.HighRisk > 0 || r.stats.MediumRisk > 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintf(w, "  %sRisk Impact Summary:%s\n", ColorBold, ColorReset)
-		if r.stats.HighRisk > 0 {
-			_, _ = fmt.Fprintf(w, "  %s⚠  ATTENTION REQUIRED:%s %d package%s identified with HIGH supply chain risk.\n",
-				ColorRed+ColorBold, ColorReset, r.stats.HighRisk, pluralize(r.stats.HighRisk))
-			_, _ = fmt.Fprintln(w, "     These packages exhibit patterns commonly associated with compromised")
-			_, _ = fmt.Fprintln(w, "     dependencies and require immediate review.")
-		}
-		if r.stats.MediumRisk > 0 {
-			_, _ = fmt.Fprintf(w, "  %s⚠  MONITORING RECOMMENDED:%s %d package%s with MEDIUM risk factors.\n",
-				ColorYellow+ColorBold, ColorReset, r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
-			_, _ = fmt.Fprintln(w, "     These packages show some concerning patterns that warrant closer monitoring.")
-		}
-	}
-
-	// Key Findings - Critical Issues
-	criticalIssues := r.extractCriticalIssues(5)
-	if len(criticalIssues) > 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintf(w, "  %sTop Priority Findings:%s\n", ColorBold, ColorReset)
-		_, _ = fmt.Fprintln(w, "  The following issues represent the highest supply chain compromise risks:")
-		_, _ = fmt.Fprintln(w)
-
-		for i, issue := range criticalIssues {
-			issueColor := r.getRiskColor(issue.RiskLevel)
-			_, _ = fmt.Fprintf(w, "    %s%d.%s %s%s@%s%s (%s)\n",
-				ColorBold, i+1, ColorReset,
-				issueColor+ColorBold, issue.PackageName, issue.PackageVersion, ColorReset,
-				issue.Ecosystem)
-			_, _ = fmt.Fprintf(w, "       %s[%s SEVERITY]%s %s\n",
-				r.getSeverityColor(issue.Severity), issue.Severity, ColorReset,
-				issue.Description)
-			if issue.Evidence != "" {
-				_, _ = fmt.Fprintf(w, "       %sEvidence:%s %s\n",
-					ColorDim, ColorReset, issue.Evidence)
-			}
-			// Add impact context
-			impact := r.getRiskImpactDescription(issue.Severity)
-			if impact != "" {
-				_, _ = fmt.Fprintf(w, "       %sImpact:%s %s\n",
-					ColorDim, ColorReset, impact)
-			}
-			if i < len(criticalIssues)-1 {
-				_, _ = fmt.Fprintln(w)
-			}
-		}
-	}
-
-}
-
-// printSectionHeader prints a section header
-func (r *Reporter) printSectionHeader(w io.Writer, title string) {
-	width := 80
-	_, _ = fmt.Fprintf(w, "%s%s%s%s\n",
-		ColorBold+ColorCyan,
-		strings.Repeat("─", (width-len(title)-2)/2),
-		" "+title+" ",
-		strings.Repeat("─", (width-len(title)-2)/2)+ColorReset)
-}
-
-// printPackageResult prints a single package analysis result
 func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult) {
-	// Package header with risk indicator
-	riskColor := r.getRiskColor(result.RiskLevel)
-	riskIcon := r.getRiskIcon(result.RiskLevel)
+	rc := riskColor(result.RiskLevel)
+	icon := riskIcon(result.RiskLevel)
 
 	transitiveLabel := ""
 	if result.Dependency.IsTransitive {
 		transitiveLabel = fmt.Sprintf(" %s(transitive)%s", ColorDim, ColorReset)
 	}
 
-	_, _ = fmt.Fprintf(w, "%s%s┌%s Package: %s%s@%s%s (%s)%s\n",
-		riskColor,
-		riskIcon,
-		strings.Repeat("─", 70),
-		ColorBold,
-		result.Dependency.Name,
-		result.Dependency.Version,
-		ColorReset,
-		result.Dependency.Ecosystem,
-		transitiveLabel)
+	// Package header
+	f(w, "%s %s┌%s %s%s@%s%s (%s)%s\n",
+		icon, rc, strings.Repeat("─", 68),
+		ColorBold, result.Dependency.Name, result.Dependency.Version, ColorReset,
+		result.Dependency.Ecosystem, transitiveLabel)
 
-	_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
+	f(w, "%s│%s  Risk: %s%s%s", rc, ColorReset, rc+ColorBold, result.RiskLevel, ColorReset)
 
-	// Risk level badge
-	_, _ = fmt.Fprintf(w, "%s│%s  %sRisk Level:%s %s%s%s\n",
-		riskColor, ColorReset,
-		ColorBold, ColorReset,
-		riskColor+ColorBold, result.RiskLevel, ColorReset)
-
-	// Supply chain score if available
+	// Supply chain score inline
 	if result.SupplyChainScore != nil {
-		maxScore := result.SupplyChainScore.MaxScore
-		if maxScore == 0 {
-			maxScore = 22 // backward compatibility
-		}
-		scoreStr := fmt.Sprintf("%d/%d points (%s%s%s risk)",
-			result.SupplyChainScore.TotalScore,
-			maxScore,
-			r.getRiskColor(result.SupplyChainScore.RiskLevel),
-			result.SupplyChainScore.RiskLevel,
-			ColorReset)
-
-		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %s\n",
-			riskColor, ColorReset,
-			ColorBold, ColorReset,
-			scoreStr)
+		ms := maxScore(result.SupplyChainScore)
+		f(w, "    Score: %d/%d", result.SupplyChainScore.TotalScore, ms)
 	}
+	p(w, "")
 
-	// Repository and source info
+	// Key metadata on one line
+	var meta []string
 	if result.RepositoryURL != "" {
-		_, _ = fmt.Fprintf(w, "%s│%s  %sRepository:%s %s\n",
-			riskColor, ColorReset,
-			ColorBold, ColorReset,
-			result.RepositoryURL)
+		meta = append(meta, "Repo: "+result.RepositoryURL)
 	}
-
-	_, _ = fmt.Fprintf(w, "%s│%s  %sSource Available:%s %s\n",
-		riskColor, ColorReset,
-		ColorBold, ColorReset,
-		formatBool(result.SourceCodeAvailable))
-
+	meta = append(meta, "Source: "+formatBool(result.SourceCodeAvailable))
 	if result.BuildInfrastructure != "" {
-		_, _ = fmt.Fprintf(w, "%s│%s  %sBuild Infrastructure:%s %s\n",
-			riskColor, ColorReset,
-			ColorBold, ColorReset,
-			result.BuildInfrastructure)
+		meta = append(meta, "Build: "+result.BuildInfrastructure)
+	}
+	for _, m := range meta {
+		f(w, "%s│%s  %s\n", rc, ColorReset, m)
 	}
 
-	// Show self-hosted runner warning prominently
 	if result.Metadata.HasSelfHosted {
-		_, _ = fmt.Fprintf(w, "%s│%s  %s⚠  Self-hosted runners: build environment not controlled by trusted provider%s\n",
-			riskColor, ColorReset,
-			ColorRed+ColorBold, ColorReset)
+		f(w, "%s│%s  %s⚠  Self-hosted runners detected%s\n",
+			rc, ColorReset, ColorRed+ColorBold, ColorReset)
 	}
 
-	// Supply chain category scores (in verbose mode)
+	// Category scores table (verbose)
 	if r.config.Verbose && result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
-		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Security Analysis:%s\n",
-			riskColor, ColorReset,
-			ColorBold, ColorReset)
-		_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
-
-		r.printCategoryScoreTable(w, result.SupplyChainScore.CategoryScores, riskColor)
+		f(w, "%s│%s\n", rc, ColorReset)
+		r.printCategoryScoreTable(w, result.SupplyChainScore.CategoryScores, rc)
 	}
 
 	// Findings
 	if len(result.Findings) > 0 {
-		_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
-		_, _ = fmt.Fprintf(w, "%s│%s  %sRisk Findings:%s\n",
-			riskColor, ColorReset,
-			ColorBold, ColorReset)
-
-		for i, finding := range result.Findings {
-			sevColor := r.getSeverityColor(finding.Severity)
-			_, _ = fmt.Fprintf(w, "%s│%s    %s[%s]%s %s\n",
-				riskColor, ColorReset,
-				sevColor, finding.Severity, ColorReset,
-				finding.Description)
-
+		f(w, "%s│%s\n", rc, ColorReset)
+		f(w, "%s│%s  %sFindings:%s\n", rc, ColorReset, ColorBold, ColorReset)
+		for _, finding := range result.Findings {
+			sc := severityColor(finding.Severity)
+			f(w, "%s│%s    %s[%s]%s %s\n", rc, ColorReset, sc, finding.Severity, ColorReset, finding.Description)
 			if finding.Evidence != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "%s│%s       %sEvidence:%s %s\n",
-					riskColor, ColorReset,
-					ColorDim, ColorReset,
-					finding.Evidence)
+				f(w, "%s│%s      %sEvidence:%s %s\n", rc, ColorReset, ColorDim, ColorReset, finding.Evidence)
 			}
-
 			if finding.Methodology != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "%s│%s       %sMethodology:%s %s\n",
-					riskColor, ColorReset,
-					ColorDim, ColorReset,
-					finding.Methodology)
-			}
-
-			if i < len(result.Findings)-1 {
-				_, _ = fmt.Fprintf(w, "%s│%s\n", riskColor, ColorReset)
+				f(w, "%s│%s      %sMethod:%s %s\n", rc, ColorReset, ColorDim, ColorReset, finding.Methodology)
 			}
 		}
 	}
 
-	_, _ = fmt.Fprintf(w, "%s└%s\n", riskColor, strings.Repeat("─", 76)+ColorReset)
-	_, _ = fmt.Fprintln(w)
+	f(w, "%s└%s\n", rc, strings.Repeat("─", 76)+ColorReset)
+	p(w, "")
 }
 
-// printCategoryScoreTable prints category scores in a table format
-func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategoryScores, borderColor string) {
-	categories := []struct {
-		name  string
-		score models.CategoryScore
-	}{
-		{"Publisher Control", scores.PublisherControl},
-		{"Ownership Changes", scores.OwnershipChanges},
-		{"Release Anomalies", scores.ReleaseAnomalies},
-		{"Install Execution", scores.InstallExecution},
-		{"Dependency Sprawl", scores.DependencySprawl},
-		{"Provenance", scores.Provenance},
-		{"Health", scores.Health},
-		{"Governance", scores.Governance},
-		{"Release Security", scores.ReleaseSecurity},
-		{"Package Maturity", scores.PackageMaturity},
-		{"CI Pipeline Security", scores.CIPipelineSecurity},
-	}
+func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategoryScores, bc string) {
+	categories := categoryList(scores)
 
-	// Table header
-	_, _ = fmt.Fprintf(w, "%s│%s    %-20s  %s  %s  %s\n",
-		borderColor, ColorReset,
-		"Category", "Score", "Risk", "Status")
+	f(w, "%s│%s    %-20s  %5s  %4s  %s\n", bc, ColorReset, "Category", "Score", "Risk", "Status")
+	f(w, "%s│%s    %s\n", bc, ColorReset, strings.Repeat("─", 50))
 
-	_, _ = fmt.Fprintf(w, "%s│%s    %s\n",
-		borderColor, ColorReset,
-		strings.Repeat("─", 45))
-
-	// Table rows
 	for _, cat := range categories {
-		if cat.score.Skipped {
-			_, _ = fmt.Fprintf(w, "%s│%s    %-20s  %s  %s  %s\n",
-				borderColor, ColorReset,
-				cat.name,
-				" - ",
-				ColorDim+"○"+ColorReset,
-				ColorDim+"SKIP"+ColorReset)
+		if cat.Score.Skipped {
+			f(w, "%s│%s    %-20s  %5s  %s○%s   %sSKIP%s\n",
+				bc, ColorReset, cat.Name, "  - ", ColorDim, ColorReset, ColorDim, ColorReset)
 			continue
 		}
 
-		scoreIcon := r.getScoreIcon(cat.score.RiskPoints)
-		verifiedIcon := "✓"
-		if !cat.score.Verified {
-			verifiedIcon = "?"
+		icon := scoreIcon(cat.Score.RiskPoints)
+		verified := "✓"
+		if !cat.Score.Verified {
+			verified = "?"
 		}
+		f(w, "%s│%s    %-20s  %s  %s   %s\n",
+			bc, ColorReset, cat.Name, fmt.Sprintf("%d/2", cat.Score.Score), icon, verified)
 
-		_, _ = fmt.Fprintf(w, "%s│%s    %-20s  %s  %s  %s\n",
-			borderColor, ColorReset,
-			cat.name,
-			fmt.Sprintf("%d/2", cat.score.Score),
-			scoreIcon,
-			verifiedIcon)
-
-		if r.config.Verbose && cat.score.Description != "" {
-			_, _ = fmt.Fprintf(w, "%s│%s      %s%s%s\n",
-				borderColor, ColorReset,
-				ColorDim, cat.score.Description, ColorReset)
+		if r.config.Verbose && cat.Score.Description != "" {
+			f(w, "%s│%s      %s%s%s\n", bc, ColorReset, ColorDim, cat.Score.Description, ColorReset)
 		}
-
-		// Show individual sub-checks in verbose mode
-		if r.config.Verbose && len(cat.score.ChecksPerformed) > 0 {
-			for _, check := range cat.score.ChecksPerformed {
-				statusIcon := r.getCheckStatusIcon(check.Status)
-				_, _ = fmt.Fprintf(w, "%s│%s      %s  %s %s: %s%s\n",
-					borderColor, ColorReset,
-					ColorDim, statusIcon, check.Name, check.Detail, ColorReset)
+		if r.config.Verbose {
+			for _, check := range cat.Score.ChecksPerformed {
+				si := checkStatusIcon(check.Status)
+				f(w, "%s│%s      %s  %s %s: %s%s\n",
+					bc, ColorReset, ColorDim, si, check.Name, check.Detail, ColorReset)
 			}
 		}
 	}
 }
 
-// getCheckStatusIcon returns a compact icon for a sub-check status
-func (r *Reporter) getCheckStatusIcon(status string) string {
+func (r *Reporter) printRiskSummary(w io.Writer) {
+	p(w, "")
+	r.printSectionHeader(w, "KEY RISK AREAS")
+	p(w, "")
+
+	areas := r.generateRiskAreas()
+	if len(areas) == 0 {
+		f(w, "  %s✓%s No critical supply chain risk factors identified.\n", ColorGreen, ColorReset)
+		return
+	}
+
+	for i, area := range areas {
+		tag := fmt.Sprintf("%s[%s]%s", ColorRed+ColorBold, area.Tag, ColorReset)
+		if area.Tag != "HIGH RISK" {
+			tag = fmt.Sprintf("%s[%s]%s", ColorYellow+ColorBold, area.Tag, ColorReset)
+		}
+		f(w, "  %s%d.%s %s %s\n", ColorBold, i+1, ColorReset, tag, area.Summary)
+		f(w, "     %s%s%s\n", ColorDim, area.Explanation, ColorReset)
+		if area.Examples != "" {
+			f(w, "     %sAffected:%s %s\n", ColorDim, ColorReset, area.Examples)
+		}
+		p(w, "")
+	}
+}
+
+func (r *Reporter) printSectionHeader(w io.Writer, title string) {
+	width := 80
+	pad := strings.Repeat("─", (width-len(title)-2)/2)
+	f(w, "%s%s %s %s%s\n", ColorBold+ColorCyan, pad, title, pad, ColorReset)
+}
+
+// --- small helpers ---
+
+func scoreIcon(riskPoints int) string {
+	switch riskPoints {
+	case 0:
+		return ColorGreen + "●" + ColorReset
+	case 1:
+		return ColorYellow + "●" + ColorReset
+	case 2:
+		return ColorRed + "●" + ColorReset
+	default:
+		return "○"
+	}
+}
+
+func checkStatusIcon(status string) string {
 	switch status {
 	case "PASS":
 		return ColorGreen + "✓" + ColorReset
@@ -458,244 +320,11 @@ func (r *Reporter) getCheckStatusIcon(status string) string {
 	}
 }
 
-// printRiskSummary prints key risk areas based on findings
-func (r *Reporter) printRiskSummary(w io.Writer) {
-	_, _ = fmt.Fprintln(w)
-	r.printSectionHeader(w, "KEY RISK AREAS")
-	_, _ = fmt.Fprintln(w)
-
-	riskAreas := r.generateRiskAreas()
-
-	if len(riskAreas) == 0 {
-		_, _ = fmt.Fprintf(w, "  %s✓%s No critical supply chain risk factors identified.\n",
-			ColorGreen, ColorReset)
-		return
-	}
-
-	for i, area := range riskAreas {
-		_, _ = fmt.Fprintf(w, "  %s%d.%s %s\n", ColorBold, i+1, ColorReset, area)
-		_, _ = fmt.Fprintln(w)
-	}
+// Shorthand writers to reduce noise in format functions.
+func f(w io.Writer, format string, a ...interface{}) {
+	_, _ = fmt.Fprintf(w, format, a...)
 }
 
-// Helper functions
-
-func (r *Reporter) getRiskColor(riskLevel string) string {
-	switch riskLevel {
-	case "HIGH":
-		return ColorRed
-	case "MEDIUM":
-		return ColorYellow
-	case "LOW":
-		return ColorGreen
-	default:
-		return ColorReset
-	}
-}
-
-func (r *Reporter) getRiskIcon(riskLevel string) string {
-	switch riskLevel {
-	case "HIGH":
-		return " 🔴 "
-	case "MEDIUM":
-		return " 🟡 "
-	case "LOW":
-		return " 🟢 "
-	default:
-		return " ⚪ "
-	}
-}
-
-func (r *Reporter) getSeverityColor(severity string) string {
-	switch severity {
-	case "CRITICAL", "HIGH":
-		return ColorRed
-	case "MEDIUM":
-		return ColorYellow
-	case "LOW":
-		return ColorGreen
-	default:
-		return ColorReset
-	}
-}
-
-func (r *Reporter) getScoreIcon(riskPoints int) string {
-	switch riskPoints {
-	case 0:
-		return ColorGreen + "●" + ColorReset
-	case 1:
-		return ColorYellow + "●" + ColorReset
-	case 2:
-		return ColorRed + "●" + ColorReset
-	default:
-		return "○"
-	}
-}
-
-func (r *Reporter) calculateOverallRisk() string {
-	if r.stats.TotalPackages == 0 {
-		return "UNKNOWN"
-	}
-
-	highPct := float64(r.stats.HighRisk) / float64(r.stats.TotalPackages)
-	mediumPct := float64(r.stats.MediumRisk) / float64(r.stats.TotalPackages)
-
-	if highPct > 0.3 {
-		return "HIGH"
-	} else if highPct > 0 || mediumPct > 0.5 {
-		return "MEDIUM"
-	}
-	return "LOW"
-}
-
-func (r *Reporter) generateRiskAreas() []string {
-	var areas []string
-
-	// HIGH risk packages
-	if r.stats.HighRisk > 0 {
-		areas = append(areas, fmt.Sprintf(
-			"%s[HIGH RISK]%s %d package%s identified with HIGH supply chain compromise risk.\n"+
-				"   %sRisk factors include:%s\n"+
-				"   • Patterns matching known supply chain attack vectors\n"+
-				"   • Weak publisher controls or single points of compromise\n"+
-				"   • Missing build integrity verification",
-			ColorRed+ColorBold, ColorReset, r.stats.HighRisk, pluralize(r.stats.HighRisk),
-			ColorBold, ColorReset))
-	}
-
-	// Missing source code
-	missingSource := 0
-	var missingSourcePkgs []string
-	for _, result := range r.results {
-		if !result.SourceCodeAvailable && result.RiskLevel != "LOW" {
-			missingSource++
-			if len(missingSourcePkgs) < 3 {
-				missingSourcePkgs = append(missingSourcePkgs, result.Dependency.Name)
-			}
-		}
-	}
-	if missingSource > 0 {
-		examplePkgs := ""
-		if len(missingSourcePkgs) > 0 {
-			examplePkgs = fmt.Sprintf(" (e.g., %s)", strings.Join(missingSourcePkgs, ", "))
-		}
-		areas = append(areas, fmt.Sprintf(
-			"%s[UNVERIFIABLE SOURCE]%s %d package%s lack public source code%s.\n"+
-				"   %sRisk:%s Published artifacts cannot be audited or compared to source.\n"+
-				"   This prevents independent verification of package contents.",
-			ColorYellow+ColorBold, ColorReset, missingSource, pluralize(missingSource), examplePkgs,
-			ColorBold, ColorReset))
-	}
-
-	// Install-time execution
-	installScripts := 0
-	var installScriptPkgs []string
-	for _, result := range r.results {
-		if result.Metadata.HasInstallScripts {
-			installScripts++
-			if len(installScriptPkgs) < 3 {
-				installScriptPkgs = append(installScriptPkgs, result.Dependency.Name)
-			}
-		}
-	}
-	if installScripts > 0 {
-		examplePkgs := ""
-		if len(installScriptPkgs) > 0 {
-			examplePkgs = fmt.Sprintf(" (e.g., %s)", strings.Join(installScriptPkgs, ", "))
-		}
-		areas = append(areas, fmt.Sprintf(
-			"%s[INSTALL-TIME EXECUTION]%s %d package%s execute code during installation%s.\n"+
-				"   %sRisk:%s Install scripts are a primary supply chain attack vector.\n"+
-				"   Compromised install scripts can execute arbitrary code before any\n"+
-				"   application-level security controls are in place.",
-			ColorYellow+ColorBold, ColorReset, installScripts, pluralize(installScripts), examplePkgs,
-			ColorBold, ColorReset))
-	}
-
-	// Missing provenance
-	missingProvenance := 0
-	for _, result := range r.results {
-		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.Provenance.RiskPoints > 1 {
-			missingProvenance++
-		}
-	}
-	if missingProvenance > 0 {
-		areas = append(areas, fmt.Sprintf(
-			"%s[MISSING PROVENANCE]%s %d package%s lack build provenance verification.\n"+
-				"   %sRisk:%s Without SLSA attestations, Sigstore signatures, or reproducible\n"+
-				"   builds, there is no way to verify that published artifacts were produced\n"+
-				"   from the claimed source code by a trusted build system.",
-			ColorYellow+ColorBold, ColorReset, missingProvenance, pluralize(missingProvenance),
-			ColorBold, ColorReset))
-	}
-
-	// CI pipeline security issues
-	ciRisks := 0
-	var ciRiskPkgs []string
-	for _, result := range r.results {
-		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.CIPipelineSecurity.RiskPoints > 1 {
-			ciRisks++
-			if len(ciRiskPkgs) < 3 {
-				ciRiskPkgs = append(ciRiskPkgs, result.Dependency.Name)
-			}
-		}
-	}
-	if ciRisks > 0 {
-		examplePkgs := ""
-		if len(ciRiskPkgs) > 0 {
-			examplePkgs = fmt.Sprintf(" (e.g., %s)", strings.Join(ciRiskPkgs, ", "))
-		}
-		areas = append(areas, fmt.Sprintf(
-			"%s[CI PIPELINE SECURITY]%s %d package%s have critical CI/CD configuration issues%s.\n"+
-				"   %sRisk:%s Insecure CI configurations are a direct supply chain attack vector.\n"+
-				"   Unpinned actions can be hijacked, script injection enables remote code execution,\n"+
-				"   and self-hosted runners give attackers control over build environments.",
-			ColorYellow+ColorBold, ColorReset, ciRisks, pluralize(ciRisks), examplePkgs,
-			ColorBold, ColorReset))
-	}
-
-	return areas
-}
-
-func centerText(text string, width int) string {
-	if len(text) >= width {
-		return text
-	}
-	leftPad := (width - len(text)) / 2
-	rightPad := width - len(text) - leftPad
-	return strings.Repeat(" ", leftPad) + text + strings.Repeat(" ", rightPad)
-}
-
-func formatBool(b bool) string {
-	if b {
-		return ColorGreen + "✓ Yes" + ColorReset
-	}
-	return ColorRed + "✗ No" + ColorReset
-}
-
-func formatDuration(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	}
-	return fmt.Sprintf("%.2fs", d.Seconds())
-}
-
-func pluralize(count int) string {
-	if count == 1 {
-		return ""
-	}
-	return "s"
-}
-
-func (r *Reporter) getRiskImpactDescription(severity string) string {
-	switch severity {
-	case "CRITICAL", "HIGH":
-		return "If compromised, could lead to full system compromise, data exfiltration, or supply chain contamination"
-	case "MEDIUM":
-		return "If compromised, could enable lateral movement or unauthorized access to sensitive resources"
-	case "LOW":
-		return "Limited impact if compromised, but contributes to overall attack surface"
-	default:
-		return ""
-	}
+func p(w io.Writer, s string) {
+	_, _ = fmt.Fprintln(w, s)
 }

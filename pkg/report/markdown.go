@@ -3,241 +3,191 @@ package report
 import (
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// generateMarkdown generates a markdown report
 func (r *Reporter) generateMarkdown() error {
 	w := r.config.Writer
 
-	// Header
-	_, _ = fmt.Fprintln(w, "# SNYFT Supply Chain Security Report")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "**Generated:** %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "---")
-	_, _ = fmt.Fprintln(w)
+	// Title
+	p(w, "# Snyft Supply Chain Risk Report")
+	p(w, "")
+	f(w, "**Generated:** %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	p(w, "")
 
 	// Executive Summary
-	_, _ = fmt.Fprintln(w, "## Executive Summary")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "### Supply Chain Risk Assessment")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "This report evaluates the **likelihood that software packages could be compromised** through supply chain attacks. It assesses risk factors such as maintainer practices, ownership changes, and build integrity—**NOT** known CVEs or code vulnerabilities.")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "### Scan Overview")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "- **Total Packages Scanned:** %d\n", r.stats.TotalPackages)
+	p(w, "## Executive Summary")
+	p(w, "")
+	p(w, "Evaluates **compromise likelihood** through supply chain attacks—**not** known CVEs or code vulnerabilities.")
+	p(w, "")
+
+	// Scan overview
+	f(w, "| Metric | Value |\n")
+	f(w, "|--------|-------|\n")
+	f(w, "| Packages Scanned | %d |\n", r.stats.TotalPackages)
 	if r.stats.DirectDeps > 0 || r.stats.TransitiveDeps > 0 {
-		_, _ = fmt.Fprintf(w, "- **Direct Dependencies:** %d\n", r.stats.DirectDeps)
-		_, _ = fmt.Fprintf(w, "- **Transitive Dependencies:** %d\n", r.stats.TransitiveDeps)
+		f(w, "| Direct Dependencies | %d |\n", r.stats.DirectDeps)
+		f(w, "| Transitive Dependencies | %d |\n", r.stats.TransitiveDeps)
 	}
-	_, _ = fmt.Fprintf(w, "- **Manifest Files Found:** %d\n", r.stats.ManifestFiles)
-	_, _ = fmt.Fprintf(w, "- **Scan Path:** `%s`\n", r.stats.ScannedPath)
-	_, _ = fmt.Fprintln(w)
+	f(w, "| Manifest Files | %d |\n", r.stats.ManifestFiles)
+	f(w, "| Scan Path | `%s` |\n", r.stats.ScannedPath)
+	p(w, "")
 
-	_, _ = fmt.Fprintln(w, "### Risk Distribution")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "| Risk Level | Count | Percentage |\n")
-	_, _ = fmt.Fprintf(w, "|------------|-------|------------|\n")
-	_, _ = fmt.Fprintf(w, "| 🔴 HIGH    | %d    | %.1f%%     |\n",
-		r.stats.HighRisk, float64(r.stats.HighRisk)/float64(r.stats.TotalPackages)*100)
-	_, _ = fmt.Fprintf(w, "| 🟡 MEDIUM  | %d    | %.1f%%     |\n",
-		r.stats.MediumRisk, float64(r.stats.MediumRisk)/float64(r.stats.TotalPackages)*100)
-	_, _ = fmt.Fprintf(w, "| 🟢 LOW     | %d    | %.1f%%     |\n",
-		r.stats.LowRisk, float64(r.stats.LowRisk)/float64(r.stats.TotalPackages)*100)
-	_, _ = fmt.Fprintln(w)
+	// Risk distribution
+	p(w, "### Risk Distribution")
+	p(w, "")
+	f(w, "| Level | Count | %% |\n")
+	f(w, "|-------|------:|---:|\n")
 
+	total := r.stats.TotalPackages
+	pctStr := func(n int) string {
+		if total == 0 {
+			return "0.0"
+		}
+		return fmt.Sprintf("%.1f", float64(n)/float64(total)*100)
+	}
+	f(w, "| %s HIGH | %d | %s%% |\n", riskIcon("HIGH"), r.stats.HighRisk, pctStr(r.stats.HighRisk))
+	f(w, "| %s MEDIUM | %d | %s%% |\n", riskIcon("MEDIUM"), r.stats.MediumRisk, pctStr(r.stats.MediumRisk))
+	f(w, "| %s LOW | %d | %s%% |\n", riskIcon("LOW"), r.stats.LowRisk, pctStr(r.stats.LowRisk))
+	p(w, "")
+
+	overall := calculateOverallRisk(r.stats)
 	duration := r.stats.EndTime.Sub(r.stats.StartTime)
-	_, _ = fmt.Fprintf(w, "**Overall Risk Level:** %s\n", r.calculateOverallRisk())
-	_, _ = fmt.Fprintf(w, "**Scan Duration:** %s\n", formatDuration(duration))
-	_, _ = fmt.Fprintln(w)
+	f(w, "**Overall Risk:** %s · **Duration:** %s\n", overall, formatDuration(duration))
+	p(w, "")
 
-	// Risk Impact Summary
-	if r.stats.HighRisk > 0 || r.stats.MediumRisk > 0 {
-		_, _ = fmt.Fprintln(w, "### Risk Impact Summary")
-		_, _ = fmt.Fprintln(w)
-		if r.stats.HighRisk > 0 {
-			_, _ = fmt.Fprintf(w, "> ⚠️  **ATTENTION REQUIRED:** %d package%s identified with HIGH supply chain risk.\n",
-				r.stats.HighRisk, pluralize(r.stats.HighRisk))
-			_, _ = fmt.Fprintln(w, "> These packages exhibit patterns commonly associated with compromised dependencies and require immediate review.")
-			_, _ = fmt.Fprintln(w)
-		}
-		if r.stats.MediumRisk > 0 {
-			_, _ = fmt.Fprintf(w, "> ⚠️  **MONITORING RECOMMENDED:** %d package%s with MEDIUM risk factors.\n",
-				r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
-			_, _ = fmt.Fprintln(w, "> These packages show some concerning patterns that warrant closer monitoring.")
-			_, _ = fmt.Fprintln(w)
-		}
+	// Alerts
+	if r.stats.HighRisk > 0 {
+		f(w, "> ⚠️ **%d HIGH risk** package%s — immediate review recommended.\n\n", r.stats.HighRisk, pluralize(r.stats.HighRisk))
+	}
+	if r.stats.MediumRisk > 0 {
+		f(w, "> ⚠️ **%d MEDIUM risk** package%s — monitoring recommended.\n\n", r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
 	}
 
-	// Key Findings - Critical Issues
+	// Top findings
 	criticalIssues := r.extractCriticalIssues(5)
 	if len(criticalIssues) > 0 {
-		_, _ = fmt.Fprintln(w, "### Top Priority Findings")
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "The following issues represent the highest supply chain compromise risks:")
-		_, _ = fmt.Fprintln(w)
-
+		p(w, "### Top Priority Findings")
+		p(w, "")
 		for i, issue := range criticalIssues {
-			riskIcon := r.getRiskIcon(issue.RiskLevel)
-			_, _ = fmt.Fprintf(w, "%d. %s **%s@%s** (%s)\n",
-				i+1, riskIcon, issue.PackageName, issue.PackageVersion, issue.Ecosystem)
-			_, _ = fmt.Fprintf(w, "   - **[%s SEVERITY]** %s\n", issue.Severity, issue.Description)
+			f(w, "%d. %s **%s@%s** (%s) — **[%s]** %s\n",
+				i+1, riskIcon(issue.RiskLevel),
+				issue.PackageName, issue.PackageVersion, issue.Ecosystem,
+				issue.Severity, issue.Description)
 			if issue.Evidence != "" {
-				_, _ = fmt.Fprintf(w, "   - *Evidence:* %s\n", issue.Evidence)
+				f(w, "   - *Evidence:* %s\n", issue.Evidence)
 			}
-			impact := r.getRiskImpactDescription(issue.Severity)
-			if impact != "" {
-				_, _ = fmt.Fprintf(w, "   - *Impact:* %s\n", impact)
+			if impact := riskImpactDescription(issue.Severity); impact != "" {
+				f(w, "   - *Impact:* %s\n", impact)
 			}
-			_, _ = fmt.Fprintln(w)
 		}
+		p(w, "")
 	}
 
-	_, _ = fmt.Fprintln(w, "---")
-	_, _ = fmt.Fprintln(w)
+	p(w, "---")
+	p(w, "")
 
 	// Detailed Findings
-	_, _ = fmt.Fprintln(w, "## Detailed Findings")
-	_, _ = fmt.Fprintln(w)
-
+	p(w, "## Detailed Findings")
+	p(w, "")
 	for _, result := range r.results {
 		r.printMarkdownPackage(w, result)
 	}
 
 	// Key Risk Areas
-	_, _ = fmt.Fprintln(w, "## Key Risk Areas")
-	_, _ = fmt.Fprintln(w)
-
-	riskAreas := r.generateRiskAreas()
-	if len(riskAreas) == 0 {
-		_, _ = fmt.Fprintln(w, "✓ No critical supply chain risk factors identified.")
+	p(w, "## Key Risk Areas")
+	p(w, "")
+	areas := r.generateRiskAreas()
+	if len(areas) == 0 {
+		p(w, "✓ No critical supply chain risk factors identified.")
 	} else {
-		for i, area := range riskAreas {
-			// Remove ANSI codes from risk areas
-			cleanArea := strings.ReplaceAll(area, ColorRed, "")
-			cleanArea = strings.ReplaceAll(cleanArea, ColorYellow, "")
-			cleanArea = strings.ReplaceAll(cleanArea, ColorGreen, "")
-			cleanArea = strings.ReplaceAll(cleanArea, ColorBold, "")
-			cleanArea = strings.ReplaceAll(cleanArea, ColorReset, "")
-			_, _ = fmt.Fprintf(w, "%d. %s\n", i+1, cleanArea)
-			_, _ = fmt.Fprintln(w)
+		for i, area := range areas {
+			f(w, "%d. **[%s]** %s\n", i+1, area.Tag, area.Summary)
+			f(w, "   %s\n", area.Explanation)
+			if area.Examples != "" {
+				f(w, "   Affected: %s\n", area.Examples)
+			}
+			p(w, "")
 		}
 	}
 
 	return nil
 }
 
-// printMarkdownPackage prints a package in markdown format
 func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResult) {
-	riskIcon := r.getRiskIcon(result.RiskLevel)
-
-	transitiveLabel := ""
+	icon := riskIcon(result.RiskLevel)
+	transitive := ""
 	if result.Dependency.IsTransitive {
-		transitiveLabel = " *(transitive)*"
+		transitive = " *(transitive)*"
 	}
 
-	_, _ = fmt.Fprintf(w, "### %s %s@%s (%s)%s\n",
-		riskIcon,
-		result.Dependency.Name,
-		result.Dependency.Version,
-		result.Dependency.Ecosystem,
-		transitiveLabel)
-	_, _ = fmt.Fprintln(w)
+	f(w, "### %s %s@%s (%s)%s\n", icon, result.Dependency.Name, result.Dependency.Version,
+		result.Dependency.Ecosystem, transitive)
+	p(w, "")
 
-	_, _ = fmt.Fprintf(w, "**Risk Level:** %s\n", result.RiskLevel)
-
+	f(w, "**Risk:** %s", result.RiskLevel)
 	if result.SupplyChainScore != nil {
-		maxScore := result.SupplyChainScore.MaxScore
-		if maxScore == 0 {
-			maxScore = 22
-		}
-		scoreStr := fmt.Sprintf("%d/%d points (%s risk)", result.SupplyChainScore.TotalScore, maxScore, result.SupplyChainScore.RiskLevel)
-		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %s\n", scoreStr)
+		ms := maxScore(result.SupplyChainScore)
+		f(w, " · **Score:** %d/%d", result.SupplyChainScore.TotalScore, ms)
 	}
+	p(w, "")
 
 	if result.RepositoryURL != "" {
-		_, _ = fmt.Fprintf(w, "**Repository:** %s\n", result.RepositoryURL)
+		f(w, "**Repo:** %s\n", result.RepositoryURL)
 	}
-
-	_, _ = fmt.Fprintf(w, "**Source Available:** %v\n", result.SourceCodeAvailable)
-
+	f(w, "**Source Available:** %v\n", result.SourceCodeAvailable)
 	if result.BuildInfrastructure != "" {
-		_, _ = fmt.Fprintf(w, "**Build Infrastructure:** %s\n", result.BuildInfrastructure)
+		f(w, "**Build:** %s\n", result.BuildInfrastructure)
 	}
 
-	// Supply chain scores
+	// Category scores (verbose)
 	if r.config.Verbose && result.SupplyChainScore != nil {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "#### Supply Chain Security Analysis")
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "| Category | Score | Risk | Status |")
-		_, _ = fmt.Fprintln(w, "|----------|-------|------|--------|")
+		p(w, "")
+		p(w, "#### Category Scores")
+		p(w, "")
+		p(w, "| Category | Score | Risk | Verified |")
+		p(w, "|----------|------:|:----:|:--------:|")
 
-		categories := []struct {
-			name  string
-			score models.CategoryScore
-		}{
-			{"Publisher Control", result.SupplyChainScore.CategoryScores.PublisherControl},
-			{"Ownership Changes", result.SupplyChainScore.CategoryScores.OwnershipChanges},
-			{"Release Anomalies", result.SupplyChainScore.CategoryScores.ReleaseAnomalies},
-			{"Install Execution", result.SupplyChainScore.CategoryScores.InstallExecution},
-			{"Dependency Sprawl", result.SupplyChainScore.CategoryScores.DependencySprawl},
-			{"Provenance", result.SupplyChainScore.CategoryScores.Provenance},
-			{"Health", result.SupplyChainScore.CategoryScores.Health},
-			{"Governance", result.SupplyChainScore.CategoryScores.Governance},
-			{"Release Security", result.SupplyChainScore.CategoryScores.ReleaseSecurity},
-			{"Package Maturity", result.SupplyChainScore.CategoryScores.PackageMaturity},
-			{"CI Pipeline Security", result.SupplyChainScore.CategoryScores.CIPipelineSecurity},
-		}
-
-		for _, cat := range categories {
-			if cat.score.Skipped {
-				_, _ = fmt.Fprintf(w, "| %s | - | ⚪ | SKIP |\n", cat.name)
+		for _, cat := range categoryList(result.SupplyChainScore.CategoryScores) {
+			if cat.Score.Skipped {
+				f(w, "| %s | - | ⚪ | SKIP |\n", cat.Name)
 				continue
 			}
-
-			scoreIcon := "🟢"
-			switch cat.score.RiskPoints {
+			icon := "🟢"
+			switch cat.Score.RiskPoints {
 			case 2:
-				scoreIcon = "🔴"
+				icon = "🔴"
 			case 1:
-				scoreIcon = "🟡"
+				icon = "🟡"
 			}
-
-			verifiedIcon := "✓"
-			if !cat.score.Verified {
-				verifiedIcon = "?"
+			verified := "✓"
+			if !cat.Score.Verified {
+				verified = "?"
 			}
-
-			_, _ = fmt.Fprintf(w, "| %s | %d/2 | %s | %s |\n",
-				cat.name, cat.score.Score, scoreIcon, verifiedIcon)
+			f(w, "| %s | %d/2 | %s | %s |\n", cat.Name, cat.Score.Score, icon, verified)
 		}
-		_, _ = fmt.Fprintln(w)
+		p(w, "")
 	}
 
 	// Findings
 	if len(result.Findings) > 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "#### Risk Findings")
-		_, _ = fmt.Fprintln(w)
-
+		p(w, "")
+		p(w, "#### Risk Findings")
+		p(w, "")
 		for _, finding := range result.Findings {
-			_, _ = fmt.Fprintf(w, "- **[%s]** %s\n", finding.Severity, finding.Description)
+			f(w, "- **[%s]** %s\n", finding.Severity, finding.Description)
 			if finding.Evidence != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "  - *Evidence:* %s\n", finding.Evidence)
+				f(w, "  - *Evidence:* %s\n", finding.Evidence)
 			}
 			if finding.Methodology != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "  - *Methodology:* %s\n", finding.Methodology)
+				f(w, "  - *Methodology:* %s\n", finding.Methodology)
 			}
 		}
-		_, _ = fmt.Fprintln(w)
+		p(w, "")
 	}
 
-	_, _ = fmt.Fprintln(w, "---")
-	_, _ = fmt.Fprintln(w)
+	p(w, "---")
+	p(w, "")
 }

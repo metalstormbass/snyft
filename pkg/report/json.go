@@ -23,11 +23,11 @@ type JSONReport struct {
 		ScanDuration           float64 `json:"scan_duration_seconds"`
 	} `json:"summary"`
 	ExecutiveSummary struct {
-		KeyFindings      []JSONCriticalIssue              `json:"key_findings"`
-		Summary          string                           `json:"summary"`
+		KeyFindings []JSONCriticalIssue `json:"key_findings"`
+		Summary     string              `json:"summary"`
 	} `json:"executive_summary"`
-	Results       interface{} `json:"results"`
-	KeyRiskAreas []string    `json:"key_risk_areas"`
+	Results      interface{}   `json:"results"`
+	KeyRiskAreas []JSONRiskArea `json:"key_risk_areas"`
 }
 
 // JSONCriticalIssue represents a critical issue in JSON format
@@ -42,7 +42,14 @@ type JSONCriticalIssue struct {
 	Impact         string `json:"impact,omitempty"`
 }
 
-// generateJSON generates a JSON report
+// JSONRiskArea represents a risk area in JSON format
+type JSONRiskArea struct {
+	Tag         string `json:"tag"`
+	Summary     string `json:"summary"`
+	Explanation string `json:"explanation"`
+	Examples    string `json:"examples,omitempty"`
+}
+
 func (r *Reporter) generateJSON() error {
 	report := JSONReport{
 		Results: r.results,
@@ -60,10 +67,10 @@ func (r *Reporter) generateJSON() error {
 	report.Summary.HighRisk = r.stats.HighRisk
 	report.Summary.MediumRisk = r.stats.MediumRisk
 	report.Summary.LowRisk = r.stats.LowRisk
-	report.Summary.OverallRisk = r.calculateOverallRisk()
+	report.Summary.OverallRisk = calculateOverallRisk(r.stats)
 	report.Summary.ScanDuration = r.stats.EndTime.Sub(r.stats.StartTime).Seconds()
 
-	// Executive Summary with Key Findings
+	// Executive Summary
 	criticalIssues := r.extractCriticalIssues(5)
 	report.ExecutiveSummary.KeyFindings = make([]JSONCriticalIssue, len(criticalIssues))
 	for i, issue := range criticalIssues {
@@ -75,11 +82,10 @@ func (r *Reporter) generateJSON() error {
 			Severity:       issue.Severity,
 			Description:    issue.Description,
 			Evidence:       issue.Evidence,
-			Impact:         r.getRiskImpactDescription(issue.Severity),
+			Impact:         riskImpactDescription(issue.Severity),
 		}
 	}
 
-	// Generate professional summary text
 	if len(criticalIssues) > 0 {
 		report.ExecutiveSummary.Summary = fmt.Sprintf(
 			"Supply Chain Risk Assessment: Scanned %d packages and identified %d with elevated supply chain compromise risk. "+
@@ -90,18 +96,16 @@ func (r *Reporter) generateJSON() error {
 		report.ExecutiveSummary.Summary = fmt.Sprintf(
 			"Supply Chain Risk Assessment: Scanned %d packages with overall risk level: %s. "+
 				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
-			r.stats.TotalPackages, r.calculateOverallRisk())
+			r.stats.TotalPackages, calculateOverallRisk(r.stats))
 	}
 
-	// Key Risk Areas — strip ANSI escape codes so JSON consumers get plain text
-	rawAreas := r.generateRiskAreas()
-	cleanAreas := make([]string, len(rawAreas))
-	for i, area := range rawAreas {
-		cleanAreas[i] = stripANSI(area)
+	// Key Risk Areas
+	areas := r.generateRiskAreas()
+	report.KeyRiskAreas = make([]JSONRiskArea, len(areas))
+	for i, area := range areas {
+		report.KeyRiskAreas[i] = JSONRiskArea(area)
 	}
-	report.KeyRiskAreas = cleanAreas
 
-	// Encode JSON
 	encoder := json.NewEncoder(r.config.Writer)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(report)
