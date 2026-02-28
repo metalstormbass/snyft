@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/metalstormbass/snyft/pkg/models"
 )
@@ -25,22 +24,20 @@ func (r *Reporter) generateText() error {
 	w := r.config.Writer
 
 	r.printHeader(w)
-	r.printExecutiveSummary(w)
+	r.printSummaryLine(w)
 
-	if !r.config.Verbose {
-		r.printFormatHint(w)
-		return nil
-	}
-
-	p(w, "")
-	r.printSectionHeader(w, "DETAILED FINDINGS")
+	f(w, "  %s%s%s\n", ColorDim, strings.Repeat("─", 76), ColorReset)
 	p(w, "")
 
 	for _, result := range r.results {
 		r.printPackageResult(w, result)
 	}
 
-	r.printRiskSummary(w)
+	if r.config.Verbose {
+		r.printRiskSummary(w)
+	}
+
+	r.printFormatHint(w)
 	return nil
 }
 
@@ -48,193 +45,140 @@ func (r *Reporter) generateText() error {
 
 func (r *Reporter) printHeader(w io.Writer) {
 	width := 80
-	title := " SNYFT SUPPLY CHAIN SECURITY REPORT "
-	timestamp := " Generated: " + time.Now().Format("2006-01-02 15:04:05") + " "
+	title := " SNYFT SUPPLY CHAIN RISK REPORT "
 	border := strings.Repeat(BoxHorizontal, width-2)
 
 	f(w, "%s%s%s%s%s\n", ColorBold+ColorCyan, BoxTopLeft, border, BoxTopRight, ColorReset)
 	f(w, "%s%s%s%s%s\n", ColorBold+ColorCyan+BoxVertical, centerText(title, width-2), BoxVertical, ColorReset, "")
-	f(w, "%s%s%s%s%s\n", ColorCyan+BoxVertical, centerText(timestamp, width-2), BoxVertical, ColorReset, "")
 	f(w, "%s%s%s%s%s\n", ColorCyan, BoxBottomLeft, border, BoxBottomRight, ColorReset)
 }
 
-func (r *Reporter) printExecutiveSummary(w io.Writer) {
-	p(w, "")
-	r.printSectionHeader(w, "EXECUTIVE SUMMARY")
-	p(w, "")
-
-	// Brief description
-	f(w, "  %sSupply Chain Risk Assessment%s\n", ColorBold, ColorReset)
-	p(w, "  Evaluates compromise likelihood through supply chain attacks—NOT known CVEs.")
-	p(w, "")
-
-	// Scan overview
-	f(w, "  %sPackages Scanned:%s  %d\n", ColorBold, ColorReset, r.stats.TotalPackages)
-	if r.stats.DirectDeps > 0 || r.stats.TransitiveDeps > 0 {
-		f(w, "  %sDirect / Transitive:%s %d / %d\n", ColorBold, ColorReset, r.stats.DirectDeps, r.stats.TransitiveDeps)
-	}
-	f(w, "  %sManifest Files:%s    %d\n", ColorBold, ColorReset, r.stats.ManifestFiles)
-	f(w, "  %sScan Path:%s         %s\n", ColorBold, ColorReset, r.stats.ScannedPath)
-	p(w, "")
-
-	// Risk distribution - compact table
-	f(w, "  %sRisk Distribution:%s\n", ColorBold, ColorReset)
-	r.printRiskLine(w, "HIGH", r.stats.HighRisk)
-	r.printRiskLine(w, "MEDIUM", r.stats.MediumRisk)
-	r.printRiskLine(w, "LOW", r.stats.LowRisk)
-	p(w, "")
-
-	// Overall risk + duration
-	overall := calculateOverallRisk(r.stats)
+func (r *Reporter) printSummaryLine(w io.Writer) {
 	duration := r.stats.EndTime.Sub(r.stats.StartTime)
-	f(w, "  %sOverall Risk:%s %s%s%s", ColorBold, ColorReset, riskColor(overall)+ColorBold, overall, ColorReset)
-	f(w, "    %sDuration:%s %s\n", ColorBold, ColorReset, formatDuration(duration))
 
-	// Alerts
+	f(w, "\n  %s%d%s package%s scanned",
+		ColorBold, r.stats.TotalPackages, ColorReset, pluralize(r.stats.TotalPackages))
+
 	if r.stats.HighRisk > 0 {
-		p(w, "")
-		f(w, "  %s⚠  %d HIGH risk package%s — immediate review recommended%s\n",
-			ColorRed+ColorBold, r.stats.HighRisk, pluralize(r.stats.HighRisk), ColorReset)
+		f(w, "  %s●%s %d high", ColorRed, ColorReset, r.stats.HighRisk)
 	}
 	if r.stats.MediumRisk > 0 {
-		if r.stats.HighRisk == 0 {
-			p(w, "")
-		}
-		f(w, "  %s⚠  %d MEDIUM risk package%s — monitoring recommended%s\n",
-			ColorYellow+ColorBold, r.stats.MediumRisk, pluralize(r.stats.MediumRisk), ColorReset)
+		f(w, "  %s●%s %d medium", ColorYellow, ColorReset, r.stats.MediumRisk)
+	}
+	if r.stats.LowRisk > 0 {
+		f(w, "  %s●%s %d low", ColorGreen, ColorReset, r.stats.LowRisk)
 	}
 
-	// Top priority findings
-	criticalIssues := r.extractCriticalIssues(5)
-	if len(criticalIssues) > 0 {
-		p(w, "")
-		f(w, "  %sTop Priority Findings:%s\n", ColorBold, ColorReset)
-		p(w, "")
-
-		for i, issue := range criticalIssues {
-			ic := riskColor(issue.RiskLevel)
-			f(w, "    %s%d.%s %s%s@%s%s (%s)\n",
-				ColorBold, i+1, ColorReset,
-				ic+ColorBold, issue.PackageName, issue.PackageVersion, ColorReset,
-				issue.Ecosystem)
-			f(w, "       %s[%s]%s %s\n",
-				severityColor(issue.Severity), issue.Severity, ColorReset,
-				issue.Description)
-			if issue.Evidence != "" {
-				f(w, "       %sEvidence:%s %s\n", ColorDim, ColorReset, issue.Evidence)
-			}
-			if i < len(criticalIssues)-1 {
-				p(w, "")
-			}
-		}
-	}
-}
-
-func (r *Reporter) printRiskLine(w io.Writer, level string, count int) {
-	c := riskColor(level)
-	label := fmt.Sprintf("%-6s", level)
-	pct := ""
-	if count > 0 && r.stats.TotalPackages > 0 {
-		pct = fmt.Sprintf(" (%.0f%%)", float64(count)/float64(r.stats.TotalPackages)*100)
-	}
-	f(w, "    %s●%s %s  %s%3d%s%s\n", c, ColorReset, label, c, count, pct, ColorReset)
-}
-
-func (r *Reporter) printFormatHint(w io.Writer) {
-	scanPath := r.stats.ScannedPath
-	if scanPath == "" {
-		scanPath = "<path>"
-	}
-
-	p(w, "")
-	f(w, "  %s%s%s\n", ColorDim, strings.Repeat("─", 78), ColorReset)
-	p(w, "")
-	f(w, "  %sDetailed report:%s  snyft scan %s -v\n", ColorBold, ColorReset, scanPath)
-	f(w, "  %sExport:%s          snyft scan %s -f html -o report.html\n", ColorBold, ColorReset, scanPath)
-	p(w, "")
+	f(w, "  %s%s%s\n\n", ColorDim, formatDuration(duration), ColorReset)
 }
 
 func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult) {
 	rc := riskColor(result.RiskLevel)
 	icon := riskIcon(result.RiskLevel)
 
-	transitiveLabel := ""
-	if result.Dependency.IsTransitive {
-		transitiveLabel = fmt.Sprintf(" %s(transitive)%s", ColorDim, ColorReset)
-	}
+	// Package name@version
+	nameVer := fmt.Sprintf("%s@%s", result.Dependency.Name, result.Dependency.Version)
+	eco := string(result.Dependency.Ecosystem)
 
-	// Package header
-	f(w, "%s %s┌%s %s%s@%s%s (%s)%s\n",
-		icon, rc, strings.Repeat("─", 68),
-		ColorBold, result.Dependency.Name, result.Dependency.Version, ColorReset,
-		result.Dependency.Ecosystem, transitiveLabel)
-
-	f(w, "%s│%s  Risk: %s%s%s", rc, ColorReset, rc+ColorBold, result.RiskLevel, ColorReset)
-
-	// Supply chain score inline
+	// Score with color based on numeric value
+	scoreStr := ""
 	if result.SupplyChainScore != nil {
 		ms := maxScore(result.SupplyChainScore)
-		f(w, "    Score: %d/%d", result.SupplyChainScore.TotalScore, ms)
-	}
-	p(w, "")
-
-	// Key metadata on one line
-	var meta []string
-	if result.RepositoryURL != "" {
-		meta = append(meta, "Repo: "+result.RepositoryURL)
-	}
-	meta = append(meta, "Source: "+formatBool(result.SourceCodeAvailable))
-	if result.BuildInfrastructure != "" {
-		meta = append(meta, "Build: "+result.BuildInfrastructure)
-	}
-	for _, m := range meta {
-		f(w, "%s│%s  %s\n", rc, ColorReset, m)
+		sc := scoreColor(result.SupplyChainScore.TotalScore)
+		scoreStr = fmt.Sprintf("%s%2d%s/%d", sc+ColorBold, result.SupplyChainScore.TotalScore, ColorReset, ms)
 	}
 
-	if result.Metadata.HasSelfHosted {
-		f(w, "%s│%s  %s⚠  Self-hosted runners detected%s\n",
-			rc, ColorReset, ColorRed+ColorBold, ColorReset)
+	// Transitive label
+	transitive := ""
+	if result.Dependency.IsTransitive {
+		transitive = fmt.Sprintf(" %s(transitive)%s", ColorDim, ColorReset)
 	}
 
-	// Category scores table (verbose)
+	// Package header line: icon name@version  ecosystem  score  RISK
+	f(w, "  %s %s%-35s%s  %-5s  %s  %s%s%s%s\n",
+		icon, ColorBold, nameVer, ColorReset, eco,
+		scoreStr, rc+ColorBold, result.RiskLevel, ColorReset, transitive)
+
+	// Verbose: show metadata
+	if r.config.Verbose {
+		var meta []string
+		if result.RepositoryURL != "" {
+			meta = append(meta, "Repo: "+result.RepositoryURL)
+		}
+		meta = append(meta, "Source: "+formatBool(result.SourceCodeAvailable))
+		if result.BuildInfrastructure != "" {
+			meta = append(meta, "Build: "+result.BuildInfrastructure)
+		}
+		f(w, "     %s%s%s\n", ColorDim, strings.Join(meta, "  "), ColorReset)
+
+		if result.Metadata.HasSelfHosted {
+			f(w, "     %s⚠  Self-hosted runners detected%s\n", ColorRed+ColorBold, ColorReset)
+		}
+	}
+
+	// Verbose: category score table
 	if r.config.Verbose && result.SupplyChainScore != nil {
-		f(w, "%s│%s\n", rc, ColorReset)
-		r.printCategoryScoreTable(w, result.SupplyChainScore.CategoryScores, rc)
+		r.printCategoryScoreTable(w, result.SupplyChainScore.CategoryScores)
 	}
 
-	// Findings
+	// Findings with tree-drawing connectors
 	if len(result.Findings) > 0 {
-		f(w, "%s│%s\n", rc, ColorReset)
-		f(w, "%s│%s  %sFindings:%s\n", rc, ColorReset, ColorBold, ColorReset)
-		for _, finding := range result.Findings {
+		for i, finding := range result.Findings {
 			sc := severityColor(finding.Severity)
-			f(w, "%s│%s    %s[%s]%s %s\n", rc, ColorReset, sc, finding.Severity, ColorReset, finding.Description)
+			isLast := i == len(result.Findings)-1
+
+			connector := "├─"
+			if isLast {
+				connector = "└─"
+			}
+
+			f(w, "     %s %s[%s]%s %s\n",
+				connector, sc, finding.Severity, ColorReset, finding.Description)
+
+			// Source URL — dimmed/gray
 			if finding.SourceURL != "" {
-				f(w, "%s│%s      %sSource:%s %s\n", rc, ColorReset, ColorDim, ColorReset, finding.SourceURL)
+				cont := "│ "
+				if isLast {
+					cont = "  "
+				}
+				pad := strings.Repeat(" ", len(finding.Severity)+3)
+				f(w, "     %s %s%s%s%s\n",
+					cont, pad, ColorDim, finding.SourceURL, ColorReset)
 			}
-			if finding.Evidence != "" && r.config.Verbose {
-				f(w, "%s│%s      %sEvidence:%s %s\n", rc, ColorReset, ColorDim, ColorReset, finding.Evidence)
-			}
-			if finding.Methodology != "" && r.config.Verbose {
-				f(w, "%s│%s      %sMethod:%s %s\n", rc, ColorReset, ColorDim, ColorReset, finding.Methodology)
+
+			// Verbose: evidence and methodology
+			if r.config.Verbose {
+				cont := "│ "
+				if isLast {
+					cont = "  "
+				}
+				pad := strings.Repeat(" ", len(finding.Severity)+3)
+				if finding.Evidence != "" {
+					f(w, "     %s %s%sEvidence: %s%s\n",
+						cont, pad, ColorDim, finding.Evidence, ColorReset)
+				}
+				if finding.Methodology != "" {
+					f(w, "     %s %s%sMethod: %s%s\n",
+						cont, pad, ColorDim, finding.Methodology, ColorReset)
+				}
 			}
 		}
 	}
 
-	f(w, "%s└%s\n", rc, strings.Repeat("─", 76)+ColorReset)
 	p(w, "")
 }
 
-func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategoryScores, bc string) {
+func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategoryScores) {
 	categories := categoryList(scores)
 
-	f(w, "%s│%s    %-20s  %5s  %4s  %s\n", bc, ColorReset, "Category", "Score", "Risk", "Status")
-	f(w, "%s│%s    %s\n", bc, ColorReset, strings.Repeat("─", 50))
+	p(w, "")
+	f(w, "     %-20s  %5s  %4s  %s\n", "Category", "Score", "Risk", "Status")
+	f(w, "     %s\n", strings.Repeat("─", 50))
 
 	for _, cat := range categories {
 		if cat.Score.Skipped {
-			f(w, "%s│%s    %-20s  %5s  %s○%s   %sSKIP%s\n",
-				bc, ColorReset, cat.Name, "  - ", ColorDim, ColorReset, ColorDim, ColorReset)
+			f(w, "     %-20s  %5s  %s○%s   %sSKIP%s\n",
+				cat.Name, "  - ", ColorDim, ColorReset, ColorDim, ColorReset)
 			continue
 		}
 
@@ -243,20 +187,21 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 		if !cat.Score.Verified {
 			verified = "?"
 		}
-		f(w, "%s│%s    %-20s  %s  %s   %s\n",
-			bc, ColorReset, cat.Name, fmt.Sprintf("%d/2", cat.Score.Score), icon, verified)
+		f(w, "     %-20s  %s  %s   %s\n",
+			cat.Name, fmt.Sprintf("%d/2", cat.Score.Score), icon, verified)
 
 		if r.config.Verbose && cat.Score.Description != "" {
-			f(w, "%s│%s      %s%s%s\n", bc, ColorReset, ColorDim, cat.Score.Description, ColorReset)
+			f(w, "       %s%s%s\n", ColorDim, cat.Score.Description, ColorReset)
 		}
 		if r.config.Verbose {
 			for _, check := range cat.Score.ChecksPerformed {
 				si := checkStatusIcon(check.Status)
-				f(w, "%s│%s      %s  %s %s: %s%s\n",
-					bc, ColorReset, ColorDim, si, check.Name, check.Detail, ColorReset)
+				f(w, "       %s  %s %s: %s%s\n",
+					ColorDim, si, check.Name, check.Detail, ColorReset)
 			}
 		}
 	}
+	p(w, "")
 }
 
 func (r *Reporter) printRiskSummary(w io.Writer) {
@@ -288,6 +233,20 @@ func (r *Reporter) printSectionHeader(w io.Writer, title string) {
 	width := 80
 	pad := strings.Repeat("─", (width-len(title)-2)/2)
 	f(w, "%s%s %s %s%s\n", ColorBold+ColorCyan, pad, title, pad, ColorReset)
+}
+
+func (r *Reporter) printFormatHint(w io.Writer) {
+	scanPath := r.stats.ScannedPath
+	if scanPath == "" {
+		scanPath = "<path>"
+	}
+
+	f(w, "  %s%s%s\n", ColorDim, strings.Repeat("─", 76), ColorReset)
+	if !r.config.Verbose {
+		f(w, "  %sDetailed report:%s  snyft scan %s -v\n", ColorBold, ColorReset, scanPath)
+	}
+	f(w, "  %sExport:%s          snyft scan %s -f html -o report.html\n", ColorBold, ColorReset, scanPath)
+	p(w, "")
 }
 
 // --- small helpers ---
