@@ -25,7 +25,7 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	evidence := []string{}
 	checks := []models.CheckResult{}
 	provenanceScore := 0
-	methodology := "Checked source code availability (source package in artifact and/or public repository URL). Checked for SLSA attestations, Sigstore/Cosign signatures, ecosystem-specific provenance (npm provenance, PyPI signatures), signed GitHub releases, reproducible build configuration, and OSSF Scorecard Signed-Releases check."
+	methodology := "Checked source code availability (source package in artifact and/or public repository URL). Checked for SLSA attestations, Sigstore/Cosign signatures, ecosystem-specific provenance (npm provenance, PyPI signatures, Maven Central GPG signatures), signed GitHub releases, reproducible build configuration, and OSSF Scorecard Signed-Releases check."
 
 	// --- Phase 1: Source availability (primary factor) ---
 	//
@@ -106,6 +106,18 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		checks = append(checks, models.CheckResult{Name: "PyPI signatures", Status: "PASS", Detail: "PyPI cryptographic signatures present"})
 	} else if result.Dependency.Ecosystem == models.EcosystemPyPI {
 		checks = append(checks, models.CheckResult{Name: "PyPI signatures", Status: "FAIL", Detail: "No PyPI cryptographic signatures found"})
+	}
+
+	// Check for Maven Central GPG signatures (.asc files)
+	// Maven Central has required GPG signing since 2010. The presence of a .asc
+	// file indicates the publisher followed proper release procedures.
+	// Source: https://central.sonatype.org/publish/requirements/gpg/
+	if result.Metadata.HasMavenGPGSignature {
+		provenanceScore += 1
+		evidence = append(evidence, "Maven Central GPG signature (.asc)")
+		checks = append(checks, models.CheckResult{Name: "Maven GPG signature", Status: "PASS", Detail: "GPG signature (.asc) file found in Maven Central"})
+	} else if result.Dependency.Ecosystem == models.EcosystemMaven {
+		checks = append(checks, models.CheckResult{Name: "Maven GPG signature", Status: "FAIL", Detail: "No GPG signature (.asc) file found in Maven Central"})
 	}
 
 	// Check for signed releases (GitHub releases with signatures)

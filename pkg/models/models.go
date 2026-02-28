@@ -112,6 +112,7 @@ type PackageMetadata struct {
 	HasSigstoreSignature bool  `json:"has_sigstore_signature"`
 	HasNPMProvenance     bool  `json:"has_npm_provenance"`
 	HasPyPISignatures    bool  `json:"has_pypi_signatures"`
+	HasMavenGPGSignature bool  `json:"has_maven_gpg_signature"`       // Maven Central GPG .asc signature
 	ReproducibleBuild    bool  `json:"reproducible_build"`
 	ProvenanceDetails    string `json:"provenance_details,omitempty"`  // Additional context
 
@@ -320,7 +321,7 @@ func GetEcosystemCapabilities(eco Ecosystem) EcosystemCapabilities {
 		}
 	case EcosystemMaven:
 		return EcosystemCapabilities{
-			HasMaintainerList:   false, // Maven Central does not expose maintainer/owner data
+			HasMaintainerList:   true,  // Partial: POM <developers> section provides maintainer data
 			HasDownloadCounts:   false, // Maven Central does not expose download counts
 			HasOwnershipHistory: false,
 		}

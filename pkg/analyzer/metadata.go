@@ -576,9 +576,54 @@ func packageMetadataFromPyPI(pkg *fetcher.PyPIPackage) models.PackageMetadata {
 }
 
 func packageMetadataFromMaven(pkg *fetcher.MavenPackage) models.PackageMetadata {
-	return models.PackageMetadata{
+	metadata := models.PackageMetadata{
 		PublishedAt:   pkg.PublishedAt,
 		LatestVersion: pkg.LatestVersion,
 		License:       pkg.License,
 	}
+
+	// Populate maintainer list from POM <developers> section.
+	// Maven Central does not expose a maintainer list via its API, but POM files
+	// include developers who maintain the project. This serves as proxy data for
+	// the Publisher Control (Category 1) assessment.
+	// Source: Maven POM reference — https://maven.apache.org/pom.html#developers
+	for _, dev := range pkg.Developers {
+		var maintainer string
+		switch {
+		case dev.Name != "" && dev.Email != "":
+			maintainer = dev.Name + " <" + dev.Email + ">"
+		case dev.Name != "":
+			maintainer = dev.Name
+		case dev.Email != "":
+			maintainer = dev.Email
+		case dev.ID != "":
+			maintainer = dev.ID
+		default:
+			continue
+		}
+		metadata.Maintainers = append(metadata.Maintainers, maintainer)
+	}
+
+	// Pre-populate dependency metrics from POM dependency data.
+	// This provides a dependency sprawl signal from Maven Central even when no
+	// local pom.xml is available (e.g. scanning by package name via CLI).
+	// analyzeDependencySprawl may override this with local pom.xml data.
+	if pkg.DirectDepCount > 0 {
+		metadata.DependencyMetrics = &models.DependencyMetrics{
+			DirectCount: pkg.DirectDepCount,
+			Verified:    false, // POM shows only direct deps, not transitive
+		}
+	}
+
+	// Use latest publish date as staleness fallback when no git repo is available.
+	// This allows Package Maturity (Category 10) staleness checks to function
+	// even without a source repository URL.
+	if !pkg.LastPublishedAt.IsZero() {
+		metadata.RepoUpdatedAt = pkg.LastPublishedAt
+	}
+
+	// Record GPG signature status for provenance scoring
+	metadata.HasMavenGPGSignature = pkg.HasGPGSignature
+
+	return metadata
 }

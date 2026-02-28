@@ -821,3 +821,331 @@ func TestEnrichFromPOM_GroupIdHeuristic(t *testing.T) {
 		t.Errorf("RepositoryURL = %q, want %q", pkg.RepositoryURL, want)
 	}
 }
+
+// Test: enrichFromPOM extracts developer info from POM <developers> section
+// Justification: Maven Central does not expose a maintainer list via its API.
+//
+//	POM developers serve as proxy for maintainer/publisher data, enabling
+//	Publisher Control (Category 1) assessment that would otherwise score
+//	UNAVAILABLE for all Maven packages.
+//
+// Source: Maven POM reference — https://maven.apache.org/pom.html#developers
+// Methodology: Mock server serves a POM with <developers> section. Verify that
+//
+//	enrichFromPOM populates the Developers field on MavenPackage.
+//
+// Result: pkg.Developers contains the developer entries from the POM.
+func TestEnrichFromPOM_ExtractsDevelopers(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>dev-lib</artifactId>
+  <version>1.0.0</version>
+  <scm>
+    <url>https://github.com/example/dev-lib</url>
+  </scm>
+  <developers>
+    <developer>
+      <id>alice</id>
+      <name>Alice Smith</name>
+      <email>alice@example.com</email>
+      <organization>Example Corp</organization>
+    </developer>
+    <developer>
+      <id>bob</id>
+      <name>Bob Jones</name>
+      <email>bob@example.com</email>
+    </developer>
+  </developers>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/dev-lib/1.0.0/dev-lib-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, artifactPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "com.example", ArtifactID: "dev-lib"}
+	err := client.enrichFromPOM(pkg, "com.example", "dev-lib", "1.0.0")
+	if err != nil {
+		t.Fatalf("enrichFromPOM returned error: %v", err)
+	}
+
+	if len(pkg.Developers) != 2 {
+		t.Fatalf("expected 2 developers, got %d", len(pkg.Developers))
+	}
+
+	if pkg.Developers[0].Name != "Alice Smith" {
+		t.Errorf("first developer name = %q, want %q", pkg.Developers[0].Name, "Alice Smith")
+	}
+	if pkg.Developers[0].Email != "alice@example.com" {
+		t.Errorf("first developer email = %q, want %q", pkg.Developers[0].Email, "alice@example.com")
+	}
+	if pkg.Developers[0].Organization != "Example Corp" {
+		t.Errorf("first developer org = %q, want %q", pkg.Developers[0].Organization, "Example Corp")
+	}
+	if pkg.Developers[1].ID != "bob" {
+		t.Errorf("second developer id = %q, want %q", pkg.Developers[1].ID, "bob")
+	}
+}
+
+// Test: enrichFromPOM counts non-test dependencies from POM
+// Justification: Maven Central does not expose a dependency list via its API.
+//
+//	POM dependencies provide a dependency sprawl signal enabling
+//	Dependency Sprawl (Category 5) assessment from Maven Central data alone,
+//	even when no local pom.xml or source repository is available.
+//
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Mock server serves a POM with mixed dependencies (compile + test).
+//
+//	Verify that enrichFromPOM counts only non-test dependencies.
+//
+// Result: pkg.DirectDepCount reflects only compile-scope dependencies.
+func TestEnrichFromPOM_CountsDependencies(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>dep-lib</artifactId>
+  <version>1.0.0</version>
+  <scm>
+    <url>https://github.com/example/dep-lib</url>
+  </scm>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>3.12.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>guava</artifactId>
+      <version>31.0-jre</version>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>1.7.36</version>
+      <scope>runtime</scope>
+    </dependency>
+  </dependencies>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/dep-lib/1.0.0/dep-lib-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, artifactPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "com.example", ArtifactID: "dep-lib"}
+	err := client.enrichFromPOM(pkg, "com.example", "dep-lib", "1.0.0")
+	if err != nil {
+		t.Fatalf("enrichFromPOM returned error: %v", err)
+	}
+
+	// 3 non-test deps: commons-lang3, guava, slf4j-api (runtime scope counts)
+	if pkg.DirectDepCount != 3 {
+		t.Errorf("DirectDepCount = %d, want 3 (exclude test scope)", pkg.DirectDepCount)
+	}
+}
+
+// Test: enrichWithPublishDates fetches first and latest publish timestamps
+// Justification: PublishedAt (first publish) feeds into Package Maturity age
+//
+//	assessment. LastPublishedAt feeds into staleness checks when no git repo
+//	is available. Without these timestamps, Maven packages cannot be assessed
+//	for age or staleness.
+//
+// Source: Maven Central Solr search API — timestamp field on version documents
+// Methodology: Mock Solr API returns timestamps for oldest and newest versions.
+// Result: pkg.PublishedAt and pkg.LastPublishedAt are populated from Solr data.
+func TestEnrichWithPublishDates(t *testing.T) {
+	callCount := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		sort := r.URL.Query().Get("sort")
+		w.Header().Set("Content-Type", "application/json")
+
+		if sort == "timestamp asc" {
+			// Return oldest version
+			_, _ = fmt.Fprint(w, `{"response":{"docs":[{"v":"1.0.0","timestamp":1400000000000}]}}`)
+		} else {
+			// Return newest version
+			_, _ = fmt.Fprint(w, `{"response":{"docs":[{"v":"3.0.0","timestamp":1700000000000}]}}`)
+		}
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "com.example", ArtifactID: "dated-lib"}
+	err := client.enrichWithPublishDates(pkg)
+	if err != nil {
+		t.Fatalf("enrichWithPublishDates returned error: %v", err)
+	}
+
+	if pkg.PublishedAt.IsZero() {
+		t.Error("PublishedAt should not be zero after enrichment")
+	}
+	if pkg.LastPublishedAt.IsZero() {
+		t.Error("LastPublishedAt should not be zero after enrichment")
+	}
+	if !pkg.PublishedAt.Before(pkg.LastPublishedAt) {
+		t.Errorf("PublishedAt (%v) should be before LastPublishedAt (%v)",
+			pkg.PublishedAt, pkg.LastPublishedAt)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 Solr API calls (oldest + newest), got %d", callCount)
+	}
+}
+
+// Test: CheckGPGSignature detects .asc file presence
+// Justification: GPG signatures on Maven Central indicate the publisher
+//
+//	followed proper release procedures. Presence feeds into Provenance
+//	(Category 6) scoring for Maven packages.
+//
+// Source: https://central.sonatype.org/publish/requirements/gpg/
+// Methodology: Mock server returns 200 for .asc HEAD request.
+// Result: CheckGPGSignature returns true when .asc file exists.
+func TestCheckGPGSignature_Present(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/signed-lib/1.0.0/signed-lib-1.0.0.jar.asc", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Errorf("expected HEAD request, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+	}
+
+	result := client.CheckGPGSignature("com.example", "signed-lib", "1.0.0")
+	if !result {
+		t.Error("CheckGPGSignature should return true when .asc file exists")
+	}
+}
+
+// Test: CheckGPGSignature returns false when .asc file is missing
+// Justification: A missing GPG signature indicates the artifact was published
+//
+//	without proper signing, which is a provenance concern.
+//
+// Source: https://central.sonatype.org/publish/requirements/gpg/
+// Methodology: Mock server returns 404 for .asc HEAD request.
+// Result: CheckGPGSignature returns false when .asc file is not found.
+func TestCheckGPGSignature_Missing(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+	}
+
+	result := client.CheckGPGSignature("com.example", "unsigned-lib", "1.0.0")
+	if result {
+		t.Error("CheckGPGSignature should return false when .asc file is missing")
+	}
+}
+
+// Test: getPackageInfoDirect populates VersionCount from maven-metadata.xml
+// Justification: Version count is a maturity signal — packages with many
+//
+//	versions are more established and better vetted by the community.
+//
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Mock server returns maven-metadata.xml with multiple versions.
+// Result: pkg.VersionCount equals the number of versions in the metadata.
+func TestGetPackageInfoDirect_VersionCount(t *testing.T) {
+	metadataXML := `<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>com.example</groupId>
+  <artifactId>versioned-lib</artifactId>
+  <versioning>
+    <latest>3.0.0</latest>
+    <release>3.0.0</release>
+    <versions>
+      <version>1.0.0</version>
+      <version>2.0.0</version>
+      <version>2.1.0</version>
+      <version>3.0.0</version>
+    </versions>
+  </versioning>
+</metadata>`
+
+	pomXML := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>versioned-lib</artifactId>
+  <version>3.0.0</version>
+  <scm><url>https://github.com/example/versioned-lib</url></scm>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/versioned-lib/maven-metadata.xml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = fmt.Fprint(w, metadataXML)
+	})
+	mux.HandleFunc("/com/example/versioned-lib/3.0.0/versioned-lib-3.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = fmt.Fprint(w, pomXML)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg, err := client.getPackageInfoDirect("com.example", "versioned-lib")
+	if err != nil {
+		t.Fatalf("getPackageInfoDirect returned error: %v", err)
+	}
+
+	if pkg.VersionCount != 4 {
+		t.Errorf("VersionCount = %d, want 4", pkg.VersionCount)
+	}
+}

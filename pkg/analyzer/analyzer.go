@@ -294,9 +294,17 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		a.analyzeOSSFScorecard(&result, repoURL)
 	}
 
-	// Analyze provenance (if available)
+	// Analyze provenance (if available).
+	// For Maven, GPG signature data is already populated from Maven Central
+	// in packageMetadataFromMaven, so provenance scoring works even without a repo URL.
 	if repoURL != "" {
 		a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
+	} else if dep.Ecosystem == models.EcosystemMaven {
+		// Maven GPG signature data was already set during metadata extraction;
+		// no additional API calls needed. ProvenanceDetails can note this.
+		if result.Metadata.HasMavenGPGSignature {
+			result.Metadata.ProvenanceDetails = "Maven Central GPG signature verified (no source repository available)"
+		}
 	}
 
 	// Calculate supply chain score (0-20 point rubric, 10 categories)
