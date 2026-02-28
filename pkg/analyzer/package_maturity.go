@@ -157,7 +157,7 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		riskPoints = cadenceRisk
 	}
 
-	const maturitySource = " [Source: Backstabber's Knife Collection (Ohm et al., 2020); Small World with High Risks (Zimmermann et al., 2019)]"
+	// Source: Backstabber's Knife Collection (Ohm et al., 2020); Small World with High Risks (Zimmermann et al., 2019)
 
 	// If no data was available at all, default to medium risk
 	if !verified {
@@ -165,7 +165,7 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 			Score:       1,
 			RiskPoints:  1,
 			Description: "No publish date or commit history available to assess package maturity. Unable to determine package age, staleness, or release cadence.",
-			Evidence:    "No publish date or commit history available" + maturitySource,
+			Evidence:    "No publish date or commit history available",
 			Verified:    false,
 			Methodology: maturityMethodology,
 			ChecksPerformed: maturityChecks,
@@ -187,7 +187,7 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		Score:           2 - riskPoints,
 		RiskPoints:      riskPoints,
 		Description:     description,
-		Evidence:        strings.Join(evidenceParts, "; ") + maturitySource,
+		Evidence:        strings.Join(evidenceParts, "; "),
 		Verified:        verified,
 		Methodology:     maturityMethodology,
 		ChecksPerformed: maturityChecks,

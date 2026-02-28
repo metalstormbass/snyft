@@ -270,7 +270,7 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 	description := ""
 	switch riskPoints {
 	case 2:
-		description = evidence + ". Ownership transfers and near-complete team replacement are primary signals of malicious package acquisition (Ohm et al., 2020)."
+		description = evidence + ". Ownership transfers and near-complete team replacement are primary signals of malicious package acquisition."
 	case 1:
 		description = evidence + ". Partial team changes or limited history reduce confidence in ownership continuity."
 	default:

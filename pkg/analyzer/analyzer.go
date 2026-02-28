@@ -646,7 +646,7 @@ func buildPublisherControlDescription(analysis *PublisherControlAnalysis) string
 		if summary == "" {
 			summary = "Multiple high-risk publisher control signals"
 		}
-		return fmt.Sprintf("%s. Account takeover of a single maintainer gives attackers full package control — the #1 supply chain attack vector (Ohm et al., 2020).", summary)
+		return fmt.Sprintf("%s. Account takeover of a single maintainer gives attackers full package control — the #1 supply chain attack vector.", summary)
 
 	case 1:
 		parts := []string{}
