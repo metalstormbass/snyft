@@ -1063,13 +1063,16 @@ func TestAnalyzeCIQuality(t *testing.T) {
 	}
 }
 
-// Test: CheckGitTag returns error when rate-limited (403/429)
-// Justification: Rate-limited responses must produce an error so callers can distinguish
-//                "tag not found" from "check failed". A silent false negative here could
-//                incorrectly flag a package as missing source code tags.
-// Source: GitHub API rate limiting documentation
-// Methodology: Mock server returns 403 for all tag lookups.
-// Result: Returns (false, "", error) with rate limit error.
+// Test: CheckGitTag degrades gracefully when rate-limited (403/429)
+// Justification: Rate-limited responses must NOT surface 403 errors to the user. When
+//                the API is rate-limited, CheckGitTag should fall back to web scraping
+//                and, if scraping also fails, return (false, "", nil) — not an error.
+//                The provenance scorer handles missing tags without needing a distinct
+//                error for rate limiting.
+// Source: GitHub API rate limiting documentation; PR #183 (scraping-first architecture)
+// Methodology: Mock server returns 403 for all API requests. Client uses preferAPI=true
+//              (test mode) so it hits the mock server, not real GitHub pages.
+// Result: Returns (false, "", nil) — graceful degradation, no error exposed.
 func TestCheckGitTag_RateLimited(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -1079,12 +1082,19 @@ func TestCheckGitTag_RateLimited(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+		preferAPI:  true, // test mode: skip scraping (mock server doesn't serve web pages)
 		cache:      newRepoCache(),
 	}
 
-	_, _, err := client.CheckGitTag("https://github.com/owner/repo", "1.0.0")
-	if err == nil {
-		t.Error("CheckGitTag() expected error when rate-limited, got nil")
+	found, tagURL, err := client.CheckGitTag("https://github.com/owner/repo", "1.0.0")
+	if err != nil {
+		t.Errorf("CheckGitTag() expected nil error on rate-limit (graceful degradation), got: %v", err)
+	}
+	if found {
+		t.Error("CheckGitTag() expected found=false when rate-limited")
+	}
+	if tagURL != "" {
+		t.Errorf("CheckGitTag() expected empty tagURL when rate-limited, got: %s", tagURL)
 	}
 }
 
