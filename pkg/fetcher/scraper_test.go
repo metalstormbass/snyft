@@ -33,6 +33,7 @@ func TestGitHubScrapingFallback_APIRateLimit(t *testing.T) {
 
 	client := NewGitHubClient()
 	client.baseURL = apiServer.URL
+	client.preferAPI = true // test the API→scraping fallback path
 
 	_, err := client.GetRepositoryInfo("https://github.com/test/repo")
 
@@ -892,6 +893,7 @@ func TestGitLabGetRepositoryInfo_RateLimitFallback(t *testing.T) {
 
 	client := NewGitLabClient()
 	client.baseURL = apiServer.URL
+	client.preferAPI = true // test the API→scraping fallback path
 
 	_, err := client.GetRepositoryInfo("https://gitlab.com/test/repo")
 
@@ -921,6 +923,7 @@ func TestBitbucketGetRepositoryInfo_RateLimitFallback(t *testing.T) {
 
 	client := NewBitbucketClient()
 	client.baseURL = apiServer.URL
+	client.preferAPI = true // test the API→scraping fallback path
 
 	_, err := client.GetRepositoryInfo("https://bitbucket.org/test/repo")
 

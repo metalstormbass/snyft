@@ -96,4 +96,4 @@ Graceful degradation: if any API fails, analysis continues with available data. 
 
 ## Performance
 
-Primary bottleneck is external API calls. Mitigated by parallel workers, configurable concurrency, and planned caching improvements. GitHub rate limits are the main constraint (60 req/hour unauthenticated, 5000 with token).
+Primary bottleneck is external network calls. Mitigated by parallel workers, configurable concurrency, and response caching. Web scraping is the primary data source, bypassing API rate limits. Optional API tokens (GITHUB_TOKEN, etc.) supplement with richer data at higher rate limits (5,000 req/hour).

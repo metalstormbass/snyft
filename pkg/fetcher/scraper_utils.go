@@ -13,12 +13,11 @@ import (
 // Common user agent to avoid being blocked
 const userAgent = "Mozilla/5.0 (compatible; Snyft/1.0; +https://github.com/metalstormbass/snyft)"
 
-// scrapeWithUserAgent performs an HTTP GET with proper user-agent headers
+// scrapeWithUserAgent performs an HTTP GET with proper user-agent headers.
+// This is the primary data-fetching mechanism when no API tokens are configured.
 func scrapeWithUserAgent(url string) (*goquery.Document, error) {
 	client := &http.Client{
-		// 10s matches the GitHub API client timeout. Scraping is already a
-		// fallback path (triggered when the API rate-limits); we don't want
-		// a slow GitHub web response to add another 30s stall on top.
+		// 10s timeout keeps failures fast — matching the API client timeout.
 		Timeout: 10 * time.Second,
 	}
 
@@ -79,7 +78,9 @@ func extractNumber(text string) int {
 	return int(floatNum * float64(multiplier))
 }
 
-// shouldFallbackToScraping checks if the error warrants falling back to scraping
+// shouldFallbackToScraping checks if the API response warrants trying an
+// alternative data source (scraping or raw URLs). Used when the API is the
+// primary path (token set) and needs to fall back.
 func shouldFallbackToScraping(err error, statusCode int) bool {
 	if err != nil {
 		return true

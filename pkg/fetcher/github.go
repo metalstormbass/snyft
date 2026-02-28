@@ -14,13 +14,13 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// repoCache stores API responses in memory to prevent redundant network calls
-// within a single scan session.
+// repoCache stores fetched data (scraped or API) in memory to prevent redundant
+// network calls within a single scan session.
 //
-// Without a GITHUB_TOKEN, GitHub enforces a 60 req/hour unauthenticated rate
-// limit. A single package analysis makes 40+ API calls per repository
-// (DetectCISystems alone issues ~20 HEAD requests). Caching responses
-// eliminates repeated round-trips for the same repo across multiple checks.
+// Web scraping is the primary data-fetching method. When a GITHUB_TOKEN is set,
+// API calls supplement scraped data with richer metadata and higher rate limits
+// (5,000 req/hour vs 60 unauthenticated). Caching eliminates repeated
+// round-trips for the same repo across multiple checks.
 type repoCache struct {
 	mu         sync.RWMutex
 	repoInfo   map[string]*models.RepositoryInfo // key: "owner/repo"
@@ -75,23 +75,26 @@ func (rc *repoCache) setFileExists(key string, exists bool) {
 	rc.fileExists[key] = exists
 }
 
-// GitHubClient handles interactions with GitHub API
+// GitHubClient handles interactions with GitHub API and web scraping.
+// By default, web scraping is the primary data-fetching method, with API calls
+// used to supplement when a GITHUB_TOKEN is available.
 type GitHubClient struct {
 	token      string
 	httpClient *http.Client
 	baseURL    string
 	cache      *repoCache
+	preferAPI  bool // when true, always try API first (used by test helpers with mock servers)
 }
 
-// NewGitHubClient creates a new GitHub API client
+// NewGitHubClient creates a new GitHub client. Web scraping is the primary
+// data-fetching method. When GITHUB_TOKEN is set, API calls supplement
+// scraped data with richer metadata and higher rate limits.
 func NewGitHubClient() *GitHubClient {
 	return &GitHubClient{
 		token: os.Getenv("GITHUB_TOKEN"),
 		httpClient: &http.Client{
-			// 10s timeout instead of 30s: when rate-limited the API returns
-			// 403 immediately, but the scraping fallback can stall on slow
-			// responses. A 10s cap keeps failures fast without impacting
-			// normal usage where GitHub responds in <1s.
+			// 10s timeout keeps failures fast — both API rate-limit
+			// responses and slow scraping targets are bounded.
 			Timeout: 10 * time.Second,
 		},
 		baseURL: "https://api.github.com",
@@ -100,16 +103,31 @@ func NewGitHubClient() *GitHubClient {
 }
 
 // NewGitHubClientWithBaseURL creates a GitHubClient pointing at a custom API base URL.
-// This is primarily used for testing with httptest servers.
+// This is primarily used for testing with httptest servers. The client uses
+// API-first mode since mock servers don't support web scraping.
 func NewGitHubClientWithBaseURL(baseURL string) *GitHubClient {
 	return &GitHubClient{
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		baseURL:    baseURL,
 		cache:      newRepoCache(),
+		preferAPI:  true,
 	}
 }
 
-// GetRepositoryInfo fetches repository information from GitHub
+// shouldPreferScraping returns true when web scraping should be tried first.
+// Scraping is preferred when no API token is configured and we're using the
+// default GitHub API URL, since unauthenticated API calls are limited to
+// 60 req/hour. With a token, the API provides richer data at 5,000 req/hour.
+// Custom base URLs (test servers) always use API-first since scraping
+// targets real github.com regardless of the base URL.
+func (c *GitHubClient) shouldPreferScraping() bool {
+	return c.token == "" && !c.preferAPI && c.baseURL == "https://api.github.com"
+}
+
+// GetRepositoryInfo fetches repository information from GitHub.
+// When no GITHUB_TOKEN is set, web scraping is tried first to avoid consuming
+// the limited unauthenticated API quota. With a token, the API is used for
+// richer data (exact dates, issue counts, license, topics).
 func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -125,6 +143,20 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		}
 	}
 
+	// Scraping-first path: when no token is set, scrape the GitHub web page
+	// to avoid burning limited unauthenticated API quota.
+	if c.shouldPreferScraping() {
+		info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
+		if scrapeErr == nil {
+			if c.cache != nil {
+				c.cache.setRepoInfo(cacheKey, info)
+			}
+			return info, nil
+		}
+		// Scraping failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when scraping fails.
 	url := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -138,14 +170,22 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		// API unreachable — try scraping if we haven't already
+		if !c.shouldPreferScraping() {
+			info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
+			if scrapeErr == nil && c.cache != nil {
+				c.cache.setRepoInfo(cacheKey, info)
+			}
+			return info, scrapeErr
+		}
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		// Try scraping fallback on rate limit or auth errors
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
+		// Try scraping fallback on rate limit or auth errors (if we haven't already)
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
 			if scrapeErr == nil && c.cache != nil {
 				c.cache.setRepoInfo(cacheKey, info)
@@ -183,8 +223,8 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 	return info, nil
 }
 
-// scrapeRepositoryInfo scrapes repository information from the GitHub web page
-// Used as a fallback when the API is rate-limited or returns auth errors
+// scrapeRepositoryInfo scrapes repository information from the GitHub web page.
+// This is the primary data source when no GITHUB_TOKEN is set.
 func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*models.RepositoryInfo, error) {
 	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
 	doc, err := scrapeWithUserAgent(pageURL)
@@ -394,9 +434,8 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 }
 
 func (c *GitHubClient) fileExists(owner, repo, path string) bool {
-	// Cache HEAD responses — DetectCISystems issues ~20 HEAD requests per repo
-	// and provenance checks add ~10 more. Without caching, scanning 10+ packages
-	// from the same repo exhausts the unauthenticated rate limit instantly.
+	// Cache responses — DetectCISystems issues ~20 requests per repo
+	// and provenance checks add ~10 more.
 	cacheKey := owner + "/" + repo + "/" + path
 	if c.cache != nil {
 		if cached, ok := c.cache.getFileExists(cacheKey); ok {
@@ -404,6 +443,17 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		}
 	}
 
+	// Raw-URL-first path: when no token is set, use raw.githubusercontent.com
+	// (CDN, not subject to API rate limits) as the primary check.
+	if c.shouldPreferScraping() {
+		exists := c.checkFileViaRawURL(owner, repo, path)
+		if c.cache != nil {
+			c.cache.setFileExists(cacheKey, exists)
+		}
+		return exists
+	}
+
+	// API path: primary when token is set (more reliable, handles private repos).
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
@@ -427,7 +477,7 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		return true
 	}
 
-	// Rate-limited: try raw.githubusercontent.com fallback (not subject to API rate limits).
+	// Rate-limited: try raw.githubusercontent.com (not subject to API rate limits).
 	// Do NOT cache false for rate-limited responses — the file may exist but the API
 	// refused to answer. A cached false here would poison subsequent checks.
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
@@ -685,9 +735,8 @@ var slsaActionPatterns = []string{
 }
 
 // checkWorkflowContentForSLSA reads workflow file content and searches for
-// attestation action patterns. Tries the GitHub API first (works with
-// authenticated requests and test servers), falling back to raw.githubusercontent.com
-// (CDN, not subject to API rate limits).
+// attestation action patterns. Uses raw.githubusercontent.com (CDN) when no
+// token is set, or the API when a token provides higher rate limits.
 // Only checks publish/release-related workflows to minimize network calls.
 func (c *GitHubClient) checkWorkflowContentForSLSA(owner, repo string, workflows []string) (bool, string) {
 	// Prioritize workflows likely to contain publish/release steps
@@ -735,11 +784,20 @@ func (c *GitHubClient) checkWorkflowContentForSLSA(owner, repo string, workflows
 	return false, ""
 }
 
-// getWorkflowContent fetches workflow file content. Tries the GitHub API first
-// (works with authenticated requests and in test environments), then falls back
-// to raw.githubusercontent.com (CDN, no API rate limit impact).
+// getWorkflowContent fetches workflow file content. When no token is set,
+// raw.githubusercontent.com (CDN) is tried first. With a token, the API
+// is used for reliability, with raw URL as fallback.
 func (c *GitHubClient) getWorkflowContent(owner, repo, path string) string {
-	// Try API first (uses raw media type to get file content directly)
+	// Raw-URL-first path: when no token, use CDN to avoid API rate limits.
+	if c.shouldPreferScraping() {
+		content, err := c.getFileContentViaRawURL(owner, repo, path)
+		if err == nil {
+			return content
+		}
+		// Raw URL failed — fall through to try API
+	}
+
+	// API path (primary with token, fallback without)
 	apiURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err == nil {
@@ -761,10 +819,12 @@ func (c *GitHubClient) getWorkflowContent(owner, repo, path string) string {
 		}
 	}
 
-	// Fall back to raw.githubusercontent.com (no API rate limit impact)
-	content, err := c.getFileContentViaRawURL(owner, repo, path)
-	if err == nil {
-		return content
+	// Final fallback: raw URL (if we haven't tried it already)
+	if !c.shouldPreferScraping() {
+		content, err := c.getFileContentViaRawURL(owner, repo, path)
+		if err == nil {
+			return content
+		}
 	}
 
 	return ""
@@ -858,7 +918,8 @@ func (c *GitHubClient) checkReproducibleBuild(owner, repo string) bool {
 }
 
 // getReleases fetches all releases for a repository.
-// Falls back to scraping the GitHub releases page when the API is rate-limited.
+// When no token is set, the GitHub releases page is scraped first.
+// With a token, the API provides richer release data (assets, draft status).
 func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) {
 	// Cache releases — called three times per package from provenance checks
 	// (checkSigstoreSignatures, checkSignedReleases, and the public-facing
@@ -870,6 +931,19 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		}
 	}
 
+	// Scraping-first path: when no token, scrape the releases page directly.
+	if c.shouldPreferScraping() {
+		releases, scrapeErr := c.scrapeReleases(owner, repo)
+		if scrapeErr == nil {
+			if c.cache != nil {
+				c.cache.setCachedReleases(cacheKey, releases)
+			}
+			return releases, nil
+		}
+		// Scraping failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when scraping fails.
 	url := fmt.Sprintf("%s/repos/%s/%s/releases", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -883,18 +957,21 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Network error — try scraping fallback
-		releases, scrapeErr := c.scrapeReleases(owner, repo)
-		if scrapeErr == nil && c.cache != nil {
-			c.cache.setCachedReleases(cacheKey, releases)
+		// Network error — try scraping if we haven't already
+		if !c.shouldPreferScraping() {
+			releases, scrapeErr := c.scrapeReleases(owner, repo)
+			if scrapeErr == nil && c.cache != nil {
+				c.cache.setCachedReleases(cacheKey, releases)
+			}
+			return releases, scrapeErr
 		}
-		return releases, scrapeErr
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit or auth errors — try scraping fallback
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
+		// Rate limit or auth errors — try scraping if we haven't already
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			releases, scrapeErr := c.scrapeReleases(owner, repo)
 			if scrapeErr == nil && c.cache != nil {
 				c.cache.setCachedReleases(cacheKey, releases)
@@ -916,7 +993,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 }
 
 // scrapeReleases scrapes release information from the GitHub releases page.
-// Used as a fallback when the API is rate-limited.
+// This is the primary release data source when no GITHUB_TOKEN is set.
 func (c *GitHubClient) scrapeReleases(owner, repo string) ([]GitHubRelease, error) {
 	pageURL := fmt.Sprintf("https://github.com/%s/%s/releases", owner, repo)
 	doc, err := scrapeWithUserAgent(pageURL)
@@ -978,13 +1055,24 @@ func (c *GitHubClient) scrapeReleases(owner, repo string) ([]GitHubRelease, erro
 }
 
 // GetFileContent fetches the content of a file from a GitHub repository.
-// Falls back to raw.githubusercontent.com when the API is rate-limited.
+// When no token is set, raw.githubusercontent.com (CDN) is tried first.
+// With a token, the API is used for reliability and private repo support.
 func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return "", err
 	}
 
+	// Raw-URL-first path: when no token, use CDN (not subject to API rate limits).
+	if c.shouldPreferScraping() {
+		content, rawErr := c.getFileContentViaRawURL(owner, repo, filePath)
+		if rawErr == nil {
+			return content, nil
+		}
+		// Raw URL failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when raw URL fails.
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, filePath)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -998,14 +1086,17 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Network error — try raw.githubusercontent.com fallback
-		return c.getFileContentViaRawURL(owner, repo, filePath)
+		// Network error — try raw URL if we haven't already
+		if !c.shouldPreferScraping() {
+			return c.getFileContentViaRawURL(owner, repo, filePath)
+		}
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit or auth errors — try raw.githubusercontent.com fallback
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
+		// Rate limit or auth errors — try raw URL if we haven't already
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			return c.getFileContentViaRawURL(owner, repo, filePath)
 		}
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
@@ -1321,14 +1412,24 @@ func calculateBusFactor(authorCommits map[string]int, totalCommits int) int {
 }
 
 // GetCommitStats fetches commit distribution to calculate bus factor.
-// Falls back to scraping the GitHub contributors page when rate-limited.
+// When no token is set, the GitHub contributors page is scraped first.
+// With a token, the API provides per-commit author data for more accurate analysis.
 func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch recent commits (last 100)
+	// Scraping-first path: when no token, scrape contributor data.
+	if c.shouldPreferScraping() {
+		stats, scrapeErr := c.scrapeCommitStats(owner, repo)
+		if scrapeErr == nil {
+			return stats, nil
+		}
+		// Scraping failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when scraping fails.
 	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=100", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -1342,14 +1443,17 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Network error — try scraping fallback
-		return c.scrapeCommitStats(owner, repo)
+		// Network error — try scraping if we haven't already
+		if !c.shouldPreferScraping() {
+			return c.scrapeCommitStats(owner, repo)
+		}
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit or auth errors — try scraping fallback
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
+		// Rate limit or auth errors — try scraping if we haven't already
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			return c.scrapeCommitStats(owner, repo)
 		}
 		body, _ := io.ReadAll(resp.Body)
@@ -1396,8 +1500,8 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	}, nil
 }
 
-// scrapeCommitStats scrapes contributor data from the GitHub contributors page.
-// Used as a fallback when the commits API is rate-limited.
+// scrapeCommitStats scrapes contributor data from the GitHub repository page.
+// This is the primary contributor data source when no GITHUB_TOKEN is set.
 func (c *GitHubClient) scrapeCommitStats(owner, repo string) (*CommitStats, error) {
 	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
 	doc, err := scrapeWithUserAgent(pageURL)

@@ -14,14 +14,19 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// BitbucketClient handles interactions with Bitbucket API
+// BitbucketClient handles interactions with Bitbucket API and web scraping.
+// By default, web scraping is the primary data-fetching method, with API calls
+// used to supplement when a BITBUCKET_TOKEN is available.
 type BitbucketClient struct {
 	token      string
 	httpClient *http.Client
 	baseURL    string
+	preferAPI  bool // when true, always try API first (used by test helpers)
 }
 
-// NewBitbucketClient creates a new Bitbucket API client
+// NewBitbucketClient creates a new Bitbucket client. Web scraping is the primary
+// data-fetching method. When BITBUCKET_TOKEN is set, API calls supplement
+// scraped data with richer metadata and higher rate limits.
 func NewBitbucketClient() *BitbucketClient {
 	return &BitbucketClient{
 		token: os.Getenv("BITBUCKET_TOKEN"),
@@ -32,18 +37,37 @@ func NewBitbucketClient() *BitbucketClient {
 	}
 }
 
+// shouldPreferScraping returns true when web scraping should be tried first.
+// Custom base URLs (test servers) always use API-first since scraping
+// targets real bitbucket.org regardless of the base URL.
+func (c *BitbucketClient) shouldPreferScraping() bool {
+	return c.token == "" && !c.preferAPI && c.baseURL == "https://api.bitbucket.org/2.0"
+}
+
 // GetPlatformName returns "Bitbucket"
 func (c *BitbucketClient) GetPlatformName() string {
 	return "Bitbucket"
 }
 
-// GetRepositoryInfo fetches repository information from Bitbucket
+// GetRepositoryInfo fetches repository information from Bitbucket.
+// When no BITBUCKET_TOKEN is set, web scraping is tried first. With a token,
+// the API provides additional data (exact dates, default branch).
 func (c *BitbucketClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo, error) {
 	owner, repo, err := parseBitbucketURL(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
+	// Scraping-first path: when no token, scrape the Bitbucket web page.
+	if c.shouldPreferScraping() {
+		info, scrapeErr := c.scrapeRepositoryInfo(owner, repo)
+		if scrapeErr == nil {
+			return info, nil
+		}
+		// Scraping failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when scraping fails.
 	apiURL := fmt.Sprintf("%s/repositories/%s/%s", c.baseURL, owner, repo)
 
 	req, err := http.NewRequest("GET", apiURL, nil)
@@ -57,14 +81,17 @@ func (c *BitbucketClient) GetRepositoryInfo(repoURL string) (*models.RepositoryI
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Network error — try scraping fallback
-		return c.scrapeRepositoryInfo(owner, repo)
+		// Network error — try scraping if we haven't already
+		if !c.shouldPreferScraping() {
+			return c.scrapeRepositoryInfo(owner, repo)
+		}
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Try scraping fallback
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
+		// Try scraping on rate limit or auth errors (if we haven't already)
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			return c.scrapeRepositoryInfo(owner, repo)
 		}
 		body, _ := io.ReadAll(resp.Body)
@@ -76,18 +103,16 @@ func (c *BitbucketClient) GetRepositoryInfo(repoURL string) (*models.RepositoryI
 		return nil, err
 	}
 
-	// Bitbucket doesn't have stars/watchers in the same way
-	// We'll need to fetch these separately or from scraping
 	info := &models.RepositoryInfo{
 		URL:           bbRepo.Links.HTML.Href,
 		Owner:         bbRepo.Owner.Username,
 		Name:          bbRepo.Name,
 		Description:   bbRepo.Description,
-		Stars:         0, // Bitbucket uses "watchers" instead of stars
-		Forks:         0, // Need separate API call
-		Watchers:      0, // Need separate API call
+		Stars:         0,
+		Forks:         0,
+		Watchers:      0,
 		DefaultBranch: bbRepo.Mainbranch.Name,
-		Archived:      false, // Bitbucket doesn't have archived status in API
+		Archived:      false,
 		CreatedAt:     bbRepo.CreatedOn,
 		UpdatedAt:     bbRepo.UpdatedOn,
 		PushedAt:      bbRepo.UpdatedOn,
@@ -98,7 +123,8 @@ func (c *BitbucketClient) GetRepositoryInfo(repoURL string) (*models.RepositoryI
 	return info, nil
 }
 
-// scrapeRepositoryInfo scrapes repository information from the Bitbucket web page
+// scrapeRepositoryInfo scrapes repository information from the Bitbucket web page.
+// This is the primary data source when no BITBUCKET_TOKEN is set.
 func (c *BitbucketClient) scrapeRepositoryInfo(owner, repo string) (*models.RepositoryInfo, error) {
 	pageURL := fmt.Sprintf("https://bitbucket.org/%s/%s", owner, repo)
 	doc, err := scrapeWithUserAgent(pageURL)
@@ -355,23 +381,35 @@ func (c *BitbucketClient) GetCommitActivity(repoURL string, since time.Time) ([]
 }
 
 // GetFileContent fetches the content of a file from a Bitbucket repository.
-// Falls back to trying common branch names when the API is rate-limited.
+// When no token is set, common branch names are tried directly.
+// With a token, the API is used for reliability.
 func (c *BitbucketClient) GetFileContent(repoURL, filePath string) (string, error) {
 	owner, repo, err := parseBitbucketURL(repoURL)
 	if err != nil {
 		return "", err
 	}
 
-	// Get default branch first
+	// Raw-URL-first path: when no token, try common branches directly.
+	if c.shouldPreferScraping() {
+		content, rawErr := c.getFileContentViaRawURL(owner, repo, filePath)
+		if rawErr == nil {
+			return content, nil
+		}
+		// Raw URL failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when raw URL fails.
 	repoInfo, err := c.GetRepositoryInfo(repoURL)
 	if err != nil {
-		// If GetRepositoryInfo fails (rate limited), try common branches directly
-		return c.getFileContentViaRawURL(owner, repo, filePath)
+		if !c.shouldPreferScraping() {
+			return c.getFileContentViaRawURL(owner, repo, filePath)
+		}
+		return "", err
 	}
 
 	branch := repoInfo.DefaultBranch
 	if branch == "" {
-		branch = "master" // fallback
+		branch = "master"
 	}
 
 	apiURL := fmt.Sprintf("%s/repositories/%s/%s/src/%s/%s",
@@ -388,13 +426,15 @@ func (c *BitbucketClient) GetFileContent(repoURL, filePath string) (string, erro
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return c.getFileContentViaRawURL(owner, repo, filePath)
+		if !c.shouldPreferScraping() {
+			return c.getFileContentViaRawURL(owner, repo, filePath)
+		}
+		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit — try raw URL fallback with common branches
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			return c.getFileContentViaRawURL(owner, repo, filePath)
 		}
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
