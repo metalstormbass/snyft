@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.example</groupId>
+        <artifactId>parent-with-props</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <groupId>com.test</groupId>
+    <artifactId>child-project</artifactId>
+    <version>2.0.0</version>
+
+    <properties>
+        <local.prop>1.5.0</local.prop>
+    </properties>
+
+    <dependencies>
+        <!-- Uses property from parent POM (not defined locally) -->
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>parent-prop-lib</artifactId>
+            <version>${parent.defined.version}</version>
+        </dependency>
+        <!-- Uses locally defined property -->
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>local-prop-lib</artifactId>
+            <version>${local.prop}</version>
+        </dependency>
+    </dependencies>
+</project>

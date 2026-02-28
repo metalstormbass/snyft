@@ -1060,21 +1060,38 @@ type depsDevProjectKey struct {
 	ID string `json:"id"`
 }
 
+// BOMImport represents an imported BOM reference (scope=import, type=pom)
+// from a local POM's dependencyManagement section.
+type BOMImport struct {
+	GroupID    string
+	ArtifactID string
+	Version    string
+}
+
 // ResolveBOMVersions resolves "unknown" versions in Maven dependencies by
-// fetching the parent POM chain from Maven Central and looking up versions
-// in the <dependencyManagement> sections and <properties>.
+// fetching the parent POM chain and imported BOMs from Maven Central,
+// looking up versions in <dependencyManagement> sections and <properties>.
 //
 // This follows Maven's version resolution model:
 // 1. Properties from the parent chain (child values take precedence)
 // 2. dependencyManagement entries from the parent chain (nearest definition wins)
-// 3. Property references within dependencyManagement versions are resolved
+// 3. Imported BOMs (scope=import, type=pom) are followed recursively
+// 4. Property references within dependencyManagement versions are resolved
+// 5. Unresolved property refs from the local POM are resolved using parent properties
+//
+// bomImports: imported BOMs from the local POM's dependencyManagement
+// unresolvedRefs: map of depName → original ${property} ref for locally-unresolved deps
 //
 // Justification: Accurate version identification is critical for source
 // verification — if version is "unknown", we cannot verify sources.jar
 // existence or git tag matches, leading to false risk inflation.
 // Source: Maven POM reference — dependency management inheritance
-func (c *MavenClient) ResolveBOMVersions(deps []models.Dependency, parentGroupID, parentArtifactID, parentVersion string) []models.Dependency {
-	if parentGroupID == "" || parentArtifactID == "" || parentVersion == "" {
+func (c *MavenClient) ResolveBOMVersions(deps []models.Dependency, parentGroupID, parentArtifactID, parentVersion string, bomImports []BOMImport, unresolvedRefs map[string]string) []models.Dependency {
+	hasParent := parentGroupID != "" && parentArtifactID != "" && parentVersion != ""
+	hasBOMImports := len(bomImports) > 0
+	hasUnresolved := len(unresolvedRefs) > 0
+
+	if !hasParent && !hasBOMImports && !hasUnresolved {
 		return deps
 	}
 
@@ -1082,7 +1099,14 @@ func (c *MavenClient) ResolveBOMVersions(deps []models.Dependency, parentGroupID
 	properties := make(map[string]string)
 	depMgmt := make(map[string]string)
 
-	c.fetchParentChain(parentGroupID, parentArtifactID, parentVersion, properties, depMgmt, 0)
+	if hasParent {
+		c.fetchParentChain(parentGroupID, parentArtifactID, parentVersion, properties, depMgmt, 0)
+	}
+
+	// Follow locally-declared BOM imports
+	for _, bom := range bomImports {
+		c.fetchBOMImport(bom.GroupID, bom.ArtifactID, bom.Version, properties, depMgmt, 0)
+	}
 
 	if len(properties) == 0 && len(depMgmt) == 0 {
 		return deps
@@ -1117,13 +1141,25 @@ func (c *MavenClient) ResolveBOMVersions(deps []models.Dependency, parentGroupID
 	copy(resolved, deps)
 
 	for i, dep := range resolved {
-		if dep.Version != "unknown" || dep.Ecosystem != models.EcosystemMaven {
+		if dep.Ecosystem != models.EcosystemMaven {
 			continue
 		}
 
-		if version, ok := depMgmt[dep.Name]; ok {
-			if version != "" && !strings.Contains(version, "${") {
-				resolved[i].Version = version
+		if dep.Version == "unknown" {
+			// Try resolving unresolved property refs using parent properties
+			if ref, ok := unresolvedRefs[dep.Name]; ok {
+				propResolved := resolveMavenPropertyRefs(ref, properties)
+				if !strings.Contains(propResolved, "${") && propResolved != "" {
+					resolved[i].Version = propResolved
+					continue
+				}
+			}
+
+			// Fall back to dependencyManagement lookup
+			if version, ok := depMgmt[dep.Name]; ok {
+				if version != "" && !strings.Contains(version, "${") {
+					resolved[i].Version = version
+				}
 			}
 		}
 	}
@@ -1135,6 +1171,7 @@ func (c *MavenClient) ResolveBOMVersions(deps []models.Dependency, parentGroupID
 // collecting properties and dependencyManagement entries.
 // Follows Maven's "nearest definition wins" rule: child values are not
 // overwritten by parent values.
+// Also follows imported BOMs (scope=import, type=pom) in dependencyManagement.
 // Maximum recursion depth of 5 prevents infinite loops.
 func (c *MavenClient) fetchParentChain(groupID, artifactID, version string, properties map[string]string, depMgmt map[string]string, depth int) {
 	if depth > 5 {
@@ -1166,8 +1203,23 @@ func (c *MavenClient) fetchParentChain(groupID, artifactID, version string, prop
 		}
 	}
 
-	// Add dependencyManagement entries (nearest definition wins — don't overwrite)
+	// Process dependencyManagement entries:
+	// - Regular entries: add to depMgmt (nearest definition wins)
+	// - BOM imports (scope=import, type=pom): follow recursively
 	for _, dep := range pom.DependencyManagement.Dependencies {
+		if strings.EqualFold(dep.Scope, "import") && strings.EqualFold(dep.Type, "pom") {
+			// Resolve property refs in BOM version before following
+			bomVersion := dep.Version
+			if strings.Contains(bomVersion, "${") {
+				bomVersion = resolveMavenPropertyRefs(bomVersion, properties)
+				if strings.Contains(bomVersion, "${") {
+					continue // can't resolve BOM version
+				}
+			}
+			c.fetchBOMImport(dep.GroupID, dep.ArtifactID, bomVersion, properties, depMgmt, depth+1)
+			continue
+		}
+
 		key := dep.GroupID + ":" + dep.ArtifactID
 		if _, exists := depMgmt[key]; !exists {
 			depMgmt[key] = dep.Version
@@ -1175,6 +1227,55 @@ func (c *MavenClient) fetchParentChain(groupID, artifactID, version string, prop
 	}
 
 	// Follow parent chain
+	if pom.Parent.GroupID != "" && pom.Parent.ArtifactID != "" && pom.Parent.Version != "" {
+		c.fetchParentChain(pom.Parent.GroupID, pom.Parent.ArtifactID, pom.Parent.Version, properties, depMgmt, depth+1)
+	}
+}
+
+// fetchBOMImport fetches an imported BOM POM (scope=import, type=pom) and
+// merges its dependencyManagement entries and properties.
+// Follows the same "nearest definition wins" rule as fetchParentChain.
+// Also follows nested BOM imports and parent chains within the imported BOM.
+func (c *MavenClient) fetchBOMImport(groupID, artifactID, version string, properties map[string]string, depMgmt map[string]string, depth int) {
+	if depth > 5 {
+		return
+	}
+
+	pom, err := c.fetchBOMPOM(groupID, artifactID, version)
+	if err != nil {
+		return // graceful degradation
+	}
+
+	// Add properties from imported BOM (nearest wins)
+	if pom.Properties.Entries != nil {
+		for k, v := range pom.Properties.Entries {
+			if _, exists := properties[k]; !exists {
+				properties[k] = v
+			}
+		}
+	}
+
+	// Process dependencyManagement entries from imported BOM
+	for _, dep := range pom.DependencyManagement.Dependencies {
+		if strings.EqualFold(dep.Scope, "import") && strings.EqualFold(dep.Type, "pom") {
+			bomVersion := dep.Version
+			if strings.Contains(bomVersion, "${") {
+				bomVersion = resolveMavenPropertyRefs(bomVersion, properties)
+				if strings.Contains(bomVersion, "${") {
+					continue
+				}
+			}
+			c.fetchBOMImport(dep.GroupID, dep.ArtifactID, bomVersion, properties, depMgmt, depth+1)
+			continue
+		}
+
+		key := dep.GroupID + ":" + dep.ArtifactID
+		if _, exists := depMgmt[key]; !exists {
+			depMgmt[key] = dep.Version
+		}
+	}
+
+	// Follow imported BOM's own parent chain
 	if pom.Parent.GroupID != "" && pom.Parent.ArtifactID != "" && pom.Parent.Version != "" {
 		c.fetchParentChain(pom.Parent.GroupID, pom.Parent.ArtifactID, pom.Parent.Version, properties, depMgmt, depth+1)
 	}

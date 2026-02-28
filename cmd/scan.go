@@ -415,13 +415,43 @@ func resolveMavenBOMVersions(deps []models.Dependency, statusOut *os.File, verbo
 
 	for pomPath, indices := range pomFiles {
 		parent, err := parser.ParsePomParent(pomPath)
-		if err != nil || parent == nil {
+		if err != nil {
 			continue
 		}
 
-		if verbose {
+		var parentGroupID, parentArtifactID, parentVersion string
+		if parent != nil {
+			parentGroupID = parent.GroupID
+			parentArtifactID = parent.ArtifactID
+			parentVersion = parent.Version
+		}
+
+		// Extract locally-imported BOMs (scope=import, type=pom)
+		localBOMs, _ := parser.ParsePomBOMImports(pomPath)
+		var bomImports []fetcher.BOMImport
+		for _, bom := range localBOMs {
+			bomImports = append(bomImports, fetcher.BOMImport{
+				GroupID:    bom.GroupID,
+				ArtifactID: bom.ArtifactID,
+				Version:    bom.Version,
+			})
+		}
+
+		// Extract unresolved property references
+		unresolvedRefs, _ := parser.ParsePomUnresolvedVersions(pomPath)
+
+		// Skip if no resolution sources available
+		if parent == nil && len(bomImports) == 0 && len(unresolvedRefs) == 0 {
+			continue
+		}
+
+		if verbose && parent != nil {
 			_, _ = fmt.Fprintf(statusOut, "  Resolving BOM versions from %s:%s:%s\n",
-				parent.GroupID, parent.ArtifactID, parent.Version)
+				parentGroupID, parentArtifactID, parentVersion)
+		}
+		if verbose && len(bomImports) > 0 {
+			_, _ = fmt.Fprintf(statusOut, "  Resolving %d imported BOM(s) from %s\n",
+				len(bomImports), pomPath)
 		}
 
 		// Collect the deps for this POM
@@ -430,8 +460,8 @@ func resolveMavenBOMVersions(deps []models.Dependency, statusOut *os.File, verbo
 			pomDeps[j] = deps[idx]
 		}
 
-		// Resolve via parent BOM chain
-		resolved := mavenClient.ResolveBOMVersions(pomDeps, parent.GroupID, parent.ArtifactID, parent.Version)
+		// Resolve via parent BOM chain and imported BOMs
+		resolved := mavenClient.ResolveBOMVersions(pomDeps, parentGroupID, parentArtifactID, parentVersion, bomImports, unresolvedRefs)
 
 		// Update original deps
 		for j, idx := range indices {
