@@ -1368,7 +1368,7 @@ func TestResolveBOMVersions_ParentChain(t *testing.T) {
 		{Name: "com.example:already-resolved", Version: "1.0.0", Ecosystem: models.EcosystemMaven},
 	}
 
-	resolved := client.ResolveBOMVersions(deps, "com.example", "parent-bom", "2.0.0")
+	resolved := client.ResolveBOMVersions(deps, "com.example", "parent-bom", "2.0.0", nil, nil)
 
 	if resolved[0].Version != "5.3.20" {
 		t.Errorf("spring-core version = %q, want %q", resolved[0].Version, "5.3.20")
@@ -1460,7 +1460,7 @@ func TestResolveBOMVersions_GrandparentChain(t *testing.T) {
 		{Name: "com.example:grandparent-defined", Version: "unknown", Ecosystem: models.EcosystemMaven},
 	}
 
-	resolved := client.ResolveBOMVersions(deps, "com.example", "parent", "1.0.0")
+	resolved := client.ResolveBOMVersions(deps, "com.example", "parent", "1.0.0", nil, nil)
 
 	if resolved[0].Version != "1.1.0" {
 		t.Errorf("parent-defined version = %q, want %q", resolved[0].Version, "1.1.0")
@@ -1498,7 +1498,7 @@ func TestResolveBOMVersions_NetworkFailure(t *testing.T) {
 		{Name: "com.example:lib", Version: "unknown", Ecosystem: models.EcosystemMaven},
 	}
 
-	resolved := client.ResolveBOMVersions(deps, "com.example", "parent", "1.0.0")
+	resolved := client.ResolveBOMVersions(deps, "com.example", "parent", "1.0.0", nil, nil)
 
 	// Should remain unknown, not crash
 	if resolved[0].Version != "unknown" {
@@ -1521,9 +1521,232 @@ func TestResolveBOMVersions_NoParent(t *testing.T) {
 		{Name: "com.example:lib", Version: "unknown", Ecosystem: models.EcosystemMaven},
 	}
 
-	resolved := client.ResolveBOMVersions(deps, "", "", "")
+	resolved := client.ResolveBOMVersions(deps, "", "", "", nil, nil)
 
 	if resolved[0].Version != "unknown" {
 		t.Errorf("version = %q, want %q (no parent = no resolution)", resolved[0].Version, "unknown")
+	}
+}
+
+// Test: ResolveBOMVersions follows imported BOMs (scope=import, type=pom)
+// Justification: Maven projects commonly import BOMs in dependencyManagement
+//                to inherit managed versions. Spring Boot, Jackson, and other
+//                frameworks use this pattern. Without following imported BOMs,
+//                versions for dependencies managed by those BOMs remain "unknown",
+//                preventing source verification and inflating risk scores.
+// Source: Maven POM reference — BOM import mechanism (scope=import, type=pom)
+// Methodology: Mock a parent POM that imports a BOM. The BOM defines managed
+//              versions. Verify that versions from the imported BOM are resolved.
+// Result: Dependencies managed by imported BOMs are correctly resolved.
+func TestResolveBOMVersions_ImportedBOM(t *testing.T) {
+	// Parent POM imports a BOM
+	parentPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <jackson.version>2.15.0</jackson.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>parent-managed</artifactId>
+        <version>3.0.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`
+
+	// Imported BOM with managed deps
+	jacksonBOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.fasterxml.jackson</groupId>
+  <artifactId>jackson-bom</artifactId>
+  <version>2.15.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>2.15.0</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>2.15.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/parent/1.0.0/parent-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, parentPOM)
+	})
+	mux.HandleFunc("/com/fasterxml/jackson/jackson-bom/2.15.0/jackson-bom-2.15.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, jacksonBOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	deps := []models.Dependency{
+		{Name: "com.fasterxml.jackson.core:jackson-databind", Version: "unknown", Ecosystem: models.EcosystemMaven},
+		{Name: "com.fasterxml.jackson.core:jackson-core", Version: "unknown", Ecosystem: models.EcosystemMaven},
+		{Name: "com.example:parent-managed", Version: "unknown", Ecosystem: models.EcosystemMaven},
+	}
+
+	resolved := client.ResolveBOMVersions(deps, "com.example", "parent", "1.0.0", nil, nil)
+
+	// From imported BOM
+	if resolved[0].Version != "2.15.0" {
+		t.Errorf("jackson-databind version = %q, want %q (from imported BOM)", resolved[0].Version, "2.15.0")
+	}
+	if resolved[1].Version != "2.15.0" {
+		t.Errorf("jackson-core version = %q, want %q (from imported BOM)", resolved[1].Version, "2.15.0")
+	}
+	// From parent depMgmt directly
+	if resolved[2].Version != "3.0.0" {
+		t.Errorf("parent-managed version = %q, want %q (from parent depMgmt)", resolved[2].Version, "3.0.0")
+	}
+}
+
+// Test: ResolveBOMVersions resolves local BOM imports (no parent needed)
+// Justification: Some projects import BOMs directly in their own POM without
+//                having a parent. These locally-imported BOMs must be followed
+//                to resolve managed dependency versions.
+// Source: Maven POM reference — BOM import mechanism
+// Methodology: Pass BOM imports without parent coordinates. Verify versions
+//              from the imported BOM are resolved.
+// Result: Dependencies managed by locally-imported BOMs are resolved.
+func TestResolveBOMVersions_LocalBOMImports(t *testing.T) {
+	bomPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>org.example</groupId>
+  <artifactId>my-bom</artifactId>
+  <version>4.0.0</version>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.example</groupId>
+        <artifactId>lib-a</artifactId>
+        <version>4.1.0</version>
+      </dependency>
+      <dependency>
+        <groupId>org.example</groupId>
+        <artifactId>lib-b</artifactId>
+        <version>4.2.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/example/my-bom/4.0.0/my-bom-4.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, bomPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	deps := []models.Dependency{
+		{Name: "org.example:lib-a", Version: "unknown", Ecosystem: models.EcosystemMaven},
+		{Name: "org.example:lib-b", Version: "unknown", Ecosystem: models.EcosystemMaven},
+	}
+
+	bomImports := []BOMImport{
+		{GroupID: "org.example", ArtifactID: "my-bom", Version: "4.0.0"},
+	}
+
+	// No parent, but BOM imports
+	resolved := client.ResolveBOMVersions(deps, "", "", "", bomImports, nil)
+
+	if resolved[0].Version != "4.1.0" {
+		t.Errorf("lib-a version = %q, want %q (from local BOM import)", resolved[0].Version, "4.1.0")
+	}
+	if resolved[1].Version != "4.2.0" {
+		t.Errorf("lib-b version = %q, want %q (from local BOM import)", resolved[1].Version, "4.2.0")
+	}
+}
+
+// Test: ResolveBOMVersions resolves unresolved property refs from parent
+// Justification: When a local POM uses ${property} where the property is
+//                defined in a parent POM, the local parser marks it "unknown".
+//                The original property reference must be preserved and resolved
+//                using properties from the parent chain to get the correct version.
+// Source: Maven POM reference — property inheritance
+// Methodology: Pass unresolved property refs alongside parent coordinates.
+//              Verify properties from parent POM resolve the refs.
+// Result: Unresolved property refs are resolved using parent properties.
+func TestResolveBOMVersions_UnresolvedPropertyRefs(t *testing.T) {
+	parentPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>1.0.0</version>
+  <properties>
+    <parent.defined.version>7.7.7</parent.defined.version>
+    <another.version>8.8.8</another.version>
+  </properties>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/parent/1.0.0/parent-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, parentPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	deps := []models.Dependency{
+		{Name: "com.example:parent-prop-lib", Version: "unknown", Ecosystem: models.EcosystemMaven},
+		{Name: "com.example:another-lib", Version: "unknown", Ecosystem: models.EcosystemMaven},
+		{Name: "com.example:no-ref-lib", Version: "unknown", Ecosystem: models.EcosystemMaven},
+	}
+
+	unresolvedRefs := map[string]string{
+		"com.example:parent-prop-lib": "${parent.defined.version}",
+		"com.example:another-lib":     "${another.version}",
+		// no-ref-lib is not in unresolvedRefs — no property ref to try
+	}
+
+	resolved := client.ResolveBOMVersions(deps, "com.example", "parent", "1.0.0", nil, unresolvedRefs)
+
+	if resolved[0].Version != "7.7.7" {
+		t.Errorf("parent-prop-lib version = %q, want %q (from parent property)", resolved[0].Version, "7.7.7")
+	}
+	if resolved[1].Version != "8.8.8" {
+		t.Errorf("another-lib version = %q, want %q (from parent property)", resolved[1].Version, "8.8.8")
+	}
+	// no-ref-lib has no unresolved ref and no depMgmt entry
+	if resolved[2].Version != "unknown" {
+		t.Errorf("no-ref-lib version = %q, want %q (no resolution source)", resolved[2].Version, "unknown")
 	}
 }

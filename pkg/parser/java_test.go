@@ -426,3 +426,151 @@ func TestCountMavenDependencies_NonExistent(t *testing.T) {
 		t.Error("Expected error for nonexistent file")
 	}
 }
+
+// ---- ParsePomBOMImports tests ----
+
+// Test: ParsePomBOMImports extracts imported BOMs from dependencyManagement
+// Justification: Imported BOMs (scope=import, type=pom) define managed
+//                dependency versions from external POMs. Without following
+//                these imports, versions for BOM-managed dependencies remain
+//                "unknown", preventing source verification and inflating risk.
+// Source: Maven POM reference — BOM import mechanism
+// Methodology: Parse a pom.xml with both imported BOMs and regular managed deps
+// Result: Returns only imported BOM entries, not regular managed deps
+func TestParsePomBOMImports(t *testing.T) {
+	imports, err := ParsePomBOMImports("testdata/pom-import-bom.xml")
+	if err != nil {
+		t.Fatalf("Failed to parse BOM imports: %v", err)
+	}
+
+	if len(imports) != 1 {
+		t.Fatalf("Expected 1 BOM import, got %d", len(imports))
+	}
+
+	if imports[0].GroupID != "org.springframework.boot" {
+		t.Errorf("Expected groupId org.springframework.boot, got %s", imports[0].GroupID)
+	}
+	if imports[0].ArtifactID != "spring-boot-dependencies" {
+		t.Errorf("Expected artifactId spring-boot-dependencies, got %s", imports[0].ArtifactID)
+	}
+	// Version should be resolved from ${spring.boot.version} → 3.0.0
+	if imports[0].Version != "3.0.0" {
+		t.Errorf("Expected version 3.0.0 (resolved from ${spring.boot.version}), got %s", imports[0].Version)
+	}
+}
+
+// Test: ParsePomBOMImports returns nil for POM without BOM imports
+// Justification: Not all POMs import BOMs; nil return is expected
+// Source: Maven POM reference
+// Methodology: Parse a pom.xml without BOM imports
+// Result: Returns nil without error
+func TestParsePomBOMImports_NoImports(t *testing.T) {
+	imports, err := ParsePomBOMImports("testdata/pom-small.xml")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if len(imports) != 0 {
+		t.Errorf("Expected 0 BOM imports for pom-small.xml, got %d", len(imports))
+	}
+}
+
+// Test: parsePomXML correctly separates imported BOMs from regular managed deps
+// Justification: BOM imports (scope=import, type=pom) should NOT be added
+//                to the local dependencyManagement lookup. They are pointers
+//                to external POMs, not version definitions for actual artifacts.
+//                Including them pollutes the depMgmt map with incorrect entries.
+// Source: Maven POM reference — BOM import vs regular dependency management
+// Methodology: Parse a pom.xml with both imported BOMs and regular managed deps
+// Result: Local-managed dep resolves correctly; BOM-managed dep is "unknown"
+//         (waiting for remote resolution via ResolveBOMVersions)
+func TestParsePomXML_ImportedBOMNotInDepMgmt(t *testing.T) {
+	deps, err := parsePomXML("testdata/pom-import-bom.xml")
+	if err != nil {
+		t.Fatalf("Failed to parse pom.xml: %v", err)
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	// Local managed dep should resolve from local dependencyManagement
+	if v, ok := depMap["com.example:local-managed"]; !ok || v != "2.0.0" {
+		t.Errorf("Expected local-managed@2.0.0 (from local depMgmt), got %v", v)
+	}
+
+	// BOM-managed dep should be "unknown" (needs remote resolution)
+	if v, ok := depMap["org.springframework.boot:spring-boot-starter-web"]; !ok || v != "unknown" {
+		t.Errorf("Expected spring-boot-starter-web@unknown (needs BOM resolution), got %v", v)
+	}
+
+	// Explicit version should be preserved
+	if v, ok := depMap["com.google.guava:guava"]; !ok || v != "31.1-jre" {
+		t.Errorf("Expected guava@31.1-jre, got %v", v)
+	}
+}
+
+// ---- ParsePomUnresolvedVersions tests ----
+
+// Test: ParsePomUnresolvedVersions returns unresolved property references
+// Justification: When a local POM uses ${property} where the property is
+//                defined in a parent POM, the local parser can't resolve it.
+//                Preserving the original property reference allows the remote
+//                resolver to attempt resolution using parent POM properties.
+// Source: Maven POM reference — property inheritance
+// Methodology: Parse a pom.xml with a property ref not defined locally
+// Result: Returns the original ${property} reference for resolution
+func TestParsePomUnresolvedVersions(t *testing.T) {
+	unresolved, err := ParsePomUnresolvedVersions("testdata/pom-parent-props.xml")
+	if err != nil {
+		t.Fatalf("Failed to parse unresolved versions: %v", err)
+	}
+
+	// ${parent.defined.version} is not defined locally
+	if ref, ok := unresolved["com.example:parent-prop-lib"]; !ok {
+		t.Error("Expected parent-prop-lib in unresolved map")
+	} else if ref != "${parent.defined.version}" {
+		t.Errorf("Expected unresolved ref ${parent.defined.version}, got %s", ref)
+	}
+
+	// ${local.prop} IS defined locally, should NOT be in unresolved
+	if _, ok := unresolved["com.example:local-prop-lib"]; ok {
+		t.Error("local-prop-lib should not be in unresolved (property is locally defined)")
+	}
+}
+
+// ---- Gradle platform() tests ----
+
+// Test: parseBuildGradle extracts version-less dependencies (BOM-managed)
+// Justification: Gradle projects using platform() or enforcedPlatform() declare
+//                dependencies without explicit versions. These are BOM-managed
+//                and must be extracted for supply chain assessment.
+// Source: Gradle documentation — dependency management with BOMs
+// Methodology: Parse a build.gradle with platform() and version-less deps
+// Result: BOM-managed deps extracted with "unknown" version, explicit deps preserved
+func TestParseBuildGradle_PlatformDependencies(t *testing.T) {
+	deps, err := parseBuildGradle("testdata/build-platform.gradle")
+	if err != nil {
+		t.Fatalf("Failed to parse build.gradle: %v", err)
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	// Explicit version should be preserved
+	if v, ok := depMap["com.google.guava:guava"]; !ok || v != "31.1-jre" {
+		t.Errorf("Expected guava@31.1-jre, got %v", v)
+	}
+
+	// BOM-managed deps (no version) should be "unknown"
+	if v, ok := depMap["org.springframework.boot:spring-boot-starter-web"]; !ok || v != "unknown" {
+		t.Errorf("Expected spring-boot-starter-web@unknown (BOM-managed), got %v", v)
+	}
+
+	if v, ok := depMap["com.fasterxml.jackson.core:jackson-databind"]; !ok || v != "unknown" {
+		t.Errorf("Expected jackson-databind@unknown (BOM-managed), got %v", v)
+	}
+}

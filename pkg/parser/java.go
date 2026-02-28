@@ -69,6 +69,7 @@ type MavenDependency struct {
 	ArtifactID string `xml:"artifactId"`
 	Version    string `xml:"version"`
 	Scope      string `xml:"scope"`
+	Type       string `xml:"type"`
 }
 
 // propertyRefRegex matches Maven property references like ${spring.version}
@@ -207,9 +208,18 @@ func buildPropertyMap(pom *PomXML) map[string]string {
 // buildDepMgmtMap creates a lookup map from groupId:artifactId to version
 // from the local <dependencyManagement> section. Property references in
 // versions are resolved using the provided properties map.
+// BOM imports (scope=import, type=pom) are excluded — they are handled
+// separately via ParsePomBOMImports.
 func buildDepMgmtMap(pom *PomXML, props map[string]string) map[string]string {
 	mgmt := make(map[string]string)
 	for _, dep := range pom.DependencyManagement.Dependencies {
+		// Skip BOM imports — these are not regular managed deps,
+		// they're pointers to other POMs whose dependencyManagement
+		// should be merged in.
+		if strings.EqualFold(dep.Scope, "import") && strings.EqualFold(dep.Type, "pom") {
+			continue
+		}
+
 		key := dep.GroupID + ":" + dep.ArtifactID
 		version := dep.Version
 
@@ -319,6 +329,48 @@ func parseBuildGradle(path string) ([]models.Dependency, error) {
 		}
 	}
 
+	// Parse platform() and enforcedPlatform() BOM declarations
+	// Matches: implementation platform('group:artifact:version')
+	// Matches: implementation enforcedPlatform("group:artifact:version")
+	// These declare BOM imports — we extract them so their managed deps
+	// can be identified. The BOM itself is not a runtime dependency.
+	// Also parse dependencies declared without version (BOM-managed)
+	// Matches: implementation 'group:artifact' (no version, 2 segments only)
+	noVersionPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?:implementation|api|compile|runtimeOnly|compileOnly)\s+['"]([^:'"]+):([^:'"]+)['"]`),
+		regexp.MustCompile(`(?:implementation|api|compile|runtimeOnly|compileOnly)\s*\(\s*['"]([^:'"]+):([^:'"]+)['"]\s*\)`),
+	}
+
+	// Track already-found deps to avoid duplicating 3-segment matches
+	seen := make(map[string]bool)
+	for _, dep := range deps {
+		seen[dep.Name] = true
+	}
+
+	for _, pattern := range noVersionPatterns {
+		matches := pattern.FindAllStringSubmatch(content, -1)
+		for _, match := range matches {
+			if len(match) >= 3 {
+				groupID := match[1]
+				artifactID := match[2]
+				name := groupID + ":" + artifactID
+
+				// Skip if already matched by 3-segment pattern
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+
+				deps = append(deps, models.Dependency{
+					Name:      name,
+					Version:   "unknown",
+					Ecosystem: models.EcosystemMaven,
+					Source:    path,
+				})
+			}
+		}
+	}
+
 	return deps, nil
 }
 
@@ -384,4 +436,83 @@ func ParsePomParent(path string) (*PomParentRef, error) {
 		ArtifactID: pom.Parent.ArtifactID,
 		Version:    pom.Parent.Version,
 	}, nil
+}
+
+// ParsePomBOMImports extracts imported BOMs (scope=import, type=pom) from
+// the local <dependencyManagement> section. These are BOMs whose managed
+// dependency versions should be inherited.
+// Property references in BOM versions are resolved using local properties.
+func ParsePomBOMImports(path string) ([]PomParentRef, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read pom.xml: %w", err)
+	}
+
+	var pom PomXML
+	if err := xml.Unmarshal(data, &pom); err != nil {
+		return nil, fmt.Errorf("failed to parse pom.xml: %w", err)
+	}
+
+	props := buildPropertyMap(&pom)
+
+	var imports []PomParentRef
+	for _, dep := range pom.DependencyManagement.Dependencies {
+		if !strings.EqualFold(dep.Scope, "import") || !strings.EqualFold(dep.Type, "pom") {
+			continue
+		}
+
+		version := dep.Version
+		if strings.Contains(version, "${") {
+			version = resolveAllProperties(version, props)
+			if strings.Contains(version, "${") {
+				continue // skip unresolvable BOM imports
+			}
+		}
+
+		imports = append(imports, PomParentRef{
+			GroupID:    dep.GroupID,
+			ArtifactID: dep.ArtifactID,
+			Version:    version,
+		})
+	}
+
+	return imports, nil
+}
+
+// ParsePomUnresolvedVersions returns a map of dependency name (groupId:artifactId)
+// to the original ${property} reference for dependencies whose property references
+// could not be resolved locally. This allows the caller to attempt resolution
+// using properties from parent POMs or imported BOMs.
+func ParsePomUnresolvedVersions(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read pom.xml: %w", err)
+	}
+
+	var pom PomXML
+	if err := xml.Unmarshal(data, &pom); err != nil {
+		return nil, fmt.Errorf("failed to parse pom.xml: %w", err)
+	}
+
+	props := buildPropertyMap(&pom)
+	unresolved := make(map[string]string)
+
+	for _, dep := range pom.Dependencies {
+		if dep.Scope == "test" {
+			continue
+		}
+
+		version := dep.Version
+		if !strings.Contains(version, "${") {
+			continue
+		}
+
+		resolved := resolveAllProperties(version, props)
+		if strings.Contains(resolved, "${") {
+			name := dep.GroupID + ":" + dep.ArtifactID
+			unresolved[name] = resolved // preserve the partially/fully unresolved ref
+		}
+	}
+
+	return unresolved, nil
 }
