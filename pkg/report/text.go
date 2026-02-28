@@ -121,8 +121,8 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		r.printCategoryScoreTable(w, result.SupplyChainScore.CategoryScores)
 	}
 
-	// Findings with tree-drawing connectors
-	if len(result.Findings) > 0 {
+	// Findings with tree-drawing connectors (verbose only)
+	if r.config.Verbose && len(result.Findings) > 0 {
 		for i, finding := range result.Findings {
 			sc := severityColor(finding.Severity)
 			isLast := i == len(result.Findings)-1
