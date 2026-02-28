@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.0.0</version>
+    </parent>
+
+    <groupId>com.test</groupId>
+    <artifactId>parent-project</artifactId>
+    <version>2.0.0</version>
+
+    <properties>
+        <custom.version>4.5.0</custom.version>
+        <derived.version>${custom.version}</derived.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <!-- Version from parent BOM, not resolvable locally -->
+        </dependency>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>custom-lib</artifactId>
+            <version>${custom.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>derived-lib</artifactId>
+            <version>${derived.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>project-lib</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>parent-version-lib</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>range-lib</artifactId>
+            <version>[1.0,2.0)</version>
+        </dependency>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>exact-range-lib</artifactId>
+            <version>[3.1.0]</version>
+        </dependency>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>unresolvable-lib</artifactId>
+            <version>${nonexistent.property}</version>
+        </dependency>
+    </dependencies>
+</project>

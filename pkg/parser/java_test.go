@@ -47,14 +47,16 @@ func TestParsePomXML_ExcludesTestScope(t *testing.T) {
 	}
 }
 
-// Test: parsePomXML handles property references and BOM-managed versions
-// Justification: Maven uses ${property} references and BOM-managed versions
-//                which cannot be resolved statically - these should be marked
-//                "unknown" rather than passed as empty strings that create
-//                malformed registry URLs
-// Source: Maven POM specification - dependency management
-// Methodology: Parse a pom.xml with property-referenced and BOM-managed versions
-// Result: Property versions set to "unknown", BOM versions set to "unknown"
+// Test: parsePomXML resolves property references and BOM-managed versions
+// Justification: Maven uses ${property} references and BOM-managed versions.
+//                Accurate version resolution is critical for source verification
+//                (sources.jar URL, git tag matching). Without correct versions,
+//                source verification always fails, falsely inflating risk scores.
+// Source: Maven POM specification - dependency management, property interpolation
+// Methodology: Parse a pom.xml with property-referenced and BOM-managed versions,
+//              verify that local resolution produces correct versions
+// Result: ${project.version} resolves to project version, BOM-managed deps
+//         resolve from local dependencyManagement section
 func TestParsePomXML_PropertyAndBOMVersions(t *testing.T) {
 	deps, err := parsePomXML("testdata/pom-bom.xml")
 	if err != nil {
@@ -70,14 +72,79 @@ func TestParsePomXML_PropertyAndBOMVersions(t *testing.T) {
 		depMap[dep.Name] = dep.Version
 	}
 
-	// BOM-managed dependency with no version element
-	if v, ok := depMap["org.springframework:spring-core"]; !ok || v != "unknown" {
-		t.Errorf("Expected spring-core@unknown (BOM-managed), got %v", v)
+	// BOM-managed dependency — resolved from local dependencyManagement
+	// which uses ${spring.version} property (5.3.20)
+	if v, ok := depMap["org.springframework:spring-core"]; !ok || v != "5.3.20" {
+		t.Errorf("Expected spring-core@5.3.20 (resolved from dependencyManagement), got %v", v)
 	}
 
-	// Property-referenced version
-	if v, ok := depMap["com.example:my-lib"]; !ok || v != "unknown" {
-		t.Errorf("Expected my-lib@unknown (property ref), got %v", v)
+	// Property-referenced version — ${project.version} resolves to 1.0.0
+	if v, ok := depMap["com.example:my-lib"]; !ok || v != "1.0.0" {
+		t.Errorf("Expected my-lib@1.0.0 (resolved from ${project.version}), got %v", v)
+	}
+}
+
+// Test: parsePomXML resolves various property types and version ranges
+// Justification: Maven projects use diverse property patterns including
+//                ${project.version}, ${project.parent.version}, chained
+//                property references, and version ranges. Failure to resolve
+//                these produces "unknown" versions that break source verification
+//                and inflate risk scores.
+// Source: Maven POM reference - property inheritance, version ranges
+// Methodology: Parse a pom.xml with parent, properties, derived properties,
+//              project.version, parent version, version ranges, and unresolvable props
+// Result: All locally-resolvable versions are correctly resolved; only
+//         truly unresolvable references produce "unknown"
+func TestParsePomXML_AdvancedPropertyResolution(t *testing.T) {
+	deps, err := parsePomXML("testdata/pom-parent.xml")
+	if err != nil {
+		t.Fatalf("Failed to parse pom-parent.xml: %v", err)
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	// Direct property reference
+	if v, ok := depMap["com.example:custom-lib"]; !ok || v != "4.5.0" {
+		t.Errorf("Expected custom-lib@4.5.0 (from ${custom.version}), got %v", v)
+	}
+
+	// Chained property reference: ${derived.version} → ${custom.version} → 4.5.0
+	if v, ok := depMap["com.example:derived-lib"]; !ok || v != "4.5.0" {
+		t.Errorf("Expected derived-lib@4.5.0 (from chained ${derived.version}), got %v", v)
+	}
+
+	// ${project.version} → 2.0.0
+	if v, ok := depMap["com.example:project-lib"]; !ok || v != "2.0.0" {
+		t.Errorf("Expected project-lib@2.0.0 (from ${project.version}), got %v", v)
+	}
+
+	// ${project.parent.version} → 3.0.0
+	if v, ok := depMap["com.example:parent-version-lib"]; !ok || v != "3.0.0" {
+		t.Errorf("Expected parent-version-lib@3.0.0 (from ${project.parent.version}), got %v", v)
+	}
+
+	// Version range [1.0,2.0) → resolves to lower bound 1.0
+	if v, ok := depMap["com.example:range-lib"]; !ok || v != "1.0" {
+		t.Errorf("Expected range-lib@1.0 (from [1.0,2.0)), got %v", v)
+	}
+
+	// Exact version range [3.1.0] → 3.1.0
+	if v, ok := depMap["com.example:exact-range-lib"]; !ok || v != "3.1.0" {
+		t.Errorf("Expected exact-range-lib@3.1.0 (from [3.1.0]), got %v", v)
+	}
+
+	// Unresolvable property → "unknown"
+	if v, ok := depMap["com.example:unresolvable-lib"]; !ok || v != "unknown" {
+		t.Errorf("Expected unresolvable-lib@unknown, got %v", v)
+	}
+
+	// Parent BOM-managed dep (no local dependencyManagement entry) → "unknown"
+	// (requires network resolution via ResolveBOMVersions)
+	if v, ok := depMap["org.springframework.boot:spring-boot-starter-web"]; !ok || v != "unknown" {
+		t.Errorf("Expected spring-boot-starter-web@unknown (needs BOM resolution), got %v", v)
 	}
 }
 
@@ -102,6 +169,101 @@ func TestParsePomXML_InvalidXML(t *testing.T) {
 	_, err := parsePomXML("testdata/package-invalid.json")
 	if err == nil {
 		t.Error("Expected error for invalid XML")
+	}
+}
+
+// Test: ParsePomParent extracts parent POM reference
+// Justification: Parent POM info is needed for external BOM resolution
+//                via MavenClient.ResolveBOMVersions
+// Source: Maven POM reference - parent POM inheritance
+// Methodology: Parse a pom.xml with a parent declaration and verify extraction
+// Result: Returns correct parent coordinates
+func TestParsePomParent_WithParent(t *testing.T) {
+	parent, err := ParsePomParent("testdata/pom-parent.xml")
+	if err != nil {
+		t.Fatalf("Failed to parse pom parent: %v", err)
+	}
+
+	if parent == nil {
+		t.Fatal("Expected non-nil parent ref")
+	}
+
+	if parent.GroupID != "org.springframework.boot" {
+		t.Errorf("Expected parent groupId org.springframework.boot, got %s", parent.GroupID)
+	}
+	if parent.ArtifactID != "spring-boot-starter-parent" {
+		t.Errorf("Expected parent artifactId spring-boot-starter-parent, got %s", parent.ArtifactID)
+	}
+	if parent.Version != "3.0.0" {
+		t.Errorf("Expected parent version 3.0.0, got %s", parent.Version)
+	}
+}
+
+// Test: ParsePomParent returns nil for POM without parent
+// Justification: Not all POMs have parents; nil return is expected
+// Source: Maven POM reference
+// Methodology: Parse a pom.xml without a parent declaration
+// Result: Returns nil without error
+func TestParsePomParent_NoParent(t *testing.T) {
+	parent, err := ParsePomParent("testdata/pom-small.xml")
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if parent != nil {
+		t.Errorf("Expected nil parent for pom-small.xml, got %+v", parent)
+	}
+}
+
+// Test: version range resolution
+// Justification: Maven version ranges must be resolved to usable versions
+//                for source verification (sources.jar lookup, git tag matching)
+// Source: Maven version range specification
+// Methodology: Test various range formats
+// Result: Ranges resolved to appropriate single versions
+func TestVersionRangeResolution(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"[1.0]", "1.0"},           // exact
+		{"[1.0,2.0)", "1.0"},       // range, use lower bound
+		{"[1.0,2.0]", "1.0"},       // range, use lower bound
+		{"(,2.0]", "2.0"},          // no lower bound, use upper
+		{"(1.0,)", "1.0"},          // no upper bound, use lower
+		{"(,)", "unknown"},         // no bounds
+	}
+
+	for _, tt := range tests {
+		if !isVersionRange(tt.input) {
+			t.Errorf("Expected %q to be identified as a version range", tt.input)
+			continue
+		}
+		result := resolveVersionRange(tt.input)
+		if result != tt.expected {
+			t.Errorf("resolveVersionRange(%q) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+// Test: isVersionRange correctly identifies ranges vs normal versions
+// Justification: Only actual Maven version ranges should be processed
+// Source: Maven version range specification
+// Methodology: Test both ranges and non-ranges
+// Result: Correctly distinguishes ranges from normal versions
+func TestIsVersionRange(t *testing.T) {
+	ranges := []string{"[1.0]", "[1.0,2.0)", "(,2.0]", "[1.0,)"}
+	notRanges := []string{"1.0.0", "3.2.1-SNAPSHOT", "${version}", "", "ab"}
+
+	for _, v := range ranges {
+		if !isVersionRange(v) {
+			t.Errorf("Expected %q to be a version range", v)
+		}
+	}
+	for _, v := range notRanges {
+		if isVersionRange(v) {
+			t.Errorf("Expected %q to NOT be a version range", v)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -474,16 +475,64 @@ type MavenPOMDependency struct {
 	Scope      string `xml:"scope"`
 }
 
-// Maven POM structure (simplified)
+// Maven POM structure — includes dependencyManagement and properties
+// for version resolution from parent BOMs, plus developers and dependencies
+// for enrichment.
 type MavenPOM struct {
-	XMLName         xml.Name              `xml:"project"`
-	Parent          MavenParent           `xml:"parent"`
-	URL             string                `xml:"url"`
-	SCM             MavenSCM              `xml:"scm"`
-	IssueManagement MavenIssueManagement  `xml:"issueManagement"`
-	Licenses        []MavenLicense        `xml:"licenses>license"`
-	Developers      []MavenDeveloper      `xml:"developers>developer"`
-	Dependencies    []MavenPOMDependency  `xml:"dependencies>dependency"`
+	XMLName              xml.Name                     `xml:"project"`
+	GroupID              string                       `xml:"groupId"`
+	ArtifactID           string                       `xml:"artifactId"`
+	Version              string                       `xml:"version"`
+	Parent               MavenParent                  `xml:"parent"`
+	URL                  string                       `xml:"url"`
+	SCM                  MavenSCM                     `xml:"scm"`
+	IssueManagement      MavenIssueManagement         `xml:"issueManagement"`
+	Licenses             []MavenLicense               `xml:"licenses>license"`
+	Developers           []MavenDeveloper             `xml:"developers>developer"`
+	Dependencies         []MavenPOMDependency         `xml:"dependencies>dependency"`
+	Properties           MavenPOMProperties           `xml:"properties"`
+	DependencyManagement MavenPOMDependencyManagement `xml:"dependencyManagement"`
+}
+
+// MavenPOMProperties represents the <properties> section of a Maven POM.
+// Uses a custom XML unmarshaler since property names are dynamic element names.
+type MavenPOMProperties struct {
+	Entries map[string]string
+}
+
+// UnmarshalXML implements custom XML unmarshaling for dynamic property elements.
+func (p *MavenPOMProperties) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	p.Entries = make(map[string]string)
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			var value string
+			if err := d.DecodeElement(&value, &t); err != nil {
+				return err
+			}
+			p.Entries[t.Name.Local] = value
+		case xml.EndElement:
+			return nil
+		}
+	}
+}
+
+// MavenPOMDependencyManagement represents the <dependencyManagement> section.
+type MavenPOMDependencyManagement struct {
+	Dependencies []MavenPOMManagedDep `xml:"dependencies>dependency"`
+}
+
+// MavenPOMManagedDep represents a dependency entry in dependencyManagement.
+type MavenPOMManagedDep struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Scope      string `xml:"scope"`
+	Type       string `xml:"type"`
 }
 
 type MavenIssueManagement struct {
@@ -936,5 +985,169 @@ type depsDevRelatedProject struct {
 
 type depsDevProjectKey struct {
 	ID string `json:"id"`
+}
+
+// ResolveBOMVersions resolves "unknown" versions in Maven dependencies by
+// fetching the parent POM chain from Maven Central and looking up versions
+// in the <dependencyManagement> sections and <properties>.
+//
+// This follows Maven's version resolution model:
+// 1. Properties from the parent chain (child values take precedence)
+// 2. dependencyManagement entries from the parent chain (nearest definition wins)
+// 3. Property references within dependencyManagement versions are resolved
+//
+// Justification: Accurate version identification is critical for source
+// verification — if version is "unknown", we cannot verify sources.jar
+// existence or git tag matches, leading to false risk inflation.
+// Source: Maven POM reference — dependency management inheritance
+func (c *MavenClient) ResolveBOMVersions(deps []models.Dependency, parentGroupID, parentArtifactID, parentVersion string) []models.Dependency {
+	if parentGroupID == "" || parentArtifactID == "" || parentVersion == "" {
+		return deps
+	}
+
+	// Collect properties and dependencyManagement entries from the parent chain
+	properties := make(map[string]string)
+	depMgmt := make(map[string]string)
+
+	c.fetchParentChain(parentGroupID, parentArtifactID, parentVersion, properties, depMgmt, 0)
+
+	if len(properties) == 0 && len(depMgmt) == 0 {
+		return deps
+	}
+
+	// Resolve property references within property values (iterative)
+	for i := 0; i < 5; i++ {
+		changed := false
+		for k, v := range properties {
+			if strings.Contains(v, "${") {
+				resolved := resolveMavenPropertyRefs(v, properties)
+				if resolved != v {
+					properties[k] = resolved
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+
+	// Resolve property references within dependencyManagement versions
+	for k, v := range depMgmt {
+		if strings.Contains(v, "${") {
+			depMgmt[k] = resolveMavenPropertyRefs(v, properties)
+		}
+	}
+
+	// Resolve unknown versions in dependencies
+	resolved := make([]models.Dependency, len(deps))
+	copy(resolved, deps)
+
+	for i, dep := range resolved {
+		if dep.Version != "unknown" || dep.Ecosystem != models.EcosystemMaven {
+			continue
+		}
+
+		if version, ok := depMgmt[dep.Name]; ok {
+			if version != "" && !strings.Contains(version, "${") {
+				resolved[i].Version = version
+			}
+		}
+	}
+
+	return resolved
+}
+
+// fetchParentChain recursively fetches parent POMs from Maven Central,
+// collecting properties and dependencyManagement entries.
+// Follows Maven's "nearest definition wins" rule: child values are not
+// overwritten by parent values.
+// Maximum recursion depth of 5 prevents infinite loops.
+func (c *MavenClient) fetchParentChain(groupID, artifactID, version string, properties map[string]string, depMgmt map[string]string, depth int) {
+	if depth > 5 {
+		return
+	}
+
+	pom, err := c.fetchBOMPOM(groupID, artifactID, version)
+	if err != nil {
+		return // graceful degradation
+	}
+
+	// Add properties (child values take precedence — don't overwrite)
+	if pom.Properties.Entries != nil {
+		for k, v := range pom.Properties.Entries {
+			if _, exists := properties[k]; !exists {
+				properties[k] = v
+			}
+		}
+	}
+
+	// Add built-in properties for this POM
+	pomVersion := pom.Version
+	if pomVersion == "" && pom.Parent.Version != "" {
+		pomVersion = pom.Parent.Version
+	}
+	if pomVersion != "" {
+		if _, exists := properties["project.parent.version"]; !exists {
+			properties["project.parent.version"] = pomVersion
+		}
+	}
+
+	// Add dependencyManagement entries (nearest definition wins — don't overwrite)
+	for _, dep := range pom.DependencyManagement.Dependencies {
+		key := dep.GroupID + ":" + dep.ArtifactID
+		if _, exists := depMgmt[key]; !exists {
+			depMgmt[key] = dep.Version
+		}
+	}
+
+	// Follow parent chain
+	if pom.Parent.GroupID != "" && pom.Parent.ArtifactID != "" && pom.Parent.Version != "" {
+		c.fetchParentChain(pom.Parent.GroupID, pom.Parent.ArtifactID, pom.Parent.Version, properties, depMgmt, depth+1)
+	}
+}
+
+// fetchBOMPOM fetches and parses a POM file from Maven Central for BOM resolution.
+func (c *MavenClient) fetchBOMPOM(groupID, artifactID, version string) (*MavenPOM, error) {
+	groupPath := strings.ReplaceAll(groupID, ".", "/")
+	pomURL := fmt.Sprintf("%s/%s/%s/%s/%s-%s.pom",
+		c.baseURL, groupPath, artifactID, version, artifactID, version)
+
+	resp, err := c.httpClient.Get(pomURL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("POM returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var pom MavenPOM
+	if err := xml.Unmarshal(body, &pom); err != nil {
+		return nil, err
+	}
+
+	return &pom, nil
+}
+
+// mavenPropertyRefRegex matches Maven property references like ${spring.version}
+var mavenPropertyRefRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// resolveMavenPropertyRefs replaces all ${property.name} references in a string
+// with their values from the properties map.
+func resolveMavenPropertyRefs(value string, properties map[string]string) string {
+	return mavenPropertyRefRegex.ReplaceAllStringFunc(value, func(match string) string {
+		propName := match[2 : len(match)-1]
+		if resolved, ok := properties[propName]; ok {
+			return resolved
+		}
+		return match
+	})
 }
 
