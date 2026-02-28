@@ -55,6 +55,7 @@ type Finding struct {
 	Check       string `json:"check"`                      // The check that identified this risk
 	Evidence    string `json:"evidence,omitempty"`
 	Methodology string `json:"methodology,omitempty"`       // How this check was performed (data sources, APIs)
+	SourceURL   string `json:"source_url,omitempty"`        // URL to the data source for verification
 }
 
 // InstallScriptAnalysis contains analysis of install-time scripts
@@ -282,6 +283,7 @@ type CategoryScore struct {
 	Skipped         bool               `json:"skipped,omitempty"`              // True when check was excluded via --check flag
 	Methodology     string             `json:"methodology,omitempty"`           // How this check was performed (data sources, APIs)
 	ChecksPerformed []CheckResult      `json:"checks_performed,omitempty"`      // Individual sub-check outcomes
+	SourceURL       string             `json:"source_url,omitempty"`            // URL to the data source for verification
 }
 
 // EcosystemCapabilities describes what data each package registry exposes.

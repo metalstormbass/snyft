@@ -209,6 +209,9 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		for _, finding := range result.Findings {
 			sc := severityColor(finding.Severity)
 			f(w, "%s│%s    %s[%s]%s %s\n", rc, ColorReset, sc, finding.Severity, ColorReset, finding.Description)
+			if finding.SourceURL != "" {
+				f(w, "%s│%s      %sSource:%s %s\n", rc, ColorReset, ColorDim, ColorReset, finding.SourceURL)
+			}
 			if finding.Evidence != "" && r.config.Verbose {
 				f(w, "%s│%s      %sEvidence:%s %s\n", rc, ColorReset, ColorDim, ColorReset, finding.Evidence)
 			}

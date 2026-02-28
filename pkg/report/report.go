@@ -205,6 +205,7 @@ type CriticalIssue struct {
 	Description    string
 	Evidence       string
 	Severity       string
+	SourceURL      string
 }
 
 // extractCriticalIssues extracts top critical issues from analysis results.
@@ -239,6 +240,7 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 				Description:    finding.Description,
 				Evidence:       finding.Evidence,
 				Severity:       finding.Severity,
+				SourceURL:      finding.SourceURL,
 			})
 			break // one finding per package
 		}
