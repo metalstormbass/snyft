@@ -1313,8 +1313,8 @@ func TestScoreDependencySprawl_Few(t *testing.T) {
 		t.Error("Expected verified score")
 	}
 
-	if score.Description != "Few transitive dependencies" {
-		t.Errorf("Unexpected description: %s", score.Description)
+	if !strings.Contains(score.Description, "5 total transitive dependencies") {
+		t.Errorf("Description should reference actual dependency count, got: %s", score.Description)
 	}
 }
 
@@ -1340,8 +1340,8 @@ func TestScoreDependencySprawl_Moderate(t *testing.T) {
 		t.Error("Expected verified score")
 	}
 
-	if score.Description != "Moderate transitive dependencies" {
-		t.Errorf("Unexpected description: %s", score.Description)
+	if !strings.Contains(score.Description, "25 total transitive dependencies") {
+		t.Errorf("Description should reference actual dependency count, got: %s", score.Description)
 	}
 }
 
@@ -1367,8 +1367,8 @@ func TestScoreDependencySprawl_Many(t *testing.T) {
 		t.Error("Expected verified score")
 	}
 
-	if score.Description != "Many transitive dependencies" {
-		t.Errorf("Unexpected description: %s", score.Description)
+	if !strings.Contains(score.Description, "75 total transitive dependencies") {
+		t.Errorf("Description should reference actual dependency count, got: %s", score.Description)
 	}
 }
 
@@ -1469,8 +1469,8 @@ func TestScoreDependencySprawl_RegistryDirect_FewDeps(t *testing.T) {
 	if score.Verified {
 		t.Error("Expected unverified score for registry-based data")
 	}
-	if score.Description != "Few direct dependencies" {
-		t.Errorf("Unexpected description: %s", score.Description)
+	if !strings.Contains(score.Description, "direct dependencies") {
+		t.Errorf("Description should reference direct dependencies, got: %s", score.Description)
 	}
 }
 
@@ -1495,8 +1495,8 @@ func TestScoreDependencySprawl_RegistryDirect_ModerateDeps(t *testing.T) {
 	if score.RiskPoints != 1 {
 		t.Errorf("Expected 1 risk point for 10 direct deps, got %d", score.RiskPoints)
 	}
-	if score.Description != "Moderate direct dependencies" {
-		t.Errorf("Unexpected description: %s", score.Description)
+	if !strings.Contains(score.Description, "10 direct dependencies") {
+		t.Errorf("Description should reference actual dependency count, got: %s", score.Description)
 	}
 }
 
@@ -1524,8 +1524,8 @@ func TestScoreDependencySprawl_RegistryDirect_ManyDeps(t *testing.T) {
 	if score.RiskPoints != 2 {
 		t.Errorf("Expected 2 risk points for 32 direct deps, got %d", score.RiskPoints)
 	}
-	if score.Description != "Many direct dependencies" {
-		t.Errorf("Unexpected description: %s", score.Description)
+	if !strings.Contains(score.Description, "32 direct dependencies") {
+		t.Errorf("Description should reference actual dependency count, got: %s", score.Description)
 	}
 }
 
@@ -1555,8 +1555,8 @@ func TestScoreDependencySprawl_RegistryDirect_ZeroDeps(t *testing.T) {
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points for genuinely zero direct dependencies, got %d", score.RiskPoints)
 	}
-	if score.Description != "Few direct dependencies" {
-		t.Errorf("Unexpected description: %s", score.Description)
+	if !strings.Contains(score.Description, "direct dependencies") {
+		t.Errorf("Description should reference direct dependencies, got: %s", score.Description)
 	}
 }
 
@@ -1805,8 +1805,8 @@ func TestScoreInstallExecution_HasInstallScriptsFlag_NoMatchingHooks(t *testing.
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points for non-install scripts, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
-	if score.Description != "No install-time scripts" {
-		t.Errorf("Expected 'No install-time scripts' description, got %q", score.Description)
+	if !strings.Contains(score.Description, "install-time hooks") || !strings.Contains(score.Description, "No code executes") {
+		t.Errorf("Description should explain scripts are not install-time hooks and no code executes, got %q", score.Description)
 	}
 }
 

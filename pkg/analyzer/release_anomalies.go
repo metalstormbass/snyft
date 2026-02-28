@@ -31,7 +31,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			return models.CategoryScore{
 				Score:       2,
 				RiskPoints:  0,
-				Description: "No release anomalies detected (via registry data)",
+				Description: fmt.Sprintf("Analyzed %d versions from package registry — no dormancy reactivation or unusual release spikes detected. Consistent release patterns indicate normal maintenance.", len(registryReleases)),
 				Evidence:    fmt.Sprintf("Analyzed %d versions from package registry; no dormancy reactivation or unusual spikes detected", len(registryReleases)),
 				Verified:    true,
 				Methodology: "No repository URL available. Used package registry version history as fallback for release pattern analysis.",
@@ -45,7 +45,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 		return models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
-			Description: "Unable to verify release patterns",
+			Description: "No commit history or registry version data available to verify release patterns. Unable to check for dormancy reactivation or suspicious release activity.",
 			Evidence:    "No commit history or registry version data available",
 			Verified:    false,
 			Methodology: "No repository URL or commit history available. Registry version history also unavailable. Could not check for release anomalies or dormancy patterns.",
@@ -65,7 +65,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 		return models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
-			Description: "Package appears dormant",
+			Description: fmt.Sprintf("No commits in %.0f days (last commit: %s). Dormant packages are attractive targets for account takeover — maintainers may not be monitoring their accounts or credentials.", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
 			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year); last commit: %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
 			Verified:    true,
 			Methodology: anomalyMethodology,
@@ -126,7 +126,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 	return models.CategoryScore{
 		Score:           2,
 		RiskPoints:      0,
-		Description:     "Regular, consistent releases",
+		Description:     fmt.Sprintf("Last commit %.0f days ago with no anomalies detected. Regular release activity indicates active, healthy maintenance.", daysSinceLastCommit),
 		Evidence:        fmt.Sprintf("Last commit %.0f days ago, no anomalies detected", daysSinceLastCommit),
 		Verified:        true,
 		Methodology:     anomalyMethodology,
@@ -193,7 +193,7 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repo
 		return &models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
-			Description: "Suspicious reactivation after dormancy",
+			Description: fmt.Sprintf("Package was dormant for %.0f days (%s to %s), then released again %.0f days ago. Dormant packages that suddenly reactivate are a common supply chain attack pattern — attackers acquire abandoned packages and inject malicious code.", maxGapDays, gapStartDate.Format("2006-01"), gapEndDate.Format("2006-01"), daysSinceRecentRelease),
 			Evidence: fmt.Sprintf("Dormant for %.0f days (%s to %s), recent release %.0f days ago",
 				maxGapDays, gapStartDate.Format("2006-01"), gapEndDate.Format("2006-01"), daysSinceRecentRelease),
 			Verified:    true,
@@ -209,7 +209,7 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repo
 		return &models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
-			Description: "Suspicious reactivation after relative dormancy",
+			Description: fmt.Sprintf("Release gap of %.0f days is %.1fx the usual %.0f-day cadence, followed by a release %.0f days ago. A gap far exceeding the normal cadence followed by sudden activity is a reactivation pattern associated with package takeover.", maxGapDays, maxGapDays/avgDaysBetweenReleases, avgDaysBetweenReleases, daysSinceRecentRelease),
 			Evidence: fmt.Sprintf("Dormant for %.0f days (%.1fx usual %.0f-day release cadence), recent release %.0f days ago",
 				maxGapDays, maxGapDays/avgDaysBetweenReleases, avgDaysBetweenReleases, daysSinceRecentRelease),
 			Verified:    true,
@@ -228,7 +228,7 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repo
 			return &models.CategoryScore{
 				Score:       0,
 				RiskPoints:  2,
-				Description: "Unusual release pattern detected",
+				Description: fmt.Sprintf("Average release cadence is every %.0f days, but the most recent release came only %.0f days after the previous one. Rapid-fire releases that break the established pattern can indicate compromised publishing credentials or unauthorized access.", avgDaysBetweenReleases, recentGap),
 				Evidence: fmt.Sprintf("Avg release every %.0f days, but recent release only %.0f days after previous (%.0f days ago)",
 					avgDaysBetweenReleases, recentGap, daysSinceRecentRelease),
 				Verified:    true,
@@ -279,7 +279,7 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 		return &models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
-			Description: "Suspicious commit frequency spike",
+			Description: fmt.Sprintf("%d commits in the last year vs only %d in the previous year. A near-dormant project with a sudden burst of activity is characteristic of account takeover, where adversaries push multiple changes rapidly.", recentCount, previousYearCount),
 			Evidence: fmt.Sprintf("%d commits in last year vs %d in previous year (sudden spike)",
 				recentCount, previousYearCount),
 			Verified:    true,
@@ -295,7 +295,7 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 		return &models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
-			Description: "Suspicious commit frequency increase",
+			Description: fmt.Sprintf("%d commits in the last year vs %d in the previous year (%.0fx increase). A dramatic spike in commit frequency can indicate new unauthorized access or compromised maintainer accounts pushing changes rapidly.", recentCount, previousYearCount, float64(recentCount)/float64(previousYearCount)),
 			Evidence: fmt.Sprintf("%d commits in last year vs %d in previous year (%.0fx increase)",
 				recentCount, previousYearCount, float64(recentCount)/float64(previousYearCount)),
 			Verified:    true,
@@ -311,7 +311,7 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 		return &models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
-			Description: "Package reactivated after dormancy",
+			Description: fmt.Sprintf("0 commits in the previous year, then %d commits in the last year. Moderate reactivation after dormancy — could be legitimate renewed interest or an early sign of account takeover.", recentCount),
 			Evidence:    fmt.Sprintf("0 commits in previous year, %d commits in last year", recentCount),
 			Verified:    true,
 			Methodology: commitMethodology,

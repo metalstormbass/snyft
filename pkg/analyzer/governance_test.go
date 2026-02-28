@@ -1132,8 +1132,8 @@ func TestScoreGovernance_MockServer_StrongGovernance(t *testing.T) {
 	if !score.Verified {
 		t.Error("Expected Verified=true")
 	}
-	if !containsSubstring(score.Description, "Strong governance") {
-		t.Errorf("Expected 'Strong governance' description, got: %s", score.Description)
+	if !containsSubstring(score.Description, "SECURITY.md") || !containsSubstring(score.Description, "security disclosure") {
+		t.Errorf("Description should reference SECURITY.md and explain its importance, got: %s", score.Description)
 	}
 }
 
@@ -1175,8 +1175,8 @@ func TestScoreGovernance_MockServer_NoGovernanceDocs(t *testing.T) {
 		t.Errorf("Expected 2 risk points for no governance docs, got %d (evidence: %s)",
 			score.RiskPoints, score.Evidence)
 	}
-	if !containsSubstring(score.Description, "Poor governance") {
-		t.Errorf("Expected 'Poor governance' description, got: %s", score.Description)
+	if !containsSubstring(score.Description, "No security policy") || !containsSubstring(score.Description, "unreported") {
+		t.Errorf("Description should explain missing security policy and its risk, got: %s", score.Description)
 	}
 }
 

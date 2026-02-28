@@ -121,7 +121,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		return models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
-			Description: "Unable to assess governance: no repository URL available",
+			Description: "No source repository URL found — unable to check for SECURITY.md, issue response times, or abandonment patterns. Governance quality is unknown.",
 			Evidence:    "No source repository URL found; further investigation recommended" + govSource,
 			Verified:    false,
 			Methodology: "No repository URL available. Could not check for SECURITY.md, issue response times, or abandonment patterns.",
@@ -139,7 +139,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		return models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
-			Description: "Archived repository: no active governance",
+			Description: "Repository is archived and no longer accepting contributions. Archived projects have no active governance, no vulnerability disclosure process, and no maintainers monitoring for compromises.",
 			Evidence:    "Repository is archived and no longer accepting contributions" + govSource,
 			Verified:    true,
 			Methodology: govMethodology,
@@ -156,7 +156,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			return models.CategoryScore{
 				Score:       0,
 				RiskPoints:  2,
-				Description: "Abandoned project: high risk of compromise",
+				Description: fmt.Sprintf("No commits in %.0f days (last commit: %s). Abandoned projects have no active governance — maintainer accounts may be unmonitored and vulnerable to takeover.", daysSince, result.Metadata.RepoLastCommit.Format("2006-01-02")),
 				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince) + govSource,
 				Verified:    true,
 				Methodology: govMethodology,
@@ -174,7 +174,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		return models.CategoryScore{
 			Score:       0,
 			RiskPoints:  1,
-			Description: "Unable to verify governance",
+			Description: "Could not fetch repository information to assess governance. Unable to check for SECURITY.md or issue response times.",
 			Evidence:    "Could not fetch repository information" + govSource,
 			Verified:    false,
 			Methodology: govMethodology,
@@ -277,15 +277,18 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		riskPoints = 1
 	}
 
-	// Determine description based on risk level
+	// Build description from actual evidence
 	var description string
 	switch riskPoints {
 	case 0:
-		description = "Strong governance: security policy and responsive maintenance"
+		description = strings.Join(evidenceParts, "; ") + ". Active governance with a security disclosure process and responsive maintainers means compromises are more likely to be detected and reported."
 	case 1:
-		description = "Partial governance: security policy or responsive maintenance present"
+		description = strings.Join(evidenceParts, "; ") + ". Partial governance — either a security policy or responsive maintenance is present, but not both. Gaps reduce the likelihood of detecting or reporting compromises."
 	default:
-		description = "Poor governance: no security policy or responsiveness signals"
+		description = "No SECURITY.md found and no responsive maintenance signals detected. Without a security policy, vulnerability reports have no disclosure channel, and compromises may go unreported."
+		if len(evidenceParts) > 0 {
+			description = strings.Join(evidenceParts, "; ") + ". No security policy or responsiveness signals — compromises may go undetected and unreported."
+		}
 	}
 
 	return models.CategoryScore{

@@ -266,13 +266,15 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 		evidence = strings.Join(evidenceParts, "; ")
 	}
 
-	// Determine description based on risk points
-	description := "Stable long-term ownership"
+	// Build description from actual evidence, explaining what was found and why it matters
+	description := ""
 	switch riskPoints {
 	case 2:
-		description = "Recent suspicious ownership changes detected"
+		description = evidence + ". Ownership transfers and near-complete team replacement are primary signals of malicious package acquisition (Ohm et al., 2020)."
 	case 1:
-		description = "Some ownership changes detected"
+		description = evidence + ". Partial team changes or limited history reduce confidence in ownership continuity."
+	default:
+		description = evidence + ". Stable ownership with author continuity indicates low risk of malicious transfer."
 	}
 
 	return models.CategoryScore{

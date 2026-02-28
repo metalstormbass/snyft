@@ -3,6 +3,7 @@ package analyzer
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/fetcher"
@@ -608,14 +609,79 @@ func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.C
 	// Perform comprehensive publisher control analysis
 	analysis := a.AnalyzePublisherControl(result, result.RepositoryURL)
 
+	// Build a descriptive finding that references actual data and explains risk
+	description := buildPublisherControlDescription(analysis)
+
 	// Convert the detailed analysis to a CategoryScore
 	return models.CategoryScore{
 		Score:       2 - analysis.RiskPoints,
 		RiskPoints:  analysis.RiskPoints,
-		Description: analysis.Evidence,
+		Description: description,
 		Evidence:    analysis.Evidence,
 		Verified:    analysis.Verified,
 		Methodology: "Checked maintainer count (bus factor), organization vs personal account type via GitHub API, maintainer account ages, email domain stability (personal vs organizational), package concentration per maintainer (npm), commit/release signing practices, and MFA enforcement (GitHub org-level).",
 		ChecksPerformed: analysis.buildPublisherControlChecks(),
+	}
+}
+
+// buildPublisherControlDescription creates a human-readable description from analysis data,
+// explaining what was found and why it matters for supply chain risk.
+func buildPublisherControlDescription(analysis *PublisherControlAnalysis) string {
+	switch analysis.RiskPoints {
+	case 2:
+		parts := []string{}
+		if analysis.SingleMaintainer {
+			parts = append(parts, "Single maintainer")
+		}
+		if analysis.IsPersonalAccount {
+			parts = append(parts, "personal account")
+		}
+		if analysis.HasExpirableDomains {
+			parts = append(parts, "personal email")
+		}
+		if analysis.SigningChecked && !analysis.HasSignedCommits && !analysis.HasSignedReleases {
+			parts = append(parts, "no commit/release signing")
+		}
+		summary := strings.Join(parts, ", ")
+		if summary == "" {
+			summary = "Multiple high-risk publisher control signals"
+		}
+		return fmt.Sprintf("%s. Account takeover of a single maintainer gives attackers full package control — the #1 supply chain attack vector (Ohm et al., 2020).", summary)
+
+	case 1:
+		parts := []string{}
+		caps := models.GetEcosystemCapabilities(analysis.Ecosystem)
+		if analysis.MaintainerCount == 0 && !caps.HasMaintainerList {
+			parts = append(parts, fmt.Sprintf("Maintainer count unavailable (%s does not expose this data)", analysis.Ecosystem))
+		} else if analysis.MaintainerCount == 0 {
+			parts = append(parts, "No maintainer data found")
+		} else if analysis.SingleMaintainer {
+			parts = append(parts, fmt.Sprintf("Single maintainer (%s)", strings.Join(analysis.MaintainerEmails, ", ")))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d maintainers found", analysis.MaintainerCount))
+		}
+		if analysis.HasNewMaintainers {
+			parts = append(parts, fmt.Sprintf("%d new account(s) < 6 months old", analysis.NewMaintainerCount))
+		}
+		return strings.Join(parts, "; ") + ". Moderate publisher control risk — fewer maintainers or weaker authentication increases susceptibility to account compromise."
+
+	default:
+		parts := []string{}
+		if analysis.MaintainerCount > 1 {
+			parts = append(parts, fmt.Sprintf("%d maintainers", analysis.MaintainerCount))
+		}
+		if analysis.IsOrganization {
+			parts = append(parts, fmt.Sprintf("organization (%s)", analysis.OrgName))
+		}
+		if analysis.MFAEnforced {
+			parts = append(parts, "MFA enforced")
+		}
+		if analysis.HasSignedCommits || analysis.HasSignedReleases {
+			parts = append(parts, "signing enabled")
+		}
+		if len(parts) == 0 {
+			return "Publisher control checks passed. Distributed maintainership reduces single-point-of-failure risk."
+		}
+		return strings.Join(parts, ", ") + ". Distributed maintainership with strong authentication reduces account takeover risk."
 	}
 }

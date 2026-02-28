@@ -131,13 +131,15 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 	// 2 points = 0 risk, 1 point = 1 risk, 0 points = 2 risk
 	riskPoints := 2 - points
 
-	// Determine description
-	description := "Poor health: concentrated development, no review oversight"
+	// Build description from actual data
+	var description string
 	switch points {
 	case 2:
-		description = "Good health: distributed development with review oversight"
+		description = strings.Join(evidence, "; ") + ". Distributed development with review oversight reduces single-point-of-compromise risk."
 	case 1:
-		description = "Moderate health: bus factor or review oversight present, but not both"
+		description = strings.Join(evidence, "; ") + ". Only one of two health signals (bus factor, review oversight) is present — partial protection against concentrated-access compromise."
+	default:
+		description = strings.Join(evidence, "; ") + ". Concentrated development without review oversight creates a single point of compromise — one account takeover could inject malicious code unchecked."
 	}
 
 	return models.CategoryScore{
