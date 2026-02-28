@@ -108,11 +108,7 @@ type PackageMetadata struct {
 	TotalReleaseCount int               `json:"total_release_count"` // 0 means no GitHub releases to check
 
 	// Provenance information
-	HasSLSAAttestation  bool   `json:"has_slsa_attestation"`
-	SLSALevel           string `json:"slsa_level,omitempty"`           // e.g., "SLSA_LEVEL_3"
-	HasSigstoreSignature bool  `json:"has_sigstore_signature"`
 	HasNPMProvenance     bool  `json:"has_npm_provenance"`
-	HasPyPISignatures    bool  `json:"has_pypi_signatures"`
 	HasMavenGPGSignature bool  `json:"has_maven_gpg_signature"`       // Maven Central GPG .asc signature
 	ProvenanceDetails    string `json:"provenance_details,omitempty"`  // Additional context
 
@@ -260,14 +256,8 @@ type ReleaseInfo struct {
 
 // ProvenanceInfo contains detailed provenance and attestation information
 type ProvenanceInfo struct {
-	HasSLSAAttestation   bool     `json:"has_slsa_attestation"`
-	SLSALevel            string   `json:"slsa_level,omitempty"`
-	SLSAAttestationURL   string   `json:"slsa_attestation_url,omitempty"`
-	HasSigstoreSignature bool     `json:"has_sigstore_signature"`
-	SigstoreBundle       string   `json:"sigstore_bundle,omitempty"`
 	HasNPMProvenance     bool     `json:"has_npm_provenance"`
 	NPMProvenanceURL     string   `json:"npm_provenance_url,omitempty"`
-	HasPyPISignatures    bool     `json:"has_pypi_signatures"`
 	SignedReleaseCount   int      `json:"signed_release_count"`
 	TotalReleaseCount    int      `json:"total_release_count"`
 	BuildSystem          string   `json:"build_system,omitempty"`

@@ -1654,10 +1654,7 @@ func TestScoreProvenance_HighRisk_NoProvenance(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			HasSLSAAttestation:    false,
-			HasSigstoreSignature:  false,
 			HasNPMProvenance:      false,
-			HasPyPISignatures:     false,
 			SignedReleases:        false,
 		},
 	}
@@ -1686,8 +1683,6 @@ func TestScoreProvenance_ModerateRisk_PartialProvenance_SignedOnly(t *testing.T)
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			HasSLSAAttestation:    false,
-			HasSigstoreSignature:  false,
 			SignedReleases:        true, // Partial provenance (1 point)
 		},
 	}
@@ -1701,57 +1696,6 @@ func TestScoreProvenance_ModerateRisk_PartialProvenance_SignedOnly(t *testing.T)
 
 	if score.Score != 1 {
 		t.Errorf("Expected score 1, got %d", score.Score)
-	}
-}
-
-func TestScoreProvenance_LowRisk_SLSAAttestation(t *testing.T) {
-	// Test: SLSA attestation present (Level 2 or higher)
-	// Justification: SLSA provides non-falsifiable provenance proving build integrity
-	// Source: SLSA v1.0 Build Track - Level 2 requires provenance generation
-	//         https://slsa.dev/spec/v1.0/levels
-	// Methodology: Verified SLSA attestation via GitHub attestations API
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasSLSAAttestation:    true,
-			SLSALevel:             "SLSA_BUILD_LEVEL_2",
-			HasSigstoreSignature:  false,
-		},
-	}
-
-	score := analyzer.scoreProvenance(result)
-
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points for SLSA attestation, got %d", score.RiskPoints)
-	}
-
-	if score.Score != 2 {
-		t.Errorf("Expected score 2, got %d", score.Score)
-	}
-}
-
-func TestScoreProvenance_LowRisk_SigstoreSignature(t *testing.T) {
-	// Test: Sigstore/Cosign signatures present
-	// Justification: Sigstore provides keyless signing with transparency log for tamper detection
-	// Source: "Sigstore: Software Signing for Everybody" (Sigstore project documentation)
-	//         https://www.sigstore.dev/how-it-works
-	// Methodology: Verified Sigstore signatures via Rekor transparency log
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasSigstoreSignature: true,
-			HasSLSAAttestation:   false,
-		},
-	}
-
-	score := analyzer.scoreProvenance(result)
-
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points for Sigstore signature, got %d", score.RiskPoints)
-	}
-
-	if score.Score != 2 {
-		t.Errorf("Expected score 2, got %d", score.Score)
 	}
 }
 
