@@ -466,16 +466,56 @@ func joinExamples(names []string) string {
 	return strings.Join(names, ", ")
 }
 
-// scoreColor returns a color based on the numeric supply chain risk score.
-// 0-7: green (low), 8-13: yellow (medium), 14+: red (high).
+// gradientStop defines an RGB color at a specific score value for gradient interpolation.
+type gradientStop struct {
+	score    int
+	r, g, b int
+}
+
+// scoreGradientStops defines the color gradient from green (low risk) to red (high risk).
+// Colors are chosen to match the existing theme palette where possible.
+var scoreGradientStops = []gradientStop{
+	{0, 82, 183, 136},   // forest green #52b788 (matches theme)
+	{5, 132, 204, 22},   // lime/yellow-green
+	{10, 245, 158, 11},  // amber #f59e0b (matches theme)
+	{15, 249, 115, 22},  // orange #f97316
+	{20, 239, 68, 68},   // red #ef4444 (matches theme)
+}
+
+// scoreGradientRGB returns interpolated RGB values for a score in the 0-20 range.
+func scoreGradientRGB(score int) (int, int, int) {
+	if score <= 0 {
+		s := scoreGradientStops[0]
+		return s.r, s.g, s.b
+	}
+	last := scoreGradientStops[len(scoreGradientStops)-1]
+	if score >= last.score {
+		return last.r, last.g, last.b
+	}
+	for i := 1; i < len(scoreGradientStops); i++ {
+		if score <= scoreGradientStops[i].score {
+			lo := scoreGradientStops[i-1]
+			hi := scoreGradientStops[i]
+			t := float64(score-lo.score) / float64(hi.score-lo.score)
+			r := int(float64(lo.r) + t*float64(hi.r-lo.r))
+			g := int(float64(lo.g) + t*float64(hi.g-lo.g))
+			b := int(float64(lo.b) + t*float64(hi.b-lo.b))
+			return r, g, b
+		}
+	}
+	return last.r, last.g, last.b
+}
+
+// scoreColor returns a truecolor ANSI escape for the score's position on the gradient.
 func scoreColor(score int) string {
-	if score <= 7 {
-		return ColorGreen
-	}
-	if score <= 13 {
-		return ColorYellow
-	}
-	return ColorRed
+	r, g, b := scoreGradientRGB(score)
+	return fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
+}
+
+// scoreColorCSS returns a CSS rgb() color string for the score's position on the gradient.
+func scoreColorCSS(score int) string {
+	r, g, b := scoreGradientRGB(score)
+	return fmt.Sprintf("rgb(%d,%d,%d)", r, g, b)
 }
 
 func riskColor(level string) string {
