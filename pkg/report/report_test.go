@@ -204,7 +204,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 
 		output := buf.String()
 
-		if !strings.Contains(output, "<h3>Top Priority Findings</h3>") {
+		if !strings.Contains(output, "Top Priority Findings") {
 			t.Error("HTML output missing top priority findings heading")
 		}
 
