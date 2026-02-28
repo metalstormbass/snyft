@@ -160,31 +160,56 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	var description string
 	var score int
 
+	// Build attestation summary for descriptions
+	attestationDetails := []string{}
+	if !result.Metadata.HasSLSAAttestation {
+		attestationDetails = append(attestationDetails, "no SLSA attestations")
+	}
+	if !result.Metadata.HasSigstoreSignature {
+		attestationDetails = append(attestationDetails, "no Sigstore signatures")
+	}
+	if result.Dependency.Ecosystem == models.EcosystemNPM && !result.Metadata.HasNPMProvenance {
+		attestationDetails = append(attestationDetails, "no npm provenance")
+	}
+	if result.Dependency.Ecosystem == models.EcosystemPyPI && !result.Metadata.HasPyPISignatures {
+		attestationDetails = append(attestationDetails, "no PyPI signatures")
+	}
+	if result.Dependency.Ecosystem == models.EcosystemMaven && !result.Metadata.HasMavenGPGSignature {
+		attestationDetails = append(attestationDetails, "no Maven GPG signature")
+	}
+	if !result.Metadata.SignedReleases && result.Metadata.TotalReleaseCount > 0 {
+		attestationDetails = append(attestationDetails, fmt.Sprintf("none of %d releases are signed", result.Metadata.TotalReleaseCount))
+	}
+
 	switch {
 	case sourceExplicitlyFailed && provenanceScore == 0:
 		// No source available and no attestations at all: worst case
 		riskPoints = 2
 		score = 0
-		description = "No provenance evidence; source code not available"
+		description = "No source code repository found and no build attestations detected (" + strings.Join(attestationDetails, ", ") + "). Without source access or build provenance, it is impossible to verify what code is in the published package."
 
 	case sourceExplicitlyFailed:
 		// No source available but has some attestations: capped at 1 risk
 		riskPoints = 1
 		score = 1
-		description = "Attestations present but source code not available"
+		description = "No source code repository found, but build attestations are present (" + strings.Join(evidence, ", ") + "). Attestations provide some verification, but without source access the code itself cannot be audited."
 
 	case sourceAvailable && provenanceScore >= 2:
 		// Source available AND strong attestations: best case
 		riskPoints = 0
 		score = 2
-		description = "Full provenance with available source and signatures"
+		description = "Source code is publicly available and strong build attestations are present (" + strings.Join(evidence, ", ") + "). Published artifacts can be verified as matching the auditable source code."
 
 	case sourceAvailable:
 		// Source available but no/weak attestations: partial provenance
 		// Anyone can audit the code, but build integrity is unverifiable
 		riskPoints = 1
 		score = 1
-		description = "Source code available but build provenance unverifiable"
+		missingStr := ""
+		if len(attestationDetails) > 0 {
+			missingStr = ": " + strings.Join(attestationDetails, ", ")
+		}
+		description = fmt.Sprintf("Source code is publicly available, but no strong build attestations were found%s. Anyone can audit the source, but published artifacts cannot be cryptographically verified as matching it.", missingStr)
 
 	default:
 		// SourceVerification is nil and no repo URL: fall through to
@@ -192,15 +217,15 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		if provenanceScore >= 2 {
 			riskPoints = 0
 			score = 2
-			description = "Full provenance with signatures"
+			description = "Strong build attestations present (" + strings.Join(evidence, ", ") + "). Published artifacts can be cryptographically verified."
 		} else if provenanceScore >= 1 {
 			riskPoints = 1
 			score = 1
-			description = "Partial provenance"
+			description = "Partial provenance signals detected (" + strings.Join(evidence, ", ") + "), but insufficient for full build verification."
 		} else {
 			riskPoints = 2
 			score = 0
-			description = "No provenance evidence"
+			description = "No provenance evidence found (" + strings.Join(attestationDetails, ", ") + "). Without source access or build attestations, the integrity of published artifacts is unverifiable."
 		}
 	}
 

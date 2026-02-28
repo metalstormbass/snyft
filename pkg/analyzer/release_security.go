@@ -41,7 +41,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		return models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
-			Description: "Unable to verify release security controls: no repository URL",
+			Description: "No source repository URL found — unable to check for CI/CD automation, branch protection, signed releases, or review requirements. Release security is unknown.",
 			Evidence:    "No repository URL available; further investigation recommended" + releaseSecSource,
 			Verified:    false,
 			Methodology: "No repository URL available. Could not check any release security controls.",
@@ -273,12 +273,17 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		riskPoints = 1
 	}
 
-	// Determine description based on risk level
-	description := "Poor release security: no protections detected"
+	// Build description from actual evidence
+	var description string
 	if points >= 3 {
-		description = "Strong release security: multiple controls in place"
+		description = strings.Join(evidence, "; ") + ". Multiple release security controls are in place, reducing the risk of unauthorized or tampered releases."
 	} else if points >= 1 {
-		description = "Moderate release security: some controls present but gaps remain"
+		description = strings.Join(evidence, "; ") + ". Some release security controls are present but gaps remain — missing controls create potential vectors for injecting malicious code into releases."
+	} else {
+		description = strings.Join(evidence, "; ") + ". No release security controls detected. Without CI/CD automation, branch protection, signing, or review requirements, releases may come directly from developer machines with no verification."
+		if len(evidence) == 0 {
+			description = "No release security controls detected. Without CI/CD automation, branch protection, signing, or review requirements, releases may come directly from developer machines with no verification."
+		}
 	}
 
 	return models.CategoryScore{

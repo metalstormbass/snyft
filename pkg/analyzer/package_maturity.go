@@ -164,7 +164,7 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		return models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
-			Description: "Unable to verify package maturity",
+			Description: "No publish date or commit history available to assess package maturity. Unable to determine package age, staleness, or release cadence.",
 			Evidence:    "No publish date or commit history available" + maturitySource,
 			Verified:    false,
 			Methodology: maturityMethodology,
@@ -172,14 +172,15 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		}
 	}
 
+	// Build description from actual evidence
 	var description string
 	switch riskPoints {
 	case 0:
-		description = "Mature package: established age, recently updated, consistent releases"
+		description = strings.Join(evidenceParts, "; ") + ". Established packages with recent activity and consistent release cadence have been community-vetted over time."
 	case 1:
-		description = "Maturing package: moderate age or recent inactivity"
+		description = strings.Join(evidenceParts, "; ") + ". Moderate maturity — either the package is relatively new (limited community vetting) or showing signs of reduced maintenance."
 	default:
-		description = "Immature or stale package: very new or long-dormant (high compromise risk)"
+		description = strings.Join(evidenceParts, "; ") + ". Very new packages lack community vetting and may be subject to dependency confusion attacks. Very stale packages may be abandoned and vulnerable to takeover."
 	}
 
 	return models.CategoryScore{

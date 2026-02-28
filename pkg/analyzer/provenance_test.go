@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -30,8 +31,8 @@ func TestScoreProvenance_NoProvenance(t *testing.T) {
 		t.Errorf("Expected score 0 for no provenance, got %d", score.Score)
 	}
 
-	if score.Description != "No provenance evidence" {
-		t.Errorf("Expected 'No provenance evidence', got '%s'", score.Description)
+	if !strings.Contains(score.Description, "No provenance evidence") || !strings.Contains(score.Description, "unverifiable") {
+		t.Errorf("Description should explain no provenance was found and its risk, got '%s'", score.Description)
 	}
 }
 
@@ -61,8 +62,8 @@ func TestScoreProvenance_SLSAAttestation(t *testing.T) {
 		t.Errorf("Expected score 2 with SLSA attestation, got %d", score.Score)
 	}
 
-	if score.Description != "Full provenance with signatures" {
-		t.Errorf("Expected 'Full provenance with signatures', got '%s'", score.Description)
+	if !strings.Contains(score.Description, "SLSA") || !strings.Contains(score.Description, "verified") {
+		t.Errorf("Description should reference SLSA attestation and verification, got '%s'", score.Description)
 	}
 }
 
@@ -170,8 +171,8 @@ func TestScoreProvenance_PartialProvenance_SignedReleases(t *testing.T) {
 		t.Errorf("Expected score 1 for partial provenance, got %d", score.Score)
 	}
 
-	if score.Description != "Partial provenance" {
-		t.Errorf("Expected 'Partial provenance', got '%s'", score.Description)
+	if !strings.Contains(score.Description, "Partial provenance") || !strings.Contains(score.Description, "signed") {
+		t.Errorf("Description should indicate partial provenance with signed releases, got '%s'", score.Description)
 	}
 }
 
@@ -203,8 +204,8 @@ func TestScoreProvenance_FullProvenance_Multiple(t *testing.T) {
 		t.Errorf("Expected score 2 with multiple strong indicators, got %d", score.Score)
 	}
 
-	if score.Description != "Full provenance with signatures" {
-		t.Errorf("Expected 'Full provenance with signatures', got '%s'", score.Description)
+	if !strings.Contains(score.Description, "SLSA") || !strings.Contains(score.Description, "Sigstore") {
+		t.Errorf("Description should reference SLSA and Sigstore attestations, got '%s'", score.Description)
 	}
 }
 
@@ -410,8 +411,8 @@ func TestScoreProvenance_CIAloneIsNotProvenance(t *testing.T) {
 		t.Errorf("Expected score 0 with CI only (no attestations), got %d", score.Score)
 	}
 
-	if score.Description != "No provenance evidence" {
-		t.Errorf("Expected 'No provenance evidence', got '%s'", score.Description)
+	if !strings.Contains(score.Description, "No provenance evidence") || !strings.Contains(score.Description, "unverifiable") {
+		t.Errorf("Description should explain no provenance evidence and unverifiable risk, got '%s'", score.Description)
 	}
 }
 
