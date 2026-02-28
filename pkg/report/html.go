@@ -5,6 +5,7 @@ import (
 	"html"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -78,6 +79,21 @@ func riskOrdinal(level string) int {
 	}
 }
 
+// packageSlug generates an HTML-safe ID from a package name.
+// Non-alphanumeric characters are replaced with hyphens and leading/trailing
+// hyphens are removed.
+func packageSlug(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
 func (r *Reporter) printHTMLHeader(w io.Writer) {
 	f(w, `<header class="header">
 <div class="header-inner">
@@ -135,6 +151,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .risk-meter .seg-high{background:#ef4444}
 .risk-meter .seg-med{background:#f59e0b}
 .risk-meter .seg-low{background:#22c55e}
+
+/* Package links in summary */
+.pkg-links{margin-top:10px;font-size:12px}
+.pkg-links-group{margin-bottom:4px}
+.pkg-links-group .group-label{font-weight:600;margin-right:4px}
+.pkg-links-group .group-label.high{color:#ef4444}
+.pkg-links-group .group-label.med{color:#d97706}
+.pkg-links-group .group-label.low{color:#16a34a}
+.pkg-links-group a{color:#475569;text-decoration:none;margin-right:6px}
+.pkg-links-group a:hover{text-decoration:underline;color:#6366f1}
 
 /* Sections */
 .section{background:#fff;border-radius:12px;padding:24px;margin-bottom:24px;box-shadow:0 1px 3px rgba(0,0,0,0.06),0 1px 2px rgba(0,0,0,0.04);border:1px solid #e2e8f0}
@@ -300,6 +326,8 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 			}
 			f(w, "</div>\n")
 		}
+		// Package name lists by risk level with anchor links
+		r.printHTMLPackageLinks(w)
 	}
 	f(w, "</div>\n")
 
@@ -320,6 +348,58 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 
 	f(w, "</div>\n")
 	return nil
+}
+
+// printHTMLPackageLinks renders package names grouped by risk level as
+// clickable anchor links that jump to the corresponding package detail section.
+func (r *Reporter) printHTMLPackageLinks(w io.Writer) {
+	var high, medium, low []models.AnalysisResult
+	for _, result := range r.results {
+		switch result.RiskLevel {
+		case "HIGH":
+			high = append(high, result)
+		case "MEDIUM":
+			medium = append(medium, result)
+		case "LOW":
+			low = append(low, result)
+		}
+	}
+
+	f(w, "<div class=\"pkg-links\">\n")
+	if len(high) > 0 {
+		f(w, "<div class=\"pkg-links-group\"><span class=\"group-label high\">High:</span>")
+		for i, result := range high {
+			if i > 0 {
+				f(w, ",")
+			}
+			slug := packageSlug(result.Dependency.Name)
+			f(w, " <a href=\"#pkg-%s\">%s</a>", slug, html.EscapeString(result.Dependency.Name))
+		}
+		f(w, "</div>\n")
+	}
+	if len(medium) > 0 {
+		f(w, "<div class=\"pkg-links-group\"><span class=\"group-label med\">Medium:</span>")
+		for i, result := range medium {
+			if i > 0 {
+				f(w, ",")
+			}
+			slug := packageSlug(result.Dependency.Name)
+			f(w, " <a href=\"#pkg-%s\">%s</a>", slug, html.EscapeString(result.Dependency.Name))
+		}
+		f(w, "</div>\n")
+	}
+	if len(low) > 0 {
+		f(w, "<div class=\"pkg-links-group\"><span class=\"group-label low\">Low:</span>")
+		for i, result := range low {
+			if i > 0 {
+				f(w, ",")
+			}
+			slug := packageSlug(result.Dependency.Name)
+			f(w, " <a href=\"#pkg-%s\">%s</a>", slug, html.EscapeString(result.Dependency.Name))
+		}
+		f(w, "</div>\n")
+	}
+	f(w, "</div>\n")
 }
 
 func (r *Reporter) printHTMLTopFindings(w io.Writer) {
@@ -401,10 +481,11 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 		openCls = " open"
 	}
 
-	f(w, "<div class=\"pkg-card %s%s\" id=\"pkg-%d\">\n", cls, openCls, index)
+	slug := packageSlug(result.Dependency.Name)
+	f(w, "<div class=\"pkg-card %s%s\" id=\"pkg-%s\">\n", cls, openCls, slug)
 
 	// Clickable header
-	f(w, "<div class=\"pkg-header\" onclick=\"toggle(%d)\">\n", index)
+	f(w, "<div class=\"pkg-header\" onclick=\"toggle('%s')\">\n", slug)
 	f(w, "<div class=\"pkg-left\">\n")
 	name := html.EscapeString(result.Dependency.Name) + "@" + html.EscapeString(result.Dependency.Version)
 	f(w, "<span class=\"pkg-name\">%s</span>\n", name)
@@ -504,7 +585,7 @@ func severityToClass(severity string) string {
 
 func (r *Reporter) printHTMLScript(w io.Writer) {
 	f(w, `<script>
-function toggle(i){var c=document.getElementById('pkg-'+i);if(c)c.classList.toggle('open')}
+function toggle(slug){var c=document.getElementById('pkg-'+slug);if(c)c.classList.toggle('open')}
 </script>
 `)
 }
