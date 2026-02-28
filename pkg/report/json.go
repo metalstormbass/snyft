@@ -25,22 +25,9 @@ type JSONReport struct {
 	ExecutiveSummary struct {
 		KeyFindings      []JSONCriticalIssue              `json:"key_findings"`
 		Summary          string                           `json:"summary"`
-		AIInsights       *JSONAIExecutiveSummary          `json:"ai_insights,omitempty"`
 	} `json:"executive_summary"`
 	Results       interface{} `json:"results"`
 	KeyRiskAreas []string    `json:"key_risk_areas"`
-}
-
-// JSONAIExecutiveSummary represents report-level AI insights in JSON.
-// Generated AFTER all packages are analyzed, synthesizes all findings.
-type JSONAIExecutiveSummary struct {
-	OverallAssessment string   `json:"overall_assessment"`
-	KeyThreats        []string `json:"key_threats"`
-	CrossPatterns     []string `json:"cross_patterns,omitempty"`
-	PriorityPackages  []string `json:"priority_packages,omitempty"`
-	RiskPosture       string   `json:"risk_posture"`
-	Confidence        float64  `json:"confidence"`
-	GeneratedAt       string   `json:"generated_at"`
 }
 
 // JSONCriticalIssue represents a critical issue in JSON format
@@ -104,19 +91,6 @@ func (r *Reporter) generateJSON() error {
 			"Supply Chain Risk Assessment: Scanned %d packages with overall risk level: %s. "+
 				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
 			r.stats.TotalPackages, r.calculateOverallRisk())
-	}
-
-	// Add report-level AI summary if available (generated after all packages analyzed)
-	if r.reportAISummary != nil {
-		report.ExecutiveSummary.AIInsights = &JSONAIExecutiveSummary{
-			OverallAssessment: r.reportAISummary.OverallAssessment,
-			KeyThreats:        r.reportAISummary.KeyThreats,
-			CrossPatterns:     r.reportAISummary.CrossPatterns,
-			PriorityPackages:  r.reportAISummary.PriorityPackages,
-			RiskPosture:       r.reportAISummary.RiskPosture,
-			Confidence:        r.reportAISummary.Confidence,
-			GeneratedAt:       r.reportAISummary.GeneratedAt.Format("2006-01-02T15:04:05Z07:00"),
-		}
 	}
 
 	// Key Risk Areas — strip ANSI escape codes so JSON consumers get plain text

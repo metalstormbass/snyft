@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/metalstormbass/snyft/pkg/ai"
 	"github.com/metalstormbass/snyft/pkg/fetcher"
 	"github.com/metalstormbass/snyft/pkg/models"
 )
@@ -25,49 +24,10 @@ type Analyzer struct {
 
 	// Libraries.io client (optional)
 	librariesIOClient *fetcher.LibrariesIOClient
-
-	// AI analysis client (optional)
-	claudeClient      *ai.Client
-	aiEnabled         bool
-	aiTimeout         time.Duration
-	aiPerCallTimeout  time.Duration
 }
 
 // AnalyzerOption is a functional option for configuring an Analyzer
 type AnalyzerOption func(*Analyzer)
-
-// WithAIConfig configures the analyzer with a custom AI configuration
-func WithAIConfig(config *ai.Config) AnalyzerOption {
-	return func(a *Analyzer) {
-		if config == nil || config.APIKey == "" {
-			a.claudeClient = nil
-			a.aiEnabled = false
-			return
-		}
-
-		claudeClient, err := ai.NewClient(config)
-		if err != nil {
-			// Log error but continue - AI analysis is optional
-			fmt.Printf("Warning: Failed to initialize AI client: %v\n", err)
-			a.claudeClient = nil
-			a.aiEnabled = false
-			return
-		}
-
-		a.claudeClient = claudeClient
-		a.aiEnabled = true
-		a.aiTimeout = config.Timeout
-		a.aiPerCallTimeout = config.PerCallTimeout
-	}
-}
-
-// WithAIDisabled explicitly disables AI analysis
-func WithAIDisabled() AnalyzerOption {
-	return func(a *Analyzer) {
-		a.claudeClient = nil
-		a.aiEnabled = false
-	}
-}
 
 // NewAnalyzer creates a new Analyzer instance with optional configuration
 func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
@@ -86,10 +46,6 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 	for _, opt := range opts {
 		opt(a)
 	}
-
-	// AI is opt-in only: callers must explicitly use WithAIConfig to enable it.
-	// Without the --ai flag (or equivalent option), AI analysis stays disabled
-	// regardless of environment variables like CLAUDE_API_KEY.
 
 	return a
 }
@@ -312,9 +268,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 
 	// Populate Findings from CategoryScores for backward compatibility
 	populateFindingsFromScores(&result)
-
-	// Enrich with AI analysis (if enabled)
-	a.enrichWithAIAnalysis(&result)
 
 	return result
 }

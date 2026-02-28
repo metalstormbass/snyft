@@ -48,7 +48,6 @@ type Reporter struct {
 	config           Config
 	results          []models.AnalysisResult
 	stats            ScanStats
-	reportAISummary  *models.ReportAISummary
 	startTime        time.Time
 	spinnerIdx       int
 }
@@ -98,13 +97,6 @@ func (r *Reporter) SetManifestCount(count int) {
 func (r *Reporter) SetDependencyCounts(direct, transitive int) {
 	r.stats.DirectDeps = direct
 	r.stats.TransitiveDeps = transitive
-}
-
-// SetReportAISummary sets the report-level AI summary.
-// This summary is generated AFTER all packages are analyzed and synthesizes
-// all findings into a holistic assessment. Displayed in the executive summary.
-func (r *Reporter) SetReportAISummary(summary *models.ReportAISummary) {
-	r.reportAISummary = summary
 }
 
 // AddResults adds analysis results to the report

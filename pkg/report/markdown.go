@@ -98,9 +98,6 @@ func (r *Reporter) generateMarkdown() error {
 		}
 	}
 
-	// AI Executive Summary
-	r.printMarkdownAIExecutiveSummary(w)
-
 	_, _ = fmt.Fprintln(w, "---")
 	_, _ = fmt.Fprintln(w)
 
@@ -135,62 +132,6 @@ func (r *Reporter) generateMarkdown() error {
 	return nil
 }
 
-// printMarkdownAIExecutiveSummary prints the report-level AI summary.
-// Generated AFTER all packages are analyzed, displayed first in the executive summary.
-func (r *Reporter) printMarkdownAIExecutiveSummary(w io.Writer) {
-	if r.reportAISummary == nil {
-		return
-	}
-
-	summary := r.reportAISummary
-
-	_, _ = fmt.Fprintln(w, "### 🤖 AI-Powered Risk Assessment")
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "%s\n", summary.OverallAssessment)
-	_, _ = fmt.Fprintln(w)
-
-	// Key Threats
-	if len(summary.KeyThreats) > 0 {
-		_, _ = fmt.Fprintln(w, "**Key Threats:**")
-		_, _ = fmt.Fprintln(w)
-		for _, threat := range summary.KeyThreats {
-			_, _ = fmt.Fprintf(w, "- 🔴 %s\n", threat)
-		}
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Cross-Package Patterns
-	if len(summary.CrossPatterns) > 0 {
-		_, _ = fmt.Fprintln(w, "**Cross-Package Patterns:**")
-		_, _ = fmt.Fprintln(w)
-		for _, pattern := range summary.CrossPatterns {
-			_, _ = fmt.Fprintf(w, "- 🟡 %s\n", pattern)
-		}
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Priority Packages
-	if len(summary.PriorityPackages) > 0 {
-		_, _ = fmt.Fprintln(w, "**Priority Packages:**")
-		_, _ = fmt.Fprintln(w)
-		for _, pkg := range summary.PriorityPackages {
-			_, _ = fmt.Fprintf(w, "- 🔴 %s\n", pkg)
-		}
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Risk Posture
-	if summary.RiskPosture != "" {
-		_, _ = fmt.Fprintf(w, "**Risk Posture:** %s\n", summary.RiskPosture)
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Confidence
-	confidencePct := summary.Confidence * 100
-	_, _ = fmt.Fprintf(w, "*AI Confidence: %.0f%%*\n", confidencePct)
-	_, _ = fmt.Fprintln(w)
-}
-
 // printMarkdownPackage prints a package in markdown format
 func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResult) {
 	riskIcon := r.getRiskIcon(result.RiskLevel)
@@ -212,13 +153,6 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 
 	if result.SupplyChainScore != nil {
 		scoreStr := fmt.Sprintf("%d/22 points (%s risk)", result.SupplyChainScore.TotalScore, result.SupplyChainScore.RiskLevel)
-		if result.SupplyChainScore.AIAdjustment != 0 {
-			adjSign := "+"
-			if result.SupplyChainScore.AIAdjustment < 0 {
-				adjSign = ""
-			}
-			scoreStr += fmt.Sprintf(" [AI adjusted %s%d: %s]", adjSign, result.SupplyChainScore.AIAdjustment, result.SupplyChainScore.AIAdjustmentReason)
-		}
 		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %s\n", scoreStr)
 	}
 
@@ -295,107 +229,6 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 		_, _ = fmt.Fprintln(w)
 	}
 
-	// AI Analysis
-	if result.AIAnalysis != nil {
-		r.printMarkdownPackageAIAnalysis(w, result.AIAnalysis)
-	}
-
 	_, _ = fmt.Fprintln(w, "---")
 	_, _ = fmt.Fprintln(w)
-}
-
-// printMarkdownPackageAIAnalysis prints AI analysis results for a package in markdown
-func (r *Reporter) printMarkdownPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnalysisResult) {
-	if aiAnalysis == nil {
-		return
-	}
-
-	// Deep Analysis (compound risks, behavioral anomalies, missed-by-rules insights)
-	if aiAnalysis.DeepAnalysis != nil {
-		da := aiAnalysis.DeepAnalysis
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "#### 🤖 AI Deep Analysis")
-		_, _ = fmt.Fprintln(w)
-
-		if da.RiskAssessment != "" {
-			_, _ = fmt.Fprintf(w, "%s\n", da.RiskAssessment)
-			_, _ = fmt.Fprintln(w)
-		}
-
-		if len(da.CompoundRisks) > 0 {
-			_, _ = fmt.Fprintln(w, "**Compound Risk Patterns:**")
-			_, _ = fmt.Fprintln(w)
-			for _, cr := range da.CompoundRisks {
-				_, _ = fmt.Fprintf(w, "- **[%s]** %s\n", cr.RiskLevel, cr.Pattern)
-				if cr.Explanation != "" {
-					_, _ = fmt.Fprintf(w, "  - %s\n", cr.Explanation)
-				}
-				if len(cr.Contributing) > 0 {
-					_, _ = fmt.Fprintf(w, "  - *Contributing signals:* %s\n", strings.Join(cr.Contributing, ", "))
-				}
-			}
-			_, _ = fmt.Fprintln(w)
-		}
-
-		if len(da.BehaviorFindings) > 0 {
-			_, _ = fmt.Fprintln(w, "**Behavioral Anomalies:**")
-			_, _ = fmt.Fprintln(w)
-			for _, bf := range da.BehaviorFindings {
-				_, _ = fmt.Fprintf(w, "- %s\n", bf)
-			}
-			_, _ = fmt.Fprintln(w)
-		}
-
-		if len(da.MissedByRules) > 0 {
-			_, _ = fmt.Fprintln(w, "**Insights Beyond Rules:**")
-			_, _ = fmt.Fprintln(w)
-			for _, insight := range da.MissedByRules {
-				_, _ = fmt.Fprintf(w, "- %s\n", insight)
-			}
-			_, _ = fmt.Fprintln(w)
-		}
-
-		confidencePct := da.Confidence * 100
-		_, _ = fmt.Fprintf(w, "*AI Confidence: %.0f%%*\n", confidencePct)
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Attack Pattern Matches
-	if len(aiAnalysis.AttackPatterns) > 0 {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "#### 🤖 AI-Detected Attack Patterns")
-		_, _ = fmt.Fprintln(w)
-
-		for _, pattern := range aiAnalysis.AttackPatterns {
-			_, _ = fmt.Fprintf(w, "- **[%s]** %s\n", pattern.Severity, pattern.PatternName)
-			if pattern.Description != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "  - *Description:* %s\n", pattern.Description)
-			}
-			confidencePct := pattern.Confidence * 100
-			_, _ = fmt.Fprintf(w, "  - *Confidence:* %.0f%%\n", confidencePct)
-
-			// Always show academic source for AI findings - this is required for traceability
-			if pattern.AcademicSource != "" {
-				_, _ = fmt.Fprintf(w, "  - *Source:* %s\n", pattern.AcademicSource)
-			}
-
-			if r.config.Verbose && len(pattern.Evidence) > 0 {
-				_, _ = fmt.Fprintln(w, "  - *Evidence:*")
-				for _, evidence := range pattern.Evidence {
-					_, _ = fmt.Fprintf(w, "    - %s\n", evidence)
-				}
-			}
-
-			_, _ = fmt.Fprintln(w)
-		}
-	}
-
-	// AI Analysis Notes
-	if aiAnalysis.AnalysisNotes != "" && r.config.Verbose {
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "#### 🤖 AI Analysis Notes")
-		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintf(w, "%s\n", aiAnalysis.AnalysisNotes)
-		_, _ = fmt.Fprintln(w)
-	}
 }
