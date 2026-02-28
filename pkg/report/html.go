@@ -165,6 +165,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .top-finding-num{font-size:12px;font-weight:700;color:#94a3b8;min-width:20px;padding-top:2px}
 .top-finding-body{flex:1;min-width:0}
 .top-finding-pkg{font-weight:600;color:#1e293b;font-size:14px}
+a.top-finding-pkg{text-decoration:none}
+a.top-finding-pkg:hover{text-decoration:underline;color:#6366f1}
 .top-finding-eco{font-size:11px;color:#94a3b8;font-weight:400;margin-left:6px}
 .top-finding-desc{font-size:13px;color:#475569;margin-top:2px}
 .sev-badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.03em;vertical-align:middle}
@@ -357,16 +359,23 @@ func (r *Reporter) printHTMLTopFindings(w io.Writer) {
 		if issue.Severity == "HIGH" || issue.Severity == "CRITICAL" {
 			sevCls = "high"
 		}
+		slug := packageSlug(issue.PackageName)
 		f(w, "<div class=\"top-finding\">\n")
 		f(w, "<div class=\"top-finding-num\">%d</div>\n", i+1)
 		f(w, "<div class=\"top-finding-body\">\n")
-		f(w, "<div><span class=\"top-finding-pkg\">%s@%s</span><span class=\"top-finding-eco\">%s</span> <span class=\"sev-badge %s\">%s</span></div>\n",
+		f(w, "<div><a href=\"#pkg-%s\" class=\"top-finding-pkg\" onclick=\"showPkg('%s')\">%s@%s</a><span class=\"top-finding-eco\">%s</span> <span class=\"sev-badge %s\">%s</span></div>\n",
+			slug,
+			slug,
 			html.EscapeString(issue.PackageName),
 			html.EscapeString(issue.PackageVersion),
 			html.EscapeString(issue.Ecosystem),
 			sevCls,
 			html.EscapeString(issue.Severity))
 		f(w, "<div class=\"top-finding-desc\">%s</div>\n", html.EscapeString(issue.Description))
+		if issue.SourceURL != "" {
+			f(w, "<div class=\"finding-extra\">Source: <a href=\"%s\" target=\"_blank\" rel=\"noopener\">%s</a></div>\n",
+				html.EscapeString(issue.SourceURL), html.EscapeString(issue.SourceURL))
+		}
 		f(w, "</div>\n")
 		f(w, "</div>\n")
 	}
@@ -534,6 +543,7 @@ func severityToClass(severity string) string {
 func (r *Reporter) printHTMLScript(w io.Writer) {
 	f(w, `<script>
 function toggle(slug){var c=document.getElementById('pkg-'+slug);if(c)c.classList.toggle('open')}
+function showPkg(slug){var c=document.getElementById('pkg-'+slug);if(c)c.classList.add('open')}
 </script>
 `)
 }

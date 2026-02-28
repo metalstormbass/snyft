@@ -710,3 +710,127 @@ func TestHTMLRiskAreasClickableLinks(t *testing.T) {
 		t.Error("Key Risk Areas still using plain text for package names instead of anchor links")
 	}
 }
+
+// Test: Top Priority Findings link to package detail sections
+// Justification: When scanning many packages, users need to quickly navigate
+//
+//	from the high-level priority findings to the full package details.
+//	Clickable links reduce triage time for identifying supply chain risks.
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - rapid
+//
+//	identification of risky packages is critical for incident response
+//
+// Methodology: Generate an HTML report with HIGH and MEDIUM risk packages,
+//
+//	verify top findings contain anchor links matching package detail IDs,
+//	and source URLs are rendered when available
+//
+// Result: Each finding in Top Priority Findings links to its package via #pkg-<slug>
+func TestHTMLTopFindingsLinkToPackageDetails(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{
+				Name:      "event-stream",
+				Version:   "3.3.6",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "HIGH",
+			Findings: []models.Finding{
+				{
+					Severity:    "HIGH",
+					Category:    "Ownership Changes",
+					Description: "Recent ownership transfer to unknown maintainer",
+					SourceURL:   "https://arxiv.org/abs/2005.09535",
+				},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 14, RiskLevel: "HIGH"},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "@types/node",
+				Version:   "20.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "MEDIUM",
+			Findings: []models.Finding{
+				{
+					Severity:    "MEDIUM",
+					Category:    "Publisher Control",
+					Description: "Single maintainer account",
+				},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 8, RiskLevel: "MEDIUM"},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "safe-pkg",
+				Version:   "1.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "LOW",
+			Findings: []models.Finding{
+				{Severity: "LOW", Description: "Well maintained"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 2, RiskLevel: "LOW"},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format: FormatHTML,
+		Writer: buf,
+	})
+	reporter.stats.StartTime = time.Now().Add(-5 * time.Second)
+	reporter.stats.EndTime = time.Now()
+	reporter.AddResults(results)
+
+	err := reporter.Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// Verify top findings contain anchor links to package details
+	if !strings.Contains(output, `<a href="#pkg-event-stream" class="top-finding-pkg" onclick="showPkg('event-stream')">event-stream@3.3.6</a>`) {
+		t.Error("Top finding missing anchor link for 'event-stream'")
+	}
+	if !strings.Contains(output, `<a href="#pkg-types-node" class="top-finding-pkg" onclick="showPkg('types-node')">@types/node@20.0.0</a>`) {
+		t.Error("Top finding missing anchor link for '@types/node'")
+	}
+
+	// Verify source URL is rendered when available
+	if !strings.Contains(output, `Source: <a href="https://arxiv.org/abs/2005.09535"`) {
+		t.Error("Top finding missing source URL link for event-stream")
+	}
+
+	// Extract just the Top Priority Findings section
+	topFindingsStart := strings.Index(output, "Top Priority Findings")
+	topFindingsEnd := strings.Index(output[topFindingsStart:], "</section>") + topFindingsStart
+	topFindingsSection := output[topFindingsStart:topFindingsEnd]
+
+	// Verify source URL is NOT rendered when empty (only event-stream has one)
+	sourceCount := strings.Count(topFindingsSection, "finding-extra")
+	if sourceCount != 1 {
+		t.Errorf("Expected exactly 1 source URL in top findings section, got %d", sourceCount)
+	}
+
+	// Verify LOW risk packages are NOT in top findings
+	if strings.Contains(topFindingsSection, "safe-pkg") {
+		t.Error("LOW risk package should not appear in Top Priority Findings")
+	}
+
+	// Verify showPkg function exists in the script
+	if !strings.Contains(output, "function showPkg(slug)") {
+		t.Error("HTML output missing showPkg JavaScript function")
+	}
+
+	// Verify package detail sections have matching IDs
+	if !strings.Contains(output, `id="pkg-event-stream"`) {
+		t.Error("Package detail section missing id='pkg-event-stream'")
+	}
+	if !strings.Contains(output, `id="pkg-types-node"`) {
+		t.Error("Package detail section missing id='pkg-types-node'")
+	}
+}
