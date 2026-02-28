@@ -89,7 +89,7 @@ func (r *Reporter) generateMarkdown() error {
 	// Detailed Findings
 	p(w, "## Detailed Findings")
 	p(w, "")
-	for _, result := range r.results {
+	for _, result := range r.sortedResults() {
 		r.printMarkdownPackage(w, result)
 	}
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,12 +13,8 @@ import (
 func (r *Reporter) generateHTML() error {
 	w := r.config.Writer
 
-	// Sort results by risk: HIGH first, then MEDIUM, then LOW
-	sorted := make([]models.AnalysisResult, len(r.results))
-	copy(sorted, r.results)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		return riskOrdinal(sorted[i].RiskLevel) > riskOrdinal(sorted[j].RiskLevel)
-	})
+	// Sort results by risk score descending, findings by severity descending
+	sorted := r.sortedResults()
 
 	if _, err := fmt.Fprint(w, `<!DOCTYPE html>
 <html lang="en">
