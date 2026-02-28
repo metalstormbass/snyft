@@ -278,8 +278,13 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 
 	// Supply chain score if available
 	if result.SupplyChainScore != nil {
-		scoreStr := fmt.Sprintf("%d/22 points (%s%s%s risk)",
+		maxScore := result.SupplyChainScore.MaxScore
+		if maxScore == 0 {
+			maxScore = 22 // backward compatibility
+		}
+		scoreStr := fmt.Sprintf("%d/%d points (%s%s%s risk)",
 			result.SupplyChainScore.TotalScore,
+			maxScore,
 			r.getRiskColor(result.SupplyChainScore.RiskLevel),
 			result.SupplyChainScore.RiskLevel,
 			ColorReset)
@@ -396,6 +401,16 @@ func (r *Reporter) printCategoryScoreTable(w io.Writer, scores models.CategorySc
 
 	// Table rows
 	for _, cat := range categories {
+		if cat.score.Skipped {
+			_, _ = fmt.Fprintf(w, "%s│%s    %-20s  %s  %s  %s\n",
+				borderColor, ColorReset,
+				cat.name,
+				" - ",
+				ColorDim+"○"+ColorReset,
+				ColorDim+"SKIP"+ColorReset)
+			continue
+		}
+
 		scoreIcon := r.getScoreIcon(cat.score.RiskPoints)
 		verifiedIcon := "✓"
 		if !cat.score.Verified {

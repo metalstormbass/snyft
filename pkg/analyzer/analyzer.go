@@ -9,6 +9,22 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
+// ValidCheckNames defines the valid check names accepted by the --check flag.
+// Keys are the CLI flag values (kebab-case), mapped to display names.
+var ValidCheckNames = map[string]string{
+	"publisher-control":    "Publisher Control",
+	"ownership-changes":    "Ownership Changes",
+	"release-anomalies":    "Release Anomalies",
+	"install-execution":    "Install Execution",
+	"dependency-sprawl":    "Dependency Sprawl",
+	"provenance":           "Provenance",
+	"health":               "Health",
+	"governance":           "Governance",
+	"release-security":     "Release Security",
+	"package-maturity":     "Package Maturity",
+	"ci-pipeline-security": "CI Pipeline Security",
+}
+
 // Analyzer performs supply chain security analysis on dependencies
 type Analyzer struct {
 	// Platform clients (cached for reuse)
@@ -24,10 +40,33 @@ type Analyzer struct {
 
 	// Libraries.io client (optional)
 	librariesIOClient *fetcher.LibrariesIOClient
+
+	// Check filter (nil = run all checks)
+	checkFilter map[string]bool
 }
 
 // AnalyzerOption is a functional option for configuring an Analyzer
 type AnalyzerOption func(*Analyzer)
+
+// WithCheckFilter configures the analyzer to only run the specified checks.
+// Check names must be valid keys from ValidCheckNames (e.g., "provenance", "health").
+func WithCheckFilter(checks []string) AnalyzerOption {
+	return func(a *Analyzer) {
+		a.checkFilter = make(map[string]bool, len(checks))
+		for _, c := range checks {
+			a.checkFilter[c] = true
+		}
+	}
+}
+
+// isCheckEnabled returns true if the named check should be executed.
+// When no filter is set (checkFilter is nil), all checks are enabled.
+func (a *Analyzer) isCheckEnabled(name string) bool {
+	if a.checkFilter == nil {
+		return true
+	}
+	return a.checkFilter[name]
+}
 
 // NewAnalyzer creates a new Analyzer instance with optional configuration
 func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
@@ -295,6 +334,9 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 		{"CI Pipeline Security", cs.CIPipelineSecurity},
 	}
 	for _, cat := range categories {
+		if cat.score.Skipped {
+			continue
+		}
 		if cat.score.RiskPoints >= 2 {
 			result.Findings = append(result.Findings, models.Finding{
 				Severity:    "HIGH",
@@ -331,38 +373,87 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		pkgID += "@" + result.Dependency.Version
 	}
 
+	skippedScore := models.CategoryScore{
+		Skipped:     true,
+		Description: "Skipped (not selected via --check flag)",
+	}
+
 	// Category 1: Publisher Control (2FA/signing/multi-maintainer)
-	score.CategoryScores.PublisherControl = a.scorePublisherControl(result)
+	if a.isCheckEnabled("publisher-control") {
+		score.CategoryScores.PublisherControl = a.scorePublisherControl(result)
+	} else {
+		score.CategoryScores.PublisherControl = skippedScore
+	}
 
 	// Category 2: Ownership Changes/Transfers
-	score.CategoryScores.OwnershipChanges = a.scoreOwnershipChanges(result)
+	if a.isCheckEnabled("ownership-changes") {
+		score.CategoryScores.OwnershipChanges = a.scoreOwnershipChanges(result)
+	} else {
+		score.CategoryScores.OwnershipChanges = skippedScore
+	}
 
 	// Category 3: Release Anomalies (dormant→sudden activity)
-	score.CategoryScores.ReleaseAnomalies = a.scoreReleaseAnomalies(result)
+	if a.isCheckEnabled("release-anomalies") {
+		score.CategoryScores.ReleaseAnomalies = a.scoreReleaseAnomalies(result)
+	} else {
+		score.CategoryScores.ReleaseAnomalies = skippedScore
+	}
 
 	// Category 4: Install-time Execution (postinstall scripts)
-	score.CategoryScores.InstallExecution = a.scoreInstallExecution(result)
+	if a.isCheckEnabled("install-execution") {
+		score.CategoryScores.InstallExecution = a.scoreInstallExecution(result)
+	} else {
+		score.CategoryScores.InstallExecution = skippedScore
+	}
 
 	// Category 5: Dependency Sprawl (transitive dependencies)
-	score.CategoryScores.DependencySprawl = a.scoreDependencySprawl(result)
+	if a.isCheckEnabled("dependency-sprawl") {
+		score.CategoryScores.DependencySprawl = a.scoreDependencySprawl(result)
+	} else {
+		score.CategoryScores.DependencySprawl = skippedScore
+	}
 
 	// Category 6: Provenance (reproducible/signed builds)
-	score.CategoryScores.Provenance = a.scoreProvenance(result)
+	if a.isCheckEnabled("provenance") {
+		score.CategoryScores.Provenance = a.scoreProvenance(result)
+	} else {
+		score.CategoryScores.Provenance = skippedScore
+	}
 
 	// Category 7: Health (bus factor/review process/CI)
-	score.CategoryScores.Health = a.scoreHealth(result)
+	if a.isCheckEnabled("health") {
+		score.CategoryScores.Health = a.scoreHealth(result)
+	} else {
+		score.CategoryScores.Health = skippedScore
+	}
 
 	// Category 8: Governance (documentation/responsiveness)
-	score.CategoryScores.Governance = a.scoreGovernance(result)
+	if a.isCheckEnabled("governance") {
+		score.CategoryScores.Governance = a.scoreGovernance(result)
+	} else {
+		score.CategoryScores.Governance = skippedScore
+	}
 
 	// Category 9: Release Security (CI publishing/branch protection/signed tags)
-	score.CategoryScores.ReleaseSecurity = a.scoreReleaseSecurity(result)
+	if a.isCheckEnabled("release-security") {
+		score.CategoryScores.ReleaseSecurity = a.scoreReleaseSecurity(result)
+	} else {
+		score.CategoryScores.ReleaseSecurity = skippedScore
+	}
 
 	// Category 10: Package Maturity (age/update frequency/staleness)
-	score.CategoryScores.PackageMaturity = a.scorePackageMaturity(result)
+	if a.isCheckEnabled("package-maturity") {
+		score.CategoryScores.PackageMaturity = a.scorePackageMaturity(result)
+	} else {
+		score.CategoryScores.PackageMaturity = skippedScore
+	}
 
 	// Category 11: CI Pipeline Security (unpinned actions/script injection/self-hosted runners)
-	score.CategoryScores.CIPipelineSecurity = a.scoreCIPipelineSecurity(result)
+	if a.isCheckEnabled("ci-pipeline-security") {
+		score.CategoryScores.CIPipelineSecurity = a.scoreCIPipelineSecurity(result)
+	} else {
+		score.CategoryScores.CIPipelineSecurity = skippedScore
+	}
 
 	// Prefix each category's evidence with the specific package identifier
 	// so every finding clearly references which library it applies to
@@ -381,31 +472,51 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 			&score.CategoryScores.CIPipelineSecurity,
 		}
 		for _, cat := range categories {
-			cat.Evidence = pkgID + ": " + cat.Evidence
+			if !cat.Skipped {
+				cat.Evidence = pkgID + ": " + cat.Evidence
+			}
 		}
 	}
 
-	// Calculate total score
-	score.TotalScore = score.CategoryScores.PublisherControl.RiskPoints +
-		score.CategoryScores.OwnershipChanges.RiskPoints +
-		score.CategoryScores.ReleaseAnomalies.RiskPoints +
-		score.CategoryScores.InstallExecution.RiskPoints +
-		score.CategoryScores.DependencySprawl.RiskPoints +
-		score.CategoryScores.Provenance.RiskPoints +
-		score.CategoryScores.Health.RiskPoints +
-		score.CategoryScores.Governance.RiskPoints +
-		score.CategoryScores.ReleaseSecurity.RiskPoints +
-		score.CategoryScores.PackageMaturity.RiskPoints +
-		score.CategoryScores.CIPipelineSecurity.RiskPoints
+	// Count active (non-skipped) checks and calculate total score
+	activeChecks := 0
+	allCategories := []*models.CategoryScore{
+		&score.CategoryScores.PublisherControl,
+		&score.CategoryScores.OwnershipChanges,
+		&score.CategoryScores.ReleaseAnomalies,
+		&score.CategoryScores.InstallExecution,
+		&score.CategoryScores.DependencySprawl,
+		&score.CategoryScores.Provenance,
+		&score.CategoryScores.Health,
+		&score.CategoryScores.Governance,
+		&score.CategoryScores.ReleaseSecurity,
+		&score.CategoryScores.PackageMaturity,
+		&score.CategoryScores.CIPipelineSecurity,
+	}
+	for _, cat := range allCategories {
+		if !cat.Skipped {
+			score.TotalScore += cat.RiskPoints
+			activeChecks++
+		}
+	}
+	score.ActiveChecks = activeChecks
+	score.MaxScore = activeChecks * 2
 
-	// Determine risk level based on total score (11 categories, 0-22 points)
-	//
-	// Thresholds calibrated against 87 real-world npm/PyPI/Maven packages.
-	// With 11 categories (0-22 scale), thresholds scaled proportionally:
-	// LOW: 0-9 (~41% of max), MEDIUM: 10-13 (~50-59%), HIGH: 14+ (~64%+)
-	if score.TotalScore >= 14 {
+	// Determine risk level based on total score.
+	// When all 11 categories are active (default): LOW 0-9, MEDIUM 10-13, HIGH 14+
+	// When --check filters are active, thresholds scale proportionally so that
+	// the same percentage of max score triggers each risk level.
+	highThreshold := 14
+	mediumThreshold := 10
+	if activeChecks < 11 && activeChecks > 0 {
+		// Scale proportionally: ceil(threshold * activeChecks / 11)
+		highThreshold = (14*activeChecks + 10) / 11
+		mediumThreshold = (10*activeChecks + 10) / 11
+	}
+
+	if score.TotalScore >= highThreshold {
 		score.RiskLevel = "HIGH"
-	} else if score.TotalScore >= 10 {
+	} else if score.TotalScore >= mediumThreshold {
 		score.RiskLevel = "MEDIUM"
 	} else {
 		score.RiskLevel = "LOW"

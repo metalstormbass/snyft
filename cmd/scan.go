@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +26,9 @@ var (
 
 	// Transitive dependency flag
 	includeTransitive bool
+
+	// Check filter flag
+	checkFilter string
 )
 
 var scanCmd = &cobra.Command{
@@ -45,6 +50,8 @@ func init() {
 	// Transitive dependency flag
 	scanCmd.Flags().BoolVar(&includeTransitive, "include-transitive", false, "Include transitive dependencies in analysis (default: direct only)")
 
+	// Check filter flag
+	scanCmd.Flags().StringVar(&checkFilter, "check", "", "Comma-separated list of checks to run (e.g., provenance,health,governance)")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
@@ -64,6 +71,29 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if format != report.FormatText && format != report.FormatMarkdown &&
 		format != report.FormatJSON && format != report.FormatHTML {
 		return fmt.Errorf("unsupported format: %s (must be text, markdown, json, or html)", outputFormat)
+	}
+
+	// Parse and validate --check flag
+	var selectedChecks []string
+	if checkFilter != "" {
+		for _, name := range strings.Split(checkFilter, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if _, valid := analyzer.ValidCheckNames[name]; !valid {
+				validNames := make([]string, 0, len(analyzer.ValidCheckNames))
+				for k := range analyzer.ValidCheckNames {
+					validNames = append(validNames, k)
+				}
+				sort.Strings(validNames)
+				return fmt.Errorf("invalid check name %q; valid values: %s", name, strings.Join(validNames, ", "))
+			}
+			selectedChecks = append(selectedChecks, name)
+		}
+		if len(selectedChecks) == 0 {
+			return fmt.Errorf("--check flag provided but no valid check names specified")
+		}
 	}
 
 	// Route status/progress messages to stderr for machine-readable formats so
@@ -143,7 +173,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	}
 
 	// Analyze dependencies in parallel
-	results := analyzeDependencies(dependencies, workers, reporter, statusOut)
+	results := analyzeDependencies(dependencies, workers, reporter, selectedChecks, statusOut)
 
 	// Clear progress line
 	reporter.ClearProgress()
@@ -246,7 +276,7 @@ func findManifestFiles(dir string) ([]string, error) {
 	return manifestFiles, err
 }
 
-func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, statusOut *os.File) []models.AnalysisResult {
+func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, selectedChecks []string, statusOut *os.File) []models.AnalysisResult {
 	results := make([]models.AnalysisResult, len(deps))
 	jobs := make(chan int, len(deps))
 	var wg sync.WaitGroup
@@ -260,8 +290,12 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 	startTime := time.Now()
 	_ = startTime // used by reporter internally
 
-	// Create analyzer
-	a := analyzer.NewAnalyzer()
+	// Create analyzer with optional check filter
+	var opts []analyzer.AnalyzerOption
+	if len(selectedChecks) > 0 {
+		opts = append(opts, analyzer.WithCheckFilter(selectedChecks))
+	}
+	a := analyzer.NewAnalyzer(opts...)
 
 	// Start a heartbeat ticker that refreshes the progress spinner every 500ms.
 	// Without this, the progress bar appears frozen during long network calls

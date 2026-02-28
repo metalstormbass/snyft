@@ -152,7 +152,11 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 	_, _ = fmt.Fprintf(w, "**Risk Level:** %s\n", result.RiskLevel)
 
 	if result.SupplyChainScore != nil {
-		scoreStr := fmt.Sprintf("%d/22 points (%s risk)", result.SupplyChainScore.TotalScore, result.SupplyChainScore.RiskLevel)
+		maxScore := result.SupplyChainScore.MaxScore
+		if maxScore == 0 {
+			maxScore = 22
+		}
+		scoreStr := fmt.Sprintf("%d/%d points (%s risk)", result.SupplyChainScore.TotalScore, maxScore, result.SupplyChainScore.RiskLevel)
 		_, _ = fmt.Fprintf(w, "**Supply Chain Score:** %s\n", scoreStr)
 	}
 
@@ -192,6 +196,11 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 		}
 
 		for _, cat := range categories {
+			if cat.score.Skipped {
+				_, _ = fmt.Fprintf(w, "| %s | - | ⚪ | SKIP |\n", cat.name)
+				continue
+			}
+
 			scoreIcon := "🟢"
 			switch cat.score.RiskPoints {
 			case 2:

