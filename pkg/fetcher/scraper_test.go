@@ -189,8 +189,8 @@ func TestPyPIGetPackageInfo_Success(t *testing.T) {
 // TestPyPIGetPackageInfo_NotFound tests 404 handling.
 //
 // Test: PyPI client returns clear error for non-existent packages
-// Justification: Typosquatting detection depends on distinguishing "not found"
-//                from other error types
+// Justification: Distinguishing "not found" from other error types is essential
+//                for accurate risk assessment
 // Source: PyPI JSON API — 404 response for unknown packages
 // Methodology: Mock API returns 404
 // Result: Error message indicates package not found

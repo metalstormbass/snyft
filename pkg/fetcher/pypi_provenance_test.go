@@ -294,8 +294,8 @@ func TestCheckPyPISignatures_PGPSignatureFieldOnly(t *testing.T) {
 }
 
 // Test: CheckPyPISignatures returns error for 404 not found
-// Justification: Non-existent package names (e.g. typosquatting candidates)
-//                must be clearly distinguished from packages without signatures
+// Justification: Non-existent package names must be clearly distinguished
+//                from packages without signatures
 // Source: PyPI JSON API — 404 for unknown packages
 // Methodology: Mock server returns 404 Not Found
 // Result: Returns error indicating package was not found
