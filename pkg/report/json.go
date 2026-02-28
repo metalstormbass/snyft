@@ -7,32 +7,40 @@ import (
 
 // JSONReport represents the JSON output structure
 type JSONReport struct {
-	Metadata struct {
-		GeneratedAt   string `json:"generated_at"`
-		ScanPath      string `json:"scan_path"`
-		ManifestFiles int    `json:"manifest_files"`
-	} `json:"metadata"`
-	Summary struct {
-		TotalPackages          int     `json:"total_packages"`
-		DirectDependencies     int     `json:"direct_dependencies"`
-		TransitiveDependencies int     `json:"transitive_dependencies"`
-		HighRisk               int     `json:"high_risk"`
-		MediumRisk             int     `json:"medium_risk"`
-		LowRisk                int     `json:"low_risk"`
-		OverallRisk            string  `json:"overall_risk"`
-		ScanDuration           float64 `json:"scan_duration_seconds"`
-	} `json:"summary"`
-	ExecutiveSummary struct {
-		KeyFindings      []JSONCriticalIssue              `json:"key_findings"`
-		Summary          string                           `json:"summary"`
-		AIInsights       *JSONAIExecutiveSummary          `json:"ai_insights,omitempty"`
-	} `json:"executive_summary"`
-	Results       interface{} `json:"results"`
-	KeyRiskAreas []string    `json:"key_risk_areas"`
+	Metadata         JSONMetadata         `json:"metadata"`
+	Summary          JSONSummary          `json:"summary"`
+	ExecutiveSummary JSONExecutiveSummary `json:"executive_summary"`
+	Results          []JSONPackageResult  `json:"results"`
+	KeyRiskAreas     []JSONRiskArea       `json:"key_risk_areas"`
 }
 
-// JSONAIExecutiveSummary represents report-level AI insights in JSON.
-// Generated AFTER all packages are analyzed, synthesizes all findings.
+// JSONMetadata holds report metadata
+type JSONMetadata struct {
+	GeneratedAt   string `json:"generated_at"`
+	ScanPath      string `json:"scan_path"`
+	ManifestFiles int    `json:"manifest_files"`
+}
+
+// JSONSummary holds scan summary statistics
+type JSONSummary struct {
+	TotalPackages          int     `json:"total_packages"`
+	DirectDependencies     int     `json:"direct_dependencies"`
+	TransitiveDependencies int     `json:"transitive_dependencies"`
+	HighRisk               int     `json:"high_risk"`
+	MediumRisk             int     `json:"medium_risk"`
+	LowRisk                int     `json:"low_risk"`
+	OverallRisk            string  `json:"overall_risk"`
+	ScanDurationSeconds    float64 `json:"scan_duration_seconds"`
+}
+
+// JSONExecutiveSummary holds the executive summary
+type JSONExecutiveSummary struct {
+	KeyFindings []JSONCriticalIssue        `json:"key_findings"`
+	Summary     string                     `json:"summary"`
+	AIInsights  *JSONAIExecutiveSummary    `json:"ai_insights,omitempty"`
+}
+
+// JSONAIExecutiveSummary represents report-level AI insights in JSON
 type JSONAIExecutiveSummary struct {
 	OverallAssessment string   `json:"overall_assessment"`
 	KeyThreats        []string `json:"key_threats"`
@@ -55,26 +63,54 @@ type JSONCriticalIssue struct {
 	Impact         string `json:"impact,omitempty"`
 }
 
+// JSONPackageResult is a typed wrapper for package results in JSON output
+type JSONPackageResult struct {
+	Name               string      `json:"name"`
+	Version            string      `json:"version"`
+	Ecosystem          string      `json:"ecosystem"`
+	IsTransitive       bool        `json:"is_transitive"`
+	RiskLevel          string      `json:"risk_level"`
+	RiskScore          int         `json:"risk_score"`
+	RepositoryURL      string      `json:"repository_url,omitempty"`
+	SourceAvailable    bool        `json:"source_available"`
+	BuildInfra         string      `json:"build_infrastructure,omitempty"`
+	SupplyChainScore   *int        `json:"supply_chain_score,omitempty"`
+	SupplyChainDetails interface{} `json:"supply_chain_details,omitempty"`
+	Findings           interface{} `json:"findings,omitempty"`
+	AIAnalysis         interface{} `json:"ai_analysis,omitempty"`
+}
+
+// JSONRiskArea represents a structured risk area in JSON output
+type JSONRiskArea struct {
+	Tag      string   `json:"tag"`
+	Severity string   `json:"severity"`
+	Count    int      `json:"count"`
+	Summary  string   `json:"summary"`
+	Examples []string `json:"examples,omitempty"`
+}
+
 // generateJSON generates a JSON report
 func (r *Reporter) generateJSON() error {
-	report := JSONReport{
-		Results: r.results,
-	}
+	report := JSONReport{}
 
 	// Metadata
-	report.Metadata.GeneratedAt = r.stats.EndTime.Format("2006-01-02T15:04:05Z07:00")
-	report.Metadata.ScanPath = r.stats.ScannedPath
-	report.Metadata.ManifestFiles = r.stats.ManifestFiles
+	report.Metadata = JSONMetadata{
+		GeneratedAt:   r.stats.EndTime.Format("2006-01-02T15:04:05Z07:00"),
+		ScanPath:      r.stats.ScannedPath,
+		ManifestFiles: r.stats.ManifestFiles,
+	}
 
 	// Summary
-	report.Summary.TotalPackages = r.stats.TotalPackages
-	report.Summary.DirectDependencies = r.stats.DirectDeps
-	report.Summary.TransitiveDependencies = r.stats.TransitiveDeps
-	report.Summary.HighRisk = r.stats.HighRisk
-	report.Summary.MediumRisk = r.stats.MediumRisk
-	report.Summary.LowRisk = r.stats.LowRisk
-	report.Summary.OverallRisk = r.calculateOverallRisk()
-	report.Summary.ScanDuration = r.stats.EndTime.Sub(r.stats.StartTime).Seconds()
+	report.Summary = JSONSummary{
+		TotalPackages:          r.stats.TotalPackages,
+		DirectDependencies:     r.stats.DirectDeps,
+		TransitiveDependencies: r.stats.TransitiveDeps,
+		HighRisk:               r.stats.HighRisk,
+		MediumRisk:             r.stats.MediumRisk,
+		LowRisk:                r.stats.LowRisk,
+		OverallRisk:            r.calculateOverallRisk(),
+		ScanDurationSeconds:    r.stats.EndTime.Sub(r.stats.StartTime).Seconds(),
+	}
 
 	// Executive Summary with Key Findings
 	criticalIssues := r.extractCriticalIssues(5)
@@ -92,21 +128,20 @@ func (r *Reporter) generateJSON() error {
 		}
 	}
 
-	// Generate professional summary text
+	// Summary text
 	if len(criticalIssues) > 0 {
 		report.ExecutiveSummary.Summary = fmt.Sprintf(
-			"Supply Chain Risk Assessment: Scanned %d packages and identified %d with elevated supply chain compromise risk. "+
-				"%d packages are HIGH risk (immediate attention required), %d are MEDIUM risk (monitoring recommended). "+
-				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
-			r.stats.TotalPackages, r.stats.HighRisk+r.stats.MediumRisk, r.stats.HighRisk, r.stats.MediumRisk)
+			"Scanned %d packages: %d HIGH risk, %d MEDIUM risk. "+
+				"Assesses supply chain compromise likelihood, not known CVEs.",
+			r.stats.TotalPackages, r.stats.HighRisk, r.stats.MediumRisk)
 	} else {
 		report.ExecutiveSummary.Summary = fmt.Sprintf(
-			"Supply Chain Risk Assessment: Scanned %d packages with overall risk level: %s. "+
-				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
+			"Scanned %d packages. Overall risk: %s. "+
+				"Assesses supply chain compromise likelihood, not known CVEs.",
 			r.stats.TotalPackages, r.calculateOverallRisk())
 	}
 
-	// Add report-level AI summary if available (generated after all packages analyzed)
+	// AI insights
 	if r.reportAISummary != nil {
 		report.ExecutiveSummary.AIInsights = &JSONAIExecutiveSummary{
 			OverallAssessment: r.reportAISummary.OverallAssessment,
@@ -119,15 +154,47 @@ func (r *Reporter) generateJSON() error {
 		}
 	}
 
-	// Key Risk Areas — strip ANSI escape codes so JSON consumers get plain text
-	rawAreas := r.generateRiskAreas()
-	cleanAreas := make([]string, len(rawAreas))
-	for i, area := range rawAreas {
-		cleanAreas[i] = stripANSI(area)
+	// Package results - typed
+	report.Results = make([]JSONPackageResult, len(r.results))
+	for i, result := range r.results {
+		pkg := JSONPackageResult{
+			Name:            result.Dependency.Name,
+			Version:         result.Dependency.Version,
+			Ecosystem:       string(result.Dependency.Ecosystem),
+			IsTransitive:    result.Dependency.IsTransitive,
+			RiskLevel:       result.RiskLevel,
+			RiskScore:       result.RiskScore,
+			RepositoryURL:   result.RepositoryURL,
+			SourceAvailable: result.SourceCodeAvailable,
+			BuildInfra:      result.BuildInfrastructure,
+		}
+		if result.SupplyChainScore != nil {
+			score := result.SupplyChainScore.TotalScore
+			pkg.SupplyChainScore = &score
+			pkg.SupplyChainDetails = result.SupplyChainScore
+		}
+		if len(result.Findings) > 0 {
+			pkg.Findings = result.Findings
+		}
+		if result.AIAnalysis != nil {
+			pkg.AIAnalysis = result.AIAnalysis
+		}
+		report.Results[i] = pkg
 	}
-	report.KeyRiskAreas = cleanAreas
 
-	// Encode JSON
+	// Key Risk Areas - structured
+	riskAreas := r.generateRiskAreas()
+	report.KeyRiskAreas = make([]JSONRiskArea, len(riskAreas))
+	for i, area := range riskAreas {
+		report.KeyRiskAreas[i] = JSONRiskArea{
+			Tag:      area.Tag,
+			Severity: area.Severity,
+			Count:    area.Count,
+			Summary:  area.Summary,
+			Examples: area.Examples,
+		}
+	}
+
 	encoder := json.NewEncoder(r.config.Writer)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(report)

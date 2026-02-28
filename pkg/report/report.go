@@ -20,15 +20,16 @@ const (
 	FormatHTML     Format = "html"
 )
 
-// ANSI color codes
+// ANSI color codes (single source of truth for all formatters)
 const (
 	colorReset   = "\033[0m"
+	colorRed     = "\033[31m"
 	colorGreen   = "\033[32m"
-	colorCyan    = "\033[36m"
 	colorYellow  = "\033[33m"
-	colorDim     = "\033[2m"
-	colorBold    = "\033[1m"
+	colorCyan    = "\033[36m"
 	colorMagenta = "\033[35m"
+	colorBold    = "\033[1m"
+	colorDim     = "\033[2m"
 )
 
 // Spinner frames for animation
@@ -45,12 +46,12 @@ type Config struct {
 
 // Reporter handles report generation
 type Reporter struct {
-	config           Config
-	results          []models.AnalysisResult
-	stats            ScanStats
-	reportAISummary  *models.ReportAISummary
-	startTime        time.Time
-	spinnerIdx       int
+	config          Config
+	results         []models.AnalysisResult
+	stats           ScanStats
+	reportAISummary *models.ReportAISummary
+	startTime       time.Time
+	spinnerIdx      int
 }
 
 // ScanStats contains scan statistics
@@ -222,7 +223,6 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-
 // CriticalIssue represents a critical finding with package details
 type CriticalIssue struct {
 	PackageName    string
@@ -232,6 +232,15 @@ type CriticalIssue struct {
 	Description    string
 	Evidence       string
 	Severity       string
+}
+
+// RiskArea represents a structured key risk area finding
+type RiskArea struct {
+	Tag      string   // e.g. "HIGH RISK", "INSTALL SCRIPTS"
+	Severity string   // "HIGH" or "MEDIUM"
+	Count    int      // Number of affected packages
+	Summary  string   // One-line summary
+	Examples []string // Example package names (up to 3)
 }
 
 // extractCriticalIssues extracts top critical issues from analysis results
@@ -244,18 +253,15 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 	copy(sortedResults, r.results)
 
 	// Sort by risk level (HIGH > MEDIUM > LOW)
-	// Then by number of HIGH/CRITICAL severity findings
 	for i := 0; i < len(sortedResults); i++ {
 		for j := i + 1; j < len(sortedResults); j++ {
 			swapNeeded := false
 
-			// Compare risk levels
 			if sortedResults[j].RiskLevel == "HIGH" && sortedResults[i].RiskLevel != "HIGH" {
 				swapNeeded = true
 			} else if sortedResults[j].RiskLevel == "MEDIUM" && sortedResults[i].RiskLevel == "LOW" {
 				swapNeeded = true
 			} else if sortedResults[i].RiskLevel == sortedResults[j].RiskLevel {
-				// Same risk level - compare by number of critical findings
 				iCritical := countCriticalFindings(sortedResults[i])
 				jCritical := countCriticalFindings(sortedResults[j])
 				if jCritical > iCritical {
@@ -271,14 +277,11 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 
 	// Extract issues from top packages
 	for _, result := range sortedResults {
-		// Only include HIGH and MEDIUM risk packages
 		if result.RiskLevel != "HIGH" && result.RiskLevel != "MEDIUM" {
 			continue
 		}
 
-		// Get most critical finding for this package
 		for _, finding := range result.Findings {
-			// Skip LOW severity findings in executive summary
 			if finding.Severity == "LOW" {
 				continue
 			}
@@ -293,8 +296,6 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 				Severity:       finding.Severity,
 			}
 			issues = append(issues, issue)
-
-			// Only take one finding per package for executive summary
 			break
 		}
 
@@ -315,4 +316,169 @@ func countCriticalFindings(result models.AnalysisResult) int {
 		}
 	}
 	return count
+}
+
+// generateRiskAreas builds structured risk area data from analysis results
+func (r *Reporter) generateRiskAreas() []RiskArea {
+	var areas []RiskArea
+
+	// HIGH risk packages
+	if r.stats.HighRisk > 0 {
+		areas = append(areas, RiskArea{
+			Tag:      "HIGH RISK",
+			Severity: "HIGH",
+			Count:    r.stats.HighRisk,
+			Summary:  fmt.Sprintf("%d package%s with HIGH supply chain compromise risk", r.stats.HighRisk, pluralize(r.stats.HighRisk)),
+		})
+	}
+
+	// Missing source code
+	var missingSourcePkgs []string
+	for _, result := range r.results {
+		if !result.SourceCodeAvailable && result.RiskLevel != "LOW" {
+			if len(missingSourcePkgs) < 3 {
+				missingSourcePkgs = append(missingSourcePkgs, result.Dependency.Name)
+			}
+		}
+	}
+	if len(missingSourcePkgs) > 0 {
+		areas = append(areas, RiskArea{
+			Tag:      "UNVERIFIABLE SOURCE",
+			Severity: "MEDIUM",
+			Count:    len(missingSourcePkgs),
+			Summary:  "Published artifacts cannot be audited or compared to source",
+			Examples: missingSourcePkgs,
+		})
+	}
+
+	// Install-time execution
+	var installScriptPkgs []string
+	for _, result := range r.results {
+		if result.Metadata.HasInstallScripts {
+			if len(installScriptPkgs) < 3 {
+				installScriptPkgs = append(installScriptPkgs, result.Dependency.Name)
+			}
+		}
+	}
+	if len(installScriptPkgs) > 0 {
+		areas = append(areas, RiskArea{
+			Tag:      "INSTALL SCRIPTS",
+			Severity: "MEDIUM",
+			Count:    len(installScriptPkgs),
+			Summary:  "Install scripts are a primary supply chain attack vector",
+			Examples: installScriptPkgs,
+		})
+	}
+
+	// Missing provenance
+	missingProvenance := 0
+	for _, result := range r.results {
+		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.Provenance.RiskPoints > 1 {
+			missingProvenance++
+		}
+	}
+	if missingProvenance > 0 {
+		areas = append(areas, RiskArea{
+			Tag:      "NO PROVENANCE",
+			Severity: "MEDIUM",
+			Count:    missingProvenance,
+			Summary:  "No SLSA attestations, Sigstore signatures, or reproducible builds",
+		})
+	}
+
+	// CI pipeline security issues
+	var ciRiskPkgs []string
+	for _, result := range r.results {
+		if result.SupplyChainScore != nil && result.SupplyChainScore.CategoryScores.CIPipelineSecurity.RiskPoints > 1 {
+			if len(ciRiskPkgs) < 3 {
+				ciRiskPkgs = append(ciRiskPkgs, result.Dependency.Name)
+			}
+		}
+	}
+	if len(ciRiskPkgs) > 0 {
+		areas = append(areas, RiskArea{
+			Tag:      "CI PIPELINE",
+			Severity: "MEDIUM",
+			Count:    len(ciRiskPkgs),
+			Summary:  "Insecure CI configs: unpinned actions, script injection, or self-hosted runners",
+			Examples: ciRiskPkgs,
+		})
+	}
+
+	return areas
+}
+
+// calculateOverallRisk determines the overall risk level from scan statistics
+func (r *Reporter) calculateOverallRisk() string {
+	if r.stats.TotalPackages == 0 {
+		return "UNKNOWN"
+	}
+
+	highPct := float64(r.stats.HighRisk) / float64(r.stats.TotalPackages)
+	mediumPct := float64(r.stats.MediumRisk) / float64(r.stats.TotalPackages)
+
+	if highPct > 0.3 {
+		return "HIGH"
+	} else if highPct > 0 || mediumPct > 0.5 {
+		return "MEDIUM"
+	}
+	return "LOW"
+}
+
+// getRiskImpactDescription returns a concise impact description for a severity level
+func (r *Reporter) getRiskImpactDescription(severity string) string {
+	switch severity {
+	case "CRITICAL", "HIGH":
+		return "Could lead to full system compromise or supply chain contamination"
+	case "MEDIUM":
+		return "Could enable lateral movement or unauthorized access"
+	case "LOW":
+		return "Limited impact, contributes to attack surface"
+	default:
+		return ""
+	}
+}
+
+// getCategoryList returns the ordered list of supply chain security categories
+func getCategoryList(scores models.CategoryScores) []struct {
+	Name  string
+	Score models.CategoryScore
+} {
+	return []struct {
+		Name  string
+		Score models.CategoryScore
+	}{
+		{"Publisher Control", scores.PublisherControl},
+		{"Ownership Changes", scores.OwnershipChanges},
+		{"Release Anomalies", scores.ReleaseAnomalies},
+		{"Install Execution", scores.InstallExecution},
+		{"Dependency Sprawl", scores.DependencySprawl},
+		{"Provenance", scores.Provenance},
+		{"Health", scores.Health},
+		{"Governance", scores.Governance},
+		{"Release Security", scores.ReleaseSecurity},
+		{"Package Maturity", scores.PackageMaturity},
+		{"CI Pipeline", scores.CIPipelineSecurity},
+	}
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.2fs", d.Seconds())
+}
+
+func pluralize(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func pct(n, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(n) / float64(total) * 100
 }
