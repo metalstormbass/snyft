@@ -1193,10 +1193,8 @@ func TestFileExistsCaching(t *testing.T) {
 }
 
 // Test: getReleases returns cached result on second call
-// Justification: getReleases is called three times per package from provenance
-//
-//	checks (checkSigstoreSignatures, checkSignedReleases, CheckSignedReleases).
-//	Caching eliminates two redundant API calls per package.
+// Justification: getReleases is called from provenance checks (checkSignedReleases).
+//	Caching eliminates redundant API calls per package.
 //
 // Methodology: Count server requests; assert only one network call is made.
 // Result: Two calls to getReleases produce exactly one HTTP request.

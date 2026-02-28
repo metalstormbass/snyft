@@ -1082,37 +1082,6 @@ func TestPyPIGetOwnershipHistory_RateLimitFallback(t *testing.T) {
 	}
 }
 
-// TestPyPICheckPyPISignatures_RateLimitGraceful tests that CheckPyPISignatures
-// returns (false, 0, 0, nil) when rate-limited instead of an error.
-//
-// Test: PyPI CheckPyPISignatures degrades gracefully on rate limit
-// Justification: Signature verification failing due to rate limit should not
-//                inflate the risk score — unknown is better than false negative
-// Source: PEP 740 — "Index support for digital attestations"
-// Methodology: Mock both Simple API and JSON API to return 429
-// Result: Returns (false, 0, 0, nil) — no signatures detected, no error
-func TestPyPICheckPyPISignatures_RateLimitGraceful(t *testing.T) {
-	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
-	}))
-	defer apiServer.Close()
-
-	client := NewPyPIClient()
-	client.baseURL = apiServer.URL
-
-	hasSig, signedCount, totalCount, err := client.CheckPyPISignatures("test-package")
-
-	if err != nil {
-		t.Errorf("CheckPyPISignatures() returned error on rate limit: %v", err)
-	}
-	if hasSig {
-		t.Error("CheckPyPISignatures() reported signatures when rate-limited")
-	}
-	if signedCount != 0 || totalCount != 0 {
-		t.Errorf("CheckPyPISignatures() counts = (%d, %d), want (0, 0) on rate limit", signedCount, totalCount)
-	}
-}
-
 // TestGitLabGetRepositoryInfo_RateLimitFallback tests that GitLab GetRepositoryInfo
 // attempts scraping when the API is rate-limited.
 //

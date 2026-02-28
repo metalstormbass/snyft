@@ -548,36 +548,6 @@ func (c *GitLabClient) GetProvenanceInfo(repoURL string) (*models.ProvenanceInfo
 		}
 	}
 
-	// Fetch .gitlab-ci.yml and inspect for signing/attestation tooling.
-	// Missing file is acceptable - we degrade gracefully.
-	ciContent, err := c.GetFileContent(repoURL, ".gitlab-ci.yml")
-	if err == nil {
-		ciLower := strings.ToLower(ciContent)
-
-		// Sigstore/cosign usage in the pipeline indicates artifact signing.
-		// Source: Sigstore project - https://www.sigstore.dev/
-		if strings.Contains(ciLower, "cosign") || strings.Contains(ciLower, "sigstore") {
-			info.HasSigstoreSignature = true
-		}
-
-		// SLSA generator usage indicates provenance attestation.
-		// Source: SLSA specification - https://slsa.dev/spec/v1.0/
-		if strings.Contains(ciLower, "slsa") {
-			info.HasSLSAAttestation = true
-		}
-	}
-
-	// Check for a cosign public key or config directory in the repository root.
-	// Presence indicates the project has set up signing infrastructure.
-	// Source: Sigstore/cosign documentation - https://github.com/sigstore/cosign
-	cosignFiles := []string{".cosign/", "cosign.pub"}
-	for _, f := range cosignFiles {
-		if _, ferr := c.GetFileContent(repoURL, f); ferr == nil {
-			info.HasSigstoreSignature = true
-			break
-		}
-	}
-
 	return info, nil
 }
 

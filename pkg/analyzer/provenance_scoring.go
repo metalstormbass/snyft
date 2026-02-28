@@ -25,7 +25,7 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	evidence := []string{}
 	checks := []models.CheckResult{}
 	provenanceScore := 0
-	methodology := "Checked source code availability (source package in artifact and/or public repository URL). Checked for SLSA attestations, Sigstore/Cosign signatures, ecosystem-specific provenance (npm provenance, PyPI signatures, Maven Central GPG signatures), signed GitHub releases, and OSSF Scorecard Signed-Releases check."
+	methodology := "Checked source code availability (source package in artifact and/or public repository URL). Checked for ecosystem-specific provenance (npm provenance, Maven Central GPG signatures), signed GitHub releases, and OSSF Scorecard Signed-Releases check."
 
 	// --- Phase 1: Source availability (primary factor) ---
 	//
@@ -73,24 +73,6 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 
 	// --- Phase 2: Attestation checks (existing logic) ---
 
-	// Check for SLSA attestations (highest quality provenance)
-	if result.Metadata.HasSLSAAttestation {
-		provenanceScore += 2
-		evidence = append(evidence, fmt.Sprintf("SLSA attestation (%s)", result.Metadata.SLSALevel))
-		checks = append(checks, models.CheckResult{Name: "SLSA attestation", Status: "PASS", Detail: fmt.Sprintf("SLSA level: %s", result.Metadata.SLSALevel)})
-	} else {
-		checks = append(checks, models.CheckResult{Name: "SLSA attestation", Status: "FAIL", Detail: "No SLSA attestation found"})
-	}
-
-	// Check for Sigstore signatures
-	if result.Metadata.HasSigstoreSignature {
-		provenanceScore += 2
-		evidence = append(evidence, "Sigstore/Cosign signatures")
-		checks = append(checks, models.CheckResult{Name: "Sigstore signatures", Status: "PASS", Detail: "Sigstore/Cosign signatures found"})
-	} else {
-		checks = append(checks, models.CheckResult{Name: "Sigstore signatures", Status: "FAIL", Detail: "No Sigstore/Cosign signatures found"})
-	}
-
 	// Check for ecosystem-specific provenance
 	if result.Metadata.HasNPMProvenance {
 		provenanceScore += 2
@@ -98,14 +80,6 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		checks = append(checks, models.CheckResult{Name: "npm provenance", Status: "PASS", Detail: "npm provenance attestations present"})
 	} else if result.Dependency.Ecosystem == models.EcosystemNPM {
 		checks = append(checks, models.CheckResult{Name: "npm provenance", Status: "FAIL", Detail: "No npm provenance attestations found"})
-	}
-
-	if result.Metadata.HasPyPISignatures {
-		provenanceScore += 2
-		evidence = append(evidence, "PyPI cryptographic signatures")
-		checks = append(checks, models.CheckResult{Name: "PyPI signatures", Status: "PASS", Detail: "PyPI cryptographic signatures present"})
-	} else if result.Dependency.Ecosystem == models.EcosystemPyPI {
-		checks = append(checks, models.CheckResult{Name: "PyPI signatures", Status: "FAIL", Detail: "No PyPI cryptographic signatures found"})
 	}
 
 	// Check for Maven Central GPG signatures (.asc files)
@@ -162,17 +136,8 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 
 	// Build attestation summary for descriptions
 	attestationDetails := []string{}
-	if !result.Metadata.HasSLSAAttestation {
-		attestationDetails = append(attestationDetails, "no SLSA attestations")
-	}
-	if !result.Metadata.HasSigstoreSignature {
-		attestationDetails = append(attestationDetails, "no Sigstore signatures")
-	}
 	if result.Dependency.Ecosystem == models.EcosystemNPM && !result.Metadata.HasNPMProvenance {
 		attestationDetails = append(attestationDetails, "no npm provenance")
-	}
-	if result.Dependency.Ecosystem == models.EcosystemPyPI && !result.Metadata.HasPyPISignatures {
-		attestationDetails = append(attestationDetails, "no PyPI signatures")
 	}
 	if result.Dependency.Ecosystem == models.EcosystemMaven && !result.Metadata.HasMavenGPGSignature {
 		attestationDetails = append(attestationDetails, "no Maven GPG signature")
