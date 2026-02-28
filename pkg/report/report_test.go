@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -866,5 +867,217 @@ func TestHTMLTopFindingsLinkToPackageDetails(t *testing.T) {
 	}
 	if !strings.Contains(output, `id="pkg-types-node"`) {
 		t.Error("Package detail section missing id='pkg-types-node'")
+	}
+}
+
+// Test: Score gradient produces smooth color transitions across the 0-20 range
+// Justification: A smooth gradient from green to red enables faster visual triage
+//
+//	of supply chain risk — users can instantly gauge relative risk at a
+//	glance rather than mapping discrete buckets mentally.
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — rapid
+//
+//	identification of risky packages is critical for incident response
+//
+// Methodology: Verify gradient interpolation at boundary values and midpoints,
+//
+//	check ANSI truecolor and CSS output formats
+//
+// Result: Score 0 is green, score 20 is red, intermediates smoothly interpolate
+func TestScoreGradientRGB(t *testing.T) {
+	tests := []struct {
+		score      int
+		wantR      int
+		wantG      int
+		wantB      int
+		desc       string
+	}{
+		{0, 82, 183, 136, "score 0 should be forest green"},
+		{5, 132, 204, 22, "score 5 should be lime/yellow-green"},
+		{10, 245, 158, 11, "score 10 should be amber"},
+		{15, 249, 115, 22, "score 15 should be orange"},
+		{20, 239, 68, 68, "score 20 should be red"},
+	}
+
+	for _, tt := range tests {
+		r, g, b := scoreGradientRGB(tt.score)
+		if r != tt.wantR || g != tt.wantG || b != tt.wantB {
+			t.Errorf("scoreGradientRGB(%d): got (%d,%d,%d), want (%d,%d,%d) — %s",
+				tt.score, r, g, b, tt.wantR, tt.wantG, tt.wantB, tt.desc)
+		}
+	}
+}
+
+// Test: Gradient interpolates smoothly between adjacent stops
+// Justification: Intermediate scores (e.g. 3, 7, 12) must produce colors
+//
+//	between adjacent gradient stops, not jump between buckets
+//
+// Source: Visual triage requirement for supply chain risk reports
+// Methodology: Verify midpoint between two stops has intermediate RGB values
+// Result: Score 2-3 produces values between stop 0 and stop 5
+func TestScoreGradientInterpolation(t *testing.T) {
+	// Score 2 should be between green (score 0) and lime (score 5)
+	r, g, _ := scoreGradientRGB(2)
+	if r <= 82 || r >= 132 {
+		t.Errorf("scoreGradientRGB(2): R=%d should be between 82 and 132", r)
+	}
+	if g <= 183 || g >= 204 {
+		t.Errorf("scoreGradientRGB(2): G=%d should be between 183 and 204", g)
+	}
+
+	// Score 12 should be between amber (score 10) and orange (score 15)
+	r, _, _ = scoreGradientRGB(12)
+	if r < 245 || r > 249 {
+		t.Errorf("scoreGradientRGB(12): R=%d should be between 245 and 249", r)
+	}
+}
+
+// Test: Gradient clamps at boundaries
+// Justification: Scores outside the 0-20 range must not cause out-of-bounds
+//
+//	errors or produce unexpected colors
+//
+// Source: Defensive testing for edge cases in risk scoring
+// Methodology: Test scores below 0 and above 20
+// Result: Negative scores match score 0, scores >20 match score 20
+func TestScoreGradientBoundaries(t *testing.T) {
+	r0, g0, b0 := scoreGradientRGB(0)
+	rNeg, gNeg, bNeg := scoreGradientRGB(-5)
+	if r0 != rNeg || g0 != gNeg || b0 != bNeg {
+		t.Errorf("scoreGradientRGB(-5) should equal scoreGradientRGB(0)")
+	}
+
+	r20, g20, b20 := scoreGradientRGB(20)
+	rHigh, gHigh, bHigh := scoreGradientRGB(25)
+	if r20 != rHigh || g20 != gHigh || b20 != bHigh {
+		t.Errorf("scoreGradientRGB(25) should equal scoreGradientRGB(20)")
+	}
+}
+
+// Test: scoreColor returns truecolor ANSI escape codes
+// Justification: Terminal output must use 24-bit color for smooth gradient
+//
+//	display when rendering risk scores
+//
+// Source: ANSI truecolor specification (ISO 8613-6)
+// Methodology: Verify scoreColor returns \033[38;2;R;G;Bm format
+// Result: Output matches expected ANSI truecolor escape format
+func TestScoreColorANSI(t *testing.T) {
+	color := scoreColor(0)
+	expected := "\033[38;2;82;183;136m"
+	if color != expected {
+		t.Errorf("scoreColor(0) = %q, want %q", color, expected)
+	}
+
+	color = scoreColor(20)
+	expected = "\033[38;2;239;68;68m"
+	if color != expected {
+		t.Errorf("scoreColor(20) = %q, want %q", color, expected)
+	}
+}
+
+// Test: scoreColorCSS returns valid CSS rgb() values
+// Justification: HTML reports must use inline CSS colors for gradient score
+//
+//	display to accurately reflect risk levels
+//
+// Source: CSS Color Level 4 specification (W3C)
+// Methodology: Verify scoreColorCSS returns rgb(R,G,B) format
+// Result: Output matches expected CSS color format
+func TestScoreColorCSS(t *testing.T) {
+	css := scoreColorCSS(0)
+	expected := "rgb(82,183,136)"
+	if css != expected {
+		t.Errorf("scoreColorCSS(0) = %q, want %q", css, expected)
+	}
+
+	css = scoreColorCSS(20)
+	expected = "rgb(239,68,68)"
+	if css != expected {
+		t.Errorf("scoreColorCSS(20) = %q, want %q", css, expected)
+	}
+
+	css = scoreColorCSS(10)
+	expected = "rgb(245,158,11)"
+	if css != expected {
+		t.Errorf("scoreColorCSS(10) = %q, want %q", css, expected)
+	}
+}
+
+// Test: HTML report uses gradient colors for package score displays
+// Justification: Score numbers in the HTML report must use gradient colors
+//
+//	to enable visual risk triage at a glance
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — rapid
+//
+//	identification of risky packages is critical for incident response
+//
+// Methodology: Generate HTML report and verify inline style attributes use
+//
+//	the gradient color values on score elements
+//
+// Result: Package scores have inline color styles matching the gradient
+func TestHTMLReportUsesGradientColors(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{
+				Name:      "risky-pkg",
+				Version:   "1.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "HIGH",
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 16,
+				RiskLevel:  "HIGH",
+			},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "safe-pkg",
+				Version:   "2.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "LOW",
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 3,
+				RiskLevel:  "LOW",
+			},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format: FormatHTML,
+		Writer: buf,
+	})
+	reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
+	reporter.stats.EndTime = time.Now()
+	reporter.AddResults(results)
+
+	err := reporter.Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// High-score package should have inline gradient color on its score
+	highColor := scoreColorCSS(16)
+	if !strings.Contains(output, fmt.Sprintf("style=\"color:%s\"", highColor)) {
+		t.Errorf("HTML output missing gradient color %s for score 16", highColor)
+	}
+
+	// Low-score package should have inline gradient color on its score
+	lowColor := scoreColorCSS(3)
+	if !strings.Contains(output, fmt.Sprintf("style=\"color:%s\"", lowColor)) {
+		t.Errorf("HTML output missing gradient color %s for score 3", lowColor)
+	}
+
+	// The two colors should be different (gradient, not flat)
+	if highColor == lowColor {
+		t.Error("Score 16 and score 3 should have different gradient colors")
 	}
 }

@@ -455,9 +455,16 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 	f(w, "<div class=\"pkg-right\">\n")
 	if result.SupplyChainScore != nil {
 		ms := maxScore(result.SupplyChainScore)
-		f(w, "<span class=\"pkg-score\">%d/%d</span>\n", result.SupplyChainScore.TotalScore, ms)
+		f(w, "<span class=\"pkg-score\" style=\"color:%s\">%d/%d</span>\n",
+			scoreColorCSS(result.SupplyChainScore.TotalScore),
+			result.SupplyChainScore.TotalScore, ms)
 	}
-	f(w, "<span class=\"risk-badge %s\">%s</span>\n", cls, result.RiskLevel)
+	if result.SupplyChainScore != nil {
+		badgeColor := scoreColorCSS(result.SupplyChainScore.TotalScore)
+		f(w, "<span class=\"risk-badge %s\" style=\"color:%s\">%s</span>\n", cls, badgeColor, result.RiskLevel)
+	} else {
+		f(w, "<span class=\"risk-badge %s\">%s</span>\n", cls, result.RiskLevel)
+	}
 	f(w, "<svg class=\"chevron\" viewBox=\"0 0 20 20\" fill=\"currentColor\"><path fill-rule=\"evenodd\" d=\"M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z\" clip-rule=\"evenodd\"/></svg>\n")
 	f(w, "</div>\n")
 	f(w, "</div>\n")
