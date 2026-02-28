@@ -47,6 +47,13 @@ make build
 | `-v, --verbose` | Verbose output | `false` |
 | `-o, --output` | Write results to file | stdout |
 | `--include-transitive` | Analyze transitive dependencies | `false` |
+| `-c, --check` | Run only specific checks (comma-separated) | all checks |
+
+Valid check names: `publisher-control`, `ownership-changes`, `release-anomalies`, `install-execution`, `dependency-sprawl`, `provenance`, `health`, `governance`, `release-security`, `package-maturity`
+
+```bash
+snyft scan --check health,provenance,governance
+```
 
 ## Supply Chain Scoring System
 
@@ -70,20 +77,6 @@ Each dependency is scored across 11 categories (0-2 risk points each):
 - **0-9**: Low risk
 - **10-13**: Medium risk
 - **14+**: High risk
-
-## Typosquatting Detection
-
-Snyft checks package names against curated lists of popular packages across npm, PyPI, and Maven to detect potential typosquatting attacks. Seven detection techniques are used:
-
-- **Character omission/insertion** — `lodas` vs `lodash`
-- **Character substitution** — `lodesh` vs `lodash`
-- **Adjacent transposition** — `reqeusts` vs `requests`
-- **Homoglyph substitution** — `1odash` vs `lodash`
-- **Separator confusion** — `crossenv` vs `cross-env`
-- **Scope manipulation** — `@evil/react` vs `react`
-- **Repeated characters** — `expresss` vs `express`
-
-Typosquatting findings are reported as informational warnings and do not affect the 0-20 risk score.
 
 ## Supported Ecosystems
 
