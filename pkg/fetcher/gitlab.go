@@ -287,6 +287,8 @@ func (c *GitLabClient) HasAutomatedReleases(repoURL string) (bool, error) {
 }
 
 // GetReleaseHistory fetches detailed release history for a repository.
+// Paginates through all pages (up to maxPaginationPages) to get the complete
+// release timeline needed for release anomaly detection.
 // Returns empty list when rate-limited — degrades gracefully.
 func (c *GitLabClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRelease, error) {
 	// Note: Returning GitHubRelease for interface compatibility
@@ -302,48 +304,83 @@ func (c *GitLabClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRel
 	}
 
 	projectPath := url.PathEscape(fmt.Sprintf("%s/%s", owner, repo))
-	apiURL := fmt.Sprintf("%s/projects/%s/releases?per_page=%d", baseURL, projectPath, limit)
 
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
-		return nil, err
+	// Use per_page=100 (GitLab max) and paginate through all pages.
+	// The limit parameter caps the total number of releases returned.
+	perPage := 100
+	if limit > 0 && limit < perPage {
+		perPage = limit
 	}
 
-	if c.token != "" {
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-	}
+	var allReleases []GitHubRelease
+	nextURL := fmt.Sprintf("%s/projects/%s/releases?per_page=%d", baseURL, projectPath, perPage)
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		// Rate limit — return empty list so callers degrade gracefully
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
-			return []GitHubRelease{}, nil
+	for page := 0; page < maxPaginationPages && nextURL != ""; page++ {
+		req, err := http.NewRequest("GET", nextURL, nil)
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("GitLab API returned %d", resp.StatusCode)
-	}
 
-	var glReleases []GitLabRelease
-	if err := json.NewDecoder(resp.Body).Decode(&glReleases); err != nil {
-		return nil, err
-	}
+		if c.token != "" {
+			req.Header.Set("PRIVATE-TOKEN", c.token)
+		}
 
-	// Convert to GitHubRelease format for compatibility
-	releases := make([]GitHubRelease, len(glReleases))
-	for i, glr := range glReleases {
-		releases[i] = GitHubRelease{
-			TagName:     glr.TagName,
-			Name:        glr.Name,
-			CreatedAt:   glr.CreatedAt,
-			PublishedAt: glr.ReleasedAt,
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if page == 0 {
+				return nil, err
+			}
+			break
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			if page == 0 {
+				// Rate limit — return empty list so callers degrade gracefully
+				if shouldFallbackToScraping(nil, resp.StatusCode) {
+					return []GitHubRelease{}, nil
+				}
+				return nil, fmt.Errorf("GitLab API returned %d", resp.StatusCode)
+			}
+			break
+		}
+
+		var glReleases []GitLabRelease
+		if err := json.NewDecoder(resp.Body).Decode(&glReleases); err != nil {
+			_ = resp.Body.Close()
+			if page == 0 {
+				return nil, err
+			}
+			break
+		}
+
+		// Parse Link header for next page URL
+		nextURL = parseLinkHeaderNextURL(resp.Header.Get("Link"))
+		_ = resp.Body.Close()
+
+		// Convert to GitHubRelease format for compatibility
+		for _, glr := range glReleases {
+			allReleases = append(allReleases, GitHubRelease{
+				TagName:     glr.TagName,
+				Name:        glr.Name,
+				CreatedAt:   glr.CreatedAt,
+				PublishedAt: glr.ReleasedAt,
+			})
+		}
+
+		// Stop if there's no next page link AND we got fewer results than per_page
+		if nextURL == "" || len(glReleases) == 0 {
+			break
+		}
+
+		// If limit is set and we've collected enough, stop
+		if limit > 0 && len(allReleases) >= limit {
+			allReleases = allReleases[:limit]
+			break
 		}
 	}
 
-	return releases, nil
+	return allReleases, nil
 }
 
 // GetCommitActivity fetches recent commit activity for a repository.

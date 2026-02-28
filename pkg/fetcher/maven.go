@@ -366,7 +366,7 @@ func (c *MavenClient) enrichWithPublishDates(pkg *MavenPackage) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Maven Central returned status %d for oldest version query", resp.StatusCode)
+		return fmt.Errorf("maven Central returned status %d for oldest version query", resp.StatusCode)
 	}
 
 	var searchResp struct {
@@ -395,7 +395,7 @@ func (c *MavenClient) enrichWithPublishDates(pkg *MavenPackage) error {
 	defer func() { _ = resp2.Body.Close() }()
 
 	if resp2.StatusCode != http.StatusOK {
-		return fmt.Errorf("Maven Central returned status %d for newest version query", resp2.StatusCode)
+		return fmt.Errorf("maven Central returned status %d for newest version query", resp2.StatusCode)
 	}
 
 	var searchResp2 struct {
@@ -573,7 +573,8 @@ type MavenMetadataVersioning struct {
 
 // GetVersionHistory fetches version publish timestamps from Maven Central.
 // Uses the Solr search API to query all versions of an artifact with their
-// timestamps. Falls back to maven-metadata.xml version list without timestamps
+// timestamps, paginating through results with the start parameter.
+// Falls back to maven-metadata.xml version list without timestamps
 // when the search API is unavailable.
 //
 // Justification: When a package has no GitHub releases/tags, this data provides
@@ -588,56 +589,79 @@ func (c *MavenClient) GetVersionHistory(packageName string) ([]RegistryRelease, 
 	groupID := parts[0]
 	artifactID := parts[1]
 
-	// Use Solr search API to get all versions with timestamps
-	searchURL := fmt.Sprintf("%s?q=g:%s+AND+a:%s&rows=50&wt=json&core=gav",
-		c.searchURL, url.QueryEscape(groupID), url.QueryEscape(artifactID))
+	const rowsPerPage = 200
+	var allReleases []RegistryRelease
 
-	resp, err := c.httpClient.Get(searchURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search Maven Central: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
+	for page := 0; page < maxPaginationPages; page++ {
+		startOffset := page * rowsPerPage
+		searchURL := fmt.Sprintf("%s?q=g:%s+AND+a:%s&rows=%d&start=%d&wt=json&core=gav",
+			c.searchURL, url.QueryEscape(groupID), url.QueryEscape(artifactID),
+			rowsPerPage, startOffset)
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Maven Central search returned status %d", resp.StatusCode)
-	}
-
-	var searchResp struct {
-		Response struct {
-			Docs []struct {
-				V         string `json:"v"`
-				Timestamp int64  `json:"timestamp"`
-			} `json:"docs"`
-		} `json:"response"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return nil, fmt.Errorf("failed to decode Maven search response: %w", err)
-	}
-
-	releases := make([]RegistryRelease, 0, len(searchResp.Response.Docs))
-	for _, doc := range searchResp.Response.Docs {
-		if doc.V == "" || doc.Timestamp == 0 {
-			continue
+		resp, err := c.httpClient.Get(searchURL)
+		if err != nil {
+			if page == 0 {
+				return nil, fmt.Errorf("failed to search Maven Central: %w", err)
+			}
+			break
 		}
-		publishedAt := time.Unix(doc.Timestamp/1000, 0)
-		// Detect prerelease versions (Maven convention: SNAPSHOT, RC, alpha, beta)
-		isPrerelease := strings.Contains(strings.ToLower(doc.V), "snapshot") ||
-			strings.Contains(strings.ToLower(doc.V), "-rc") ||
-			strings.Contains(strings.ToLower(doc.V), "-alpha") ||
-			strings.Contains(strings.ToLower(doc.V), "-beta")
-		releases = append(releases, RegistryRelease{
-			Version:      doc.V,
-			PublishedAt:  publishedAt,
-			IsPrerelease: isPrerelease,
-		})
+
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			if page == 0 {
+				return nil, fmt.Errorf("maven Central search returned status %d", resp.StatusCode)
+			}
+			break
+		}
+
+		var searchResp struct {
+			Response struct {
+				NumFound int `json:"numFound"`
+				Docs     []struct {
+					V         string `json:"v"`
+					Timestamp int64  `json:"timestamp"`
+				} `json:"docs"`
+			} `json:"response"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			_ = resp.Body.Close()
+			if page == 0 {
+				return nil, fmt.Errorf("failed to decode Maven search response: %w", err)
+			}
+			break
+		}
+		_ = resp.Body.Close()
+
+		for _, doc := range searchResp.Response.Docs {
+			if doc.V == "" || doc.Timestamp == 0 {
+				continue
+			}
+			publishedAt := time.Unix(doc.Timestamp/1000, 0)
+			// Detect prerelease versions (Maven convention: SNAPSHOT, RC, alpha, beta)
+			isPrerelease := strings.Contains(strings.ToLower(doc.V), "snapshot") ||
+				strings.Contains(strings.ToLower(doc.V), "-rc") ||
+				strings.Contains(strings.ToLower(doc.V), "-alpha") ||
+				strings.Contains(strings.ToLower(doc.V), "-beta")
+			allReleases = append(allReleases, RegistryRelease{
+				Version:      doc.V,
+				PublishedAt:  publishedAt,
+				IsPrerelease: isPrerelease,
+			})
+		}
+
+		// Stop when we've fetched all results or got an empty page
+		if len(searchResp.Response.Docs) == 0 ||
+			startOffset+len(searchResp.Response.Docs) >= searchResp.Response.NumFound {
+			break
+		}
 	}
 
 	// Sort newest first (matching GitHub release ordering)
-	sort.Slice(releases, func(i, j int) bool {
-		return releases[i].PublishedAt.After(releases[j].PublishedAt)
+	sort.Slice(allReleases, func(i, j int) bool {
+		return allReleases[i].PublishedAt.After(allReleases[j].PublishedAt)
 	})
 
-	return releases, nil
+	return allReleases, nil
 }
 
 // VerifySourceAvailability verifies that source code exists for the exact version
