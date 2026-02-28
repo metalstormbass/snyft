@@ -111,7 +111,6 @@ Ask: **"Does this help answer whether this library could be compromised?"**
 If the answer is no, don't build it.
 
 **Good additions** (directly assess compromise risk):
-- Detecting typosquatting patterns → attacker impersonation
 - Identifying account takeover signals → compromised publisher
 - Measuring bus factor → single point of failure for takeover
 - Verifying build reproducibility → tampered artifacts

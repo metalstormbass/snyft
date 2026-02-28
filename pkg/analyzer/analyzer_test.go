@@ -197,12 +197,12 @@ func TestScorePublisherControl_UnverifiedNoMaintainers(t *testing.T) {
 
 // ===== Ownership Changes Tests =====
 // Test: Recent ownership transfer (< 6 months)
-// Justification: Recent transfers to unknown parties common in typosquatting and account takeover attacks
+// Justification: Recent transfers to unknown parties common in account takeover attacks
 // Source: "Backstabber's Knife Collection" (2020) - study of malicious npm packages (https://arxiv.org/abs/2005.09535)
 
 func TestScoreOwnershipChanges_HighRisk_RecentTransfer(t *testing.T) {
 	// Test: Recent ownership transfer detected via repo-created-after-publish signal
-	// Justification: Recent transfers to unknown parties are common in typosquatting and account takeover attacks
+	// Justification: Recent transfers to unknown parties are common in account takeover attacks
 	// Source: "Backstabber's Knife Collection: A Review of Open Source Software Supply Chain Attacks" (Ohm et al., 2020)
 	//         https://arxiv.org/abs/2005.09535 - identified 339 malicious npm packages via ownership transfer
 	// Methodology: Pure unit test — trigger step 2 (repo created after publish) without external API calls.
