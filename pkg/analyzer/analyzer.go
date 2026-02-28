@@ -22,7 +22,6 @@ var ValidCheckNames = map[string]string{
 	"governance":           "Governance",
 	"release-security":     "Release Security",
 	"package-maturity":     "Package Maturity",
-	"ci-pipeline-security": "CI Pipeline Security",
 }
 
 // Analyzer performs supply chain security analysis on dependencies
@@ -296,13 +295,13 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
 	}
 
-	// Calculate supply chain score (0-22 point rubric, 11 categories)
+	// Calculate supply chain score (0-20 point rubric, 10 categories)
 	a.calculateSupplyChainScore(&result)
 
 	// Derive legacy RiskLevel/RiskScore from SupplyChainScore
 	if result.SupplyChainScore != nil {
 		result.RiskLevel = result.SupplyChainScore.RiskLevel
-		result.RiskScore = result.SupplyChainScore.TotalScore * 100 / 22 // Map 0-22 to 0-100
+		result.RiskScore = result.SupplyChainScore.TotalScore * 100 / 20 // Map 0-20 to 0-100
 	}
 
 	// Populate Findings from CategoryScores for backward compatibility
@@ -331,7 +330,6 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 		{"Governance", cs.Governance},
 		{"Release Security", cs.ReleaseSecurity},
 		{"Package Maturity", cs.PackageMaturity},
-		{"CI Pipeline Security", cs.CIPipelineSecurity},
 	}
 	for _, cat := range categories {
 		if cat.score.Skipped {
@@ -359,9 +357,9 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 	}
 }
 
-// calculateSupplyChainScore implements a 0-22 point supply chain security rubric
-// Each of 11 categories is scored 0-2 points (0=good, 2=high risk)
-// Total: 0-9=Low risk, 10-13=Medium risk, 14+=High risk
+// calculateSupplyChainScore implements a 0-20 point supply chain security rubric
+// Each of 10 categories is scored 0-2 points (0=good, 2=high risk)
+// Total: 0-8=Low risk, 9-12=Medium risk, 13+=High risk
 func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	score := &models.SupplyChainScore{
 		CategoryScores: models.CategoryScores{},
@@ -448,13 +446,6 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		score.CategoryScores.PackageMaturity = skippedScore
 	}
 
-	// Category 11: CI Pipeline Security (unpinned actions/script injection/self-hosted runners)
-	if a.isCheckEnabled("ci-pipeline-security") {
-		score.CategoryScores.CIPipelineSecurity = a.scoreCIPipelineSecurity(result)
-	} else {
-		score.CategoryScores.CIPipelineSecurity = skippedScore
-	}
-
 	// Prefix each category's evidence with the specific package identifier
 	// so every finding clearly references which library it applies to
 	if pkgID != "" {
@@ -469,7 +460,6 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 			&score.CategoryScores.Governance,
 			&score.CategoryScores.ReleaseSecurity,
 			&score.CategoryScores.PackageMaturity,
-			&score.CategoryScores.CIPipelineSecurity,
 		}
 		for _, cat := range categories {
 			if !cat.Skipped {
@@ -491,7 +481,6 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		&score.CategoryScores.Governance,
 		&score.CategoryScores.ReleaseSecurity,
 		&score.CategoryScores.PackageMaturity,
-		&score.CategoryScores.CIPipelineSecurity,
 	}
 	for _, cat := range allCategories {
 		if !cat.Skipped {
@@ -503,15 +492,15 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	score.MaxScore = activeChecks * 2
 
 	// Determine risk level based on total score.
-	// When all 11 categories are active (default): LOW 0-9, MEDIUM 10-13, HIGH 14+
+	// When all 10 categories are active (default): LOW 0-8, MEDIUM 9-12, HIGH 13+
 	// When --check filters are active, thresholds scale proportionally so that
 	// the same percentage of max score triggers each risk level.
-	highThreshold := 14
-	mediumThreshold := 10
-	if activeChecks < 11 && activeChecks > 0 {
-		// Scale proportionally: ceil(threshold * activeChecks / 11)
-		highThreshold = (14*activeChecks + 10) / 11
-		mediumThreshold = (10*activeChecks + 10) / 11
+	highThreshold := 13
+	mediumThreshold := 9
+	if activeChecks < 10 && activeChecks > 0 {
+		// Scale proportionally: ceil(threshold * activeChecks / 10)
+		highThreshold = (13*activeChecks + 9) / 10
+		mediumThreshold = (9*activeChecks + 9) / 10
 	}
 
 	if score.TotalScore >= highThreshold {

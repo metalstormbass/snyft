@@ -240,12 +240,12 @@ type ProvenanceInfo struct {
 	BuildSystem          string   `json:"build_system,omitempty"`
 }
 
-// SupplyChainScore represents a 0-22 point supply chain security scoring rubric
+// SupplyChainScore represents a 0-20 point supply chain security scoring rubric
 type SupplyChainScore struct {
-	TotalScore         int            `json:"total_score"`                      // 0-22 points (or fewer when --check filters active)
+	TotalScore         int            `json:"total_score"`                      // 0-20 points (or fewer when --check filters active)
 	MaxScore           int            `json:"max_score"`                        // Maximum possible score (active_checks * 2)
-	ActiveChecks       int            `json:"active_checks"`                    // Number of checks that were run (11 normally, fewer with --check)
-	RiskLevel          string         `json:"risk_level"`                       // LOW (0-9), MEDIUM (10-13), HIGH (14+)
+	ActiveChecks       int            `json:"active_checks"`                    // Number of checks that were run (10 normally, fewer with --check)
+	RiskLevel          string         `json:"risk_level"`                       // LOW (0-8), MEDIUM (9-12), HIGH (13+)
 	CategoryScores     CategoryScores `json:"category_scores"`
 }
 
@@ -259,9 +259,8 @@ type CategoryScores struct {
 	Provenance         CategoryScore `json:"provenance"`           // 0-2 pts: reproducible/signed builds
 	Health             CategoryScore `json:"health"`               // 0-2 pts: bus factor/review/CI
 	Governance         CategoryScore `json:"governance"`           // 0-2 pts: governance docs/responsiveness
-	ReleaseSecurity    CategoryScore `json:"release_security"`     // 0-2 pts: CI publishing/branch protection/signed tags
+	ReleaseSecurity    CategoryScore `json:"release_security"`     // 0-2 pts: CI publishing/branch protection/signed tags/CI workflow security
 	PackageMaturity    CategoryScore `json:"package_maturity"`     // 0-2 pts: package age/update frequency/staleness
-	CIPipelineSecurity CategoryScore `json:"ci_pipeline_security"` // 0-2 pts: CI config risks/unpinned actions/script injection/self-hosted
 }
 
 // CheckResult represents the outcome of an individual sub-check within a category.

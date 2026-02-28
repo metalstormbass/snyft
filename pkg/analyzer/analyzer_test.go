@@ -2351,9 +2351,9 @@ func TestCalculateSupplyChainScore_OwnershipChangesIntegration(t *testing.T) {
 		t.Errorf("OwnershipChanges risk points = %d, want 0 (evidence: %s)", ownershipScore.RiskPoints, ownershipScore.Evidence)
 	}
 
-	// Total score should be in valid range (11 categories × 0-2 points = 0-22)
-	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 22 {
-		t.Errorf("TotalScore = %v, want 0-22", result.SupplyChainScore.TotalScore)
+	// Total score should be in valid range (10 categories × 0-2 points = 0-20)
+	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 20 {
+		t.Errorf("TotalScore = %v, want 0-20", result.SupplyChainScore.TotalScore)
 	}
 }
 
@@ -3396,7 +3396,6 @@ func TestCheckFilter_OnlySelectedChecksRun(t *testing.T) {
 		{"Governance", cs.Governance},
 		{"ReleaseSecurity", cs.ReleaseSecurity},
 		{"PackageMaturity", cs.PackageMaturity},
-		{"CIPipelineSecurity", cs.CIPipelineSecurity},
 	}
 
 	for _, sc := range skippedChecks {
@@ -3413,7 +3412,7 @@ func TestCheckFilter_OnlySelectedChecksRun(t *testing.T) {
 // Justification: Risk level thresholds must scale proportionally when fewer checks
 //                are active, otherwise a partial scan would always appear low-risk.
 // Source: Scoring system design (CLAUDE.md)
-// Methodology: Run with 2 of 11 checks, verify ActiveChecks=2 and MaxScore=4
+// Methodology: Run with 2 of 10 checks, verify ActiveChecks=2 and MaxScore=4
 // Result: ActiveChecks and MaxScore reflect the number of selected checks
 
 func TestCheckFilter_ActiveChecksAndMaxScore(t *testing.T) {
@@ -3434,11 +3433,11 @@ func TestCheckFilter_ActiveChecksAndMaxScore(t *testing.T) {
 	}
 }
 
-// Test: No filter runs all 11 checks (default behavior)
+// Test: No filter runs all 10 checks (default behavior)
 // Justification: When --check is not specified, all checks must run as before
 // Source: Backward compatibility requirement
-// Methodology: Create analyzer without filter, verify all 11 checks are active
-// Result: ActiveChecks=11, MaxScore=22, no categories are Skipped
+// Methodology: Create analyzer without filter, verify all 10 checks are active
+// Result: ActiveChecks=10, MaxScore=20, no categories are Skipped
 
 func TestCheckFilter_NoFilter_AllChecksRun(t *testing.T) {
 	a := NewAnalyzer()
@@ -3450,11 +3449,11 @@ func TestCheckFilter_NoFilter_AllChecksRun(t *testing.T) {
 
 	a.calculateSupplyChainScore(result)
 
-	if result.SupplyChainScore.ActiveChecks != 11 {
-		t.Errorf("ActiveChecks should be 11 without filter, got %d", result.SupplyChainScore.ActiveChecks)
+	if result.SupplyChainScore.ActiveChecks != 10 {
+		t.Errorf("ActiveChecks should be 10 without filter, got %d", result.SupplyChainScore.ActiveChecks)
 	}
-	if result.SupplyChainScore.MaxScore != 22 {
-		t.Errorf("MaxScore should be 22 without filter, got %d", result.SupplyChainScore.MaxScore)
+	if result.SupplyChainScore.MaxScore != 20 {
+		t.Errorf("MaxScore should be 20 without filter, got %d", result.SupplyChainScore.MaxScore)
 	}
 
 	// No categories should be skipped
@@ -3473,7 +3472,6 @@ func TestCheckFilter_NoFilter_AllChecksRun(t *testing.T) {
 		{"Governance", cs.Governance.Skipped},
 		{"ReleaseSecurity", cs.ReleaseSecurity.Skipped},
 		{"PackageMaturity", cs.PackageMaturity.Skipped},
-		{"CIPipelineSecurity", cs.CIPipelineSecurity.Skipped},
 	}
 
 	for _, cat := range categories {
@@ -3540,7 +3538,6 @@ func TestValidCheckNames_AllPresent(t *testing.T) {
 		"governance",
 		"release-security",
 		"package-maturity",
-		"ci-pipeline-security",
 	}
 
 	if len(ValidCheckNames) != len(expected) {
