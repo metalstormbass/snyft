@@ -1659,7 +1659,6 @@ func TestScoreProvenance_HighRisk_NoProvenance(t *testing.T) {
 			HasNPMProvenance:      false,
 			HasPyPISignatures:     false,
 			SignedReleases:        false,
-			ReproducibleBuild:     false,
 		},
 	}
 
@@ -1690,7 +1689,6 @@ func TestScoreProvenance_ModerateRisk_PartialProvenance_SignedOnly(t *testing.T)
 			HasSLSAAttestation:    false,
 			HasSigstoreSignature:  false,
 			SignedReleases:        true, // Partial provenance (1 point)
-			ReproducibleBuild:     false,
 		},
 	}
 
@@ -1775,32 +1773,6 @@ func TestScoreProvenance_LowRisk_NPMProvenance(t *testing.T) {
 
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points for npm provenance, got %d", score.RiskPoints)
-	}
-
-	if score.Score != 2 {
-		t.Errorf("Expected score 2, got %d", score.Score)
-	}
-}
-
-func TestScoreProvenance_LowRisk_ReproducibleBuildWithSigning(t *testing.T) {
-	// Test: Reproducible build configuration with signed releases
-	// Justification: Reproducible builds + signing enable independent verification that binary matches source
-	// Source: "Reproducible Builds: Increasing the Integrity of Software Supply Chains" (2022)
-	//         https://reproducible-builds.org/docs/
-	// Methodology: Checked for reproducible-builds.org configuration or Bazel WORKSPACE, plus release signatures
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			ReproducibleBuild:     true,  // +1 point
-			SignedReleases:        true,  // +1 point
-		},
-	}
-
-	score := analyzer.scoreProvenance(result)
-
-	// Reproducible + signed = 2 points total, so 0 risk points (low risk)
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points for reproducible build + signatures (2 points total), got %d", score.RiskPoints)
 	}
 
 	if score.Score != 2 {
@@ -2085,7 +2057,6 @@ func TestScoreHealth_MediumRisk(t *testing.T) {
 					TopContributorPct: 30.0,
 					HasCI:             true,
 					CIQualityScore:    7,
-					CIHasTests:        true,
 					CodeReviewRate:    50, // Below 75% threshold
 				},
 			},
@@ -2098,7 +2069,6 @@ func TestScoreHealth_MediumRisk(t *testing.T) {
 					BusFactor:      1,
 					HasCI:          true,
 					CIQualityScore: 8,
-					CIHasTests:     true,
 					CodeReviewRate: 85,
 				},
 			},
@@ -2145,7 +2115,6 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 					TopContributorPct:   25.0,
 					HasCI:               true,
 					CIQualityScore:      9,
-					CIHasTests:          true,
 					HasBranchProtection: true,
 					RequiredReviewers:   2,
 					CodeReviewRate:      95.0,
@@ -2161,7 +2130,6 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 					TopContributorPct: 40.0,
 					HasCI:             true,
 					CIQualityScore:    8,
-					CIHasTests:        true,
 					CodeReviewRate:    80.0,
 				},
 			},
@@ -2498,7 +2466,6 @@ func TestScoreHealth_CIQuality100_Justification(t *testing.T) {
 			BusFactor:      5,
 			HasCI:          true,
 			CIQualityScore: 10,
-			CIHasTests:     true,
 			CodeReviewRate: 90.0,
 		},
 	}
@@ -2797,37 +2764,31 @@ func TestScoreHealth_CIQualityAssessment(t *testing.T) {
 		name           string
 		hasCI          bool
 		ciQualityScore int
-		ciHasTests     bool
 	}{
 		{
 			name:           "High quality CI with tests",
 			hasCI:          true,
 			ciQualityScore: 9,
-			ciHasTests:     true,
 		},
 		{
 			name:           "Quality CI at threshold",
 			hasCI:          true,
 			ciQualityScore: 7,
-			ciHasTests:     true,
 		},
 		{
 			name:           "Moderate quality CI",
 			hasCI:          true,
 			ciQualityScore: 5,
-			ciHasTests:     false,
 		},
 		{
 			name:           "Basic CI only",
 			hasCI:          true,
 			ciQualityScore: 3,
-			ciHasTests:     false,
 		},
 		{
 			name:           "No CI",
 			hasCI:          false,
 			ciQualityScore: 0,
-			ciHasTests:     false,
 		},
 	}
 
@@ -2840,7 +2801,6 @@ func TestScoreHealth_CIQualityAssessment(t *testing.T) {
 					BusFactor:      3, // Good bus factor (gets 1 point)
 					HasCI:          tt.hasCI,
 					CIQualityScore: tt.ciQualityScore,
-					CIHasTests:     tt.ciHasTests,
 					// No review oversight — score should be 1 (bus factor only)
 				},
 			}
@@ -2989,7 +2949,6 @@ func TestScoreHealth_CIPresencePartialCredit(t *testing.T) {
 			HasCI:          true,      // CI detected
 			CISystems:      []string{"GitHub Actions"},
 			CIQualityScore: 0,         // Quality not assessed
-			CIHasTests:     false,
 			CodeReviewRate: 80,        // Gets review point
 		},
 	}

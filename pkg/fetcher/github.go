@@ -714,9 +714,6 @@ func (c *GitHubClient) GetProvenanceInfo(repoURL string) (*models.ProvenanceInfo
 	info.SignedReleaseCount = signedCount
 	info.TotalReleaseCount = totalCount
 
-	// Check for reproducible build indicators
-	info.ReproducibleBuild = c.checkReproducibleBuild(owner, repo)
-
 	return info, nil
 }
 
@@ -945,24 +942,6 @@ func (c *GitHubClient) checkSignedReleases(owner, repo string) (signedCount, tot
 	return signedCount, totalCount
 }
 
-// checkReproducibleBuild checks for reproducible build indicators
-func (c *GitHubClient) checkReproducibleBuild(owner, repo string) bool {
-	// Check for reproducible build configuration files
-	reproducibleFiles := []string{
-		".reproducible-build",
-		"reproducible-build.yml",
-		".github/workflows/reproducible.yml",
-		"BUILD.bazel", // Bazel is often used for reproducible builds
-	}
-
-	for _, file := range reproducibleFiles {
-		if c.fileExists(owner, repo, file) {
-			return true
-		}
-	}
-
-	return false
-}
 
 // getReleases fetches all releases for a repository.
 // When no token is set, the GitHub releases page is scraped first.
@@ -1412,7 +1391,6 @@ type PRStats struct {
 type CIQuality struct {
 	HasCI              bool
 	CISystems          []string
-	HasTests           bool     // Workflows contain test steps
 	WorkflowCount      int
 	QualityScore       int      // 0-10 score based on CI setup
 }
@@ -1772,7 +1750,6 @@ func (c *GitHubClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 		workflows, err := c.getWorkflowFiles(owner, repo)
 		if err == nil {
 			quality.WorkflowCount = len(workflows)
-			quality.HasTests = c.workflowsContainTests(workflows)
 		}
 	}
 
@@ -1782,11 +1759,6 @@ func (c *GitHubClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 	// Base points for having CI
 	if quality.HasCI {
 		qualityScore += 3
-	}
-
-	// Points for having tests in CI
-	if quality.HasTests {
-		qualityScore += 4
 	}
 
 	// Points for multiple workflows (suggests comprehensive CI)
@@ -1910,21 +1882,6 @@ func (c *GitHubClient) scrapeWorkflowFiles(owner, repo string) ([]string, error)
 	})
 
 	return workflows, nil
-}
-
-// workflowsContainTests checks if any workflow appears to run tests
-func (c *GitHubClient) workflowsContainTests(workflows []string) bool {
-	// Simple heuristic: check workflow names for test-related keywords
-	testKeywords := []string{"test", "ci", "check", "lint"}
-	for _, workflow := range workflows {
-		lower := strings.ToLower(workflow)
-		for _, keyword := range testKeywords {
-			if strings.Contains(lower, keyword) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (c *GitHubClient) containsString(slice []string, str string) bool {

@@ -452,7 +452,6 @@ func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL s
 	ciQuality, err := gitClient.AnalyzeCIQuality(repoURL, result.Metadata.CISystems)
 	if err == nil && ciQuality != nil {
 		result.Metadata.CIQualityScore = ciQuality.QualityScore
-		result.Metadata.CIHasTests = ciQuality.HasTests
 	}
 }
 
@@ -489,7 +488,7 @@ func (a *Analyzer) analyzeProvenance(result *models.AnalysisResult, repoURL stri
 			result.Metadata.HasSLSAAttestation = provInfo.HasSLSAAttestation
 			result.Metadata.SLSALevel = provInfo.SLSALevel
 			result.Metadata.HasSigstoreSignature = provInfo.HasSigstoreSignature
-			result.Metadata.ReproducibleBuild = provInfo.ReproducibleBuild
+			result.Metadata.TotalReleaseCount = provInfo.TotalReleaseCount
 
 			// Update SignedReleases based on actual release data
 			if provInfo.TotalReleaseCount > 0 {

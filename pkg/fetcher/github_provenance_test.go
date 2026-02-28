@@ -533,73 +533,7 @@ func TestCheckSignedReleases_WithMockServer(t *testing.T) {
 	}
 }
 
-// Test: checkReproducibleBuild detects reproducible build configuration files
-// Justification: Reproducible builds allow independent verification that a binary was
-//                built from the claimed source code. This closes the source-to-artifact
-//                gap that attackers exploit in supply chain compromises.
-// Source: SLSA specification v1.0 – https://slsa.dev/spec/v1.0/
-//         Reproducible Builds project – https://reproducible-builds.org/
-// Methodology: Mock HEAD requests to simulate presence of known reproducible build
-//              indicator files (.reproducible-build, BUILD.bazel, etc.).
-// Result: Returns true if any indicator file is found, false otherwise.
-func TestCheckReproducibleBuild(t *testing.T) {
-	tests := []struct {
-		name          string
-		existingFiles map[string]bool
-		want          bool
-	}{
-		{
-			name:          ".reproducible-build file present",
-			existingFiles: map[string]bool{".reproducible-build": true},
-			want:          true,
-		},
-		{
-			name:          "reproducible-build.yml present",
-			existingFiles: map[string]bool{"reproducible-build.yml": true},
-			want:          true,
-		},
-		{
-			name:          "reproducible workflow present",
-			existingFiles: map[string]bool{".github/workflows/reproducible.yml": true},
-			want:          true,
-		},
-		{
-			name:          "BUILD.bazel present (Bazel for reproducible builds)",
-			existingFiles: map[string]bool{"BUILD.bazel": true},
-			want:          true,
-		},
-		{
-			name:          "no reproducible build indicators",
-			existingFiles: map[string]bool{},
-			want:          false,
-		},
-	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				path := strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/contents/")
-				if tt.existingFiles[path] {
-					w.WriteHeader(http.StatusOK)
-				} else {
-					w.WriteHeader(http.StatusNotFound)
-				}
-			}))
-			defer server.Close()
-
-			client := &GitHubClient{
-				httpClient: &http.Client{},
-				baseURL:    server.URL,
-				cache:      newRepoCache(),
-			}
-
-			got := client.checkReproducibleBuild("owner", "repo")
-			if got != tt.want {
-				t.Errorf("checkReproducibleBuild() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
 
 // Test: GetProvenanceInfo integrates all provenance checks end-to-end
 // Justification: GetProvenanceInfo is the public entry point that combines SLSA, Sigstore,
@@ -679,10 +613,6 @@ func TestGetProvenanceInfo(t *testing.T) {
 		t.Errorf("TotalReleaseCount = %d, want 2", info.TotalReleaseCount)
 	}
 
-	// BUILD.bazel exists — reproducible build should be true
-	if !info.ReproducibleBuild {
-		t.Errorf("ReproducibleBuild = false, want true (BUILD.bazel present)")
-	}
 }
 
 // Test: GetProvenanceInfo returns error for invalid GitHub URL
@@ -857,8 +787,5 @@ func TestGetProvenanceInfo_NoSignals(t *testing.T) {
 	}
 	if info.TotalReleaseCount != 0 {
 		t.Errorf("expected TotalReleaseCount=0, got %d", info.TotalReleaseCount)
-	}
-	if info.ReproducibleBuild {
-		t.Error("expected ReproducibleBuild=false")
 	}
 }

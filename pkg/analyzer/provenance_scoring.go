@@ -25,7 +25,7 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	evidence := []string{}
 	checks := []models.CheckResult{}
 	provenanceScore := 0
-	methodology := "Checked source code availability (source package in artifact and/or public repository URL). Checked for SLSA attestations, Sigstore/Cosign signatures, ecosystem-specific provenance (npm provenance, PyPI signatures, Maven Central GPG signatures), signed GitHub releases, reproducible build configuration, and OSSF Scorecard Signed-Releases check."
+	methodology := "Checked source code availability (source package in artifact and/or public repository URL). Checked for SLSA attestations, Sigstore/Cosign signatures, ecosystem-specific provenance (npm provenance, PyPI signatures, Maven Central GPG signatures), signed GitHub releases, and OSSF Scorecard Signed-Releases check."
 
 	// --- Phase 1: Source availability (primary factor) ---
 	//
@@ -125,17 +125,10 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		provenanceScore += 1
 		evidence = append(evidence, "signed GitHub releases")
 		checks = append(checks, models.CheckResult{Name: "Signed releases", Status: "PASS", Detail: "GitHub releases are signed"})
+	} else if result.Metadata.TotalReleaseCount == 0 {
+		checks = append(checks, models.CheckResult{Name: "Signed releases", Status: "SKIPPED", Detail: "No GitHub releases found to check for signatures"})
 	} else {
 		checks = append(checks, models.CheckResult{Name: "Signed releases", Status: "FAIL", Detail: "Releases are not cryptographically signed"})
-	}
-
-	// Check for reproducible builds
-	if result.Metadata.ReproducibleBuild {
-		provenanceScore += 1
-		evidence = append(evidence, "reproducible build configuration")
-		checks = append(checks, models.CheckResult{Name: "Reproducible build", Status: "PASS", Detail: "Reproducible build configuration found"})
-	} else {
-		checks = append(checks, models.CheckResult{Name: "Reproducible build", Status: "FAIL", Detail: "No reproducible build configuration detected"})
 	}
 
 	// Check OSSF Scorecard for additional provenance indicators

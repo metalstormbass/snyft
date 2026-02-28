@@ -133,6 +133,8 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Signed-Releases: %d/10", ossfSigned))
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "PASS", Detail: fmt.Sprintf("OSSF Signed-Releases score: %d/10 (>= 7 threshold)", ossfSigned)})
+		} else if result.Metadata.TotalReleaseCount == 0 && ossfSigned == 0 {
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "SKIPPED", Detail: "No GitHub releases found to check for signatures"})
 		} else {
 			evidence = append(evidence, "Releases not signed")
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "FAIL", Detail: "Releases are not cryptographically signed"})

@@ -457,60 +457,7 @@ func TestContainsString(t *testing.T) {
 	}
 }
 
-func TestWorkflowsContainTests(t *testing.T) {
-	client := NewGitHubClient()
 
-	tests := []struct {
-		name      string
-		workflows []string
-		want      bool
-	}{
-		{
-			name:      "Test workflow present",
-			workflows: []string{"test.yml", "build.yml"},
-			want:      true,
-		},
-		{
-			name:      "CI workflow present",
-			workflows: []string{"ci.yml", "deploy.yml"},
-			want:      true,
-		},
-		{
-			name:      "Check workflow present",
-			workflows: []string{"check.yml"},
-			want:      true,
-		},
-		{
-			name:      "Lint workflow present",
-			workflows: []string{"lint.yml", "release.yml"},
-			want:      true,
-		},
-		{
-			name:      "No test-related workflows",
-			workflows: []string{"deploy.yml", "release.yml"},
-			want:      false,
-		},
-		{
-			name:      "Empty workflows",
-			workflows: []string{},
-			want:      false,
-		},
-		{
-			name:      "Mixed case - test in name",
-			workflows: []string{"TestSuite.yaml"},
-			want:      true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := client.workflowsContainTests(tt.workflows)
-			if got != tt.want {
-				t.Errorf("workflowsContainTests() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
 
 func TestGetLicenseName(t *testing.T) {
 	tests := []struct {
@@ -971,53 +918,48 @@ func TestCheckOrgMFARequired(t *testing.T) {
 
 // Test: AnalyzeCIQuality scores CI setup via mock GitHub Actions workflow API
 // Justification: CI quality directly impacts supply chain integrity — projects with
-//                comprehensive CI (tests, multiple workflows) catch compromised contributions
+//                comprehensive CI (multiple workflows) catch compromised contributions
 //                before they reach published artifacts.
 // Source: OSSF Scorecard – https://github.com/ossf/scorecard
 // Methodology: Mock the GitHub Contents API to return workflow file listings;
 //              verify that the quality score calculation matches the expected scoring rules.
-// Result: Score = 3 (CI present) + 4 (has tests) + 2 (>=2 workflows) = 9 max.
+// Result: Score = 3 (CI present) + 2 (>=2 workflows) = 5 max.
 func TestAnalyzeCIQuality(t *testing.T) {
 	tests := []struct {
 		name           string
 		ciSystems      []string
 		workflowFiles  []GitHubContent
 		wantScore      int
-		wantHasTests   bool
 	}{
 		{
-			name:      "GitHub Actions with test and lint workflows",
+			name:      "GitHub Actions with multiple workflows",
 			ciSystems: []string{"GitHub Actions"},
 			workflowFiles: []GitHubContent{
 				{Name: "test.yml", Type: "file"},
 				{Name: "lint.yml", Type: "file"},
 				{Name: "release.yml", Type: "file"},
 			},
-			wantScore:    9, // 3 (CI) + 4 (tests) + 2 (>=2 workflows)
-			wantHasTests: true,
+			wantScore: 5, // 3 (CI) + 2 (>=2 workflows)
 		},
 		{
-			name:      "GitHub Actions with only deploy workflows",
+			name:      "GitHub Actions with single deploy workflow",
 			ciSystems: []string{"GitHub Actions"},
 			workflowFiles: []GitHubContent{
 				{Name: "deploy.yml", Type: "file"},
 			},
-			wantScore:    4, // 3 (CI) + 0 (no tests) + 1 (1 workflow)
-			wantHasTests: false,
+			wantScore: 4, // 3 (CI) + 1 (1 workflow)
 		},
 		{
 			name:          "Non-GitHub Actions CI (Travis)",
 			ciSystems:     []string{"Travis CI"},
 			workflowFiles: nil, // Not queried for non-GHA CI
 			wantScore:     3,   // 3 (CI) only — no workflow analysis for non-GHA
-			wantHasTests:  false,
 		},
 		{
 			name:          "No CI at all",
 			ciSystems:     []string{},
 			workflowFiles: nil,
 			wantScore:     0,
-			wantHasTests:  false,
 		},
 	}
 
@@ -1050,10 +992,6 @@ func TestAnalyzeCIQuality(t *testing.T) {
 
 			if quality.QualityScore != tt.wantScore {
 				t.Errorf("QualityScore = %d, want %d", quality.QualityScore, tt.wantScore)
-			}
-
-			if quality.HasTests != tt.wantHasTests {
-				t.Errorf("HasTests = %v, want %v", quality.HasTests, tt.wantHasTests)
 			}
 
 			if quality.QualityScore < 0 || quality.QualityScore > 10 {
