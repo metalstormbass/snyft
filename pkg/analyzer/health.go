@@ -56,10 +56,10 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 		ossfContributorScore, hasOSSFContributors := result.Metadata.OSSFChecks["Contributors"]
 		if hasOSSFContributors && ossfContributorScore >= 5 {
 			points++
-			evidence = append(evidence, fmt.Sprintf("OSSF Contributors score: %d/10", ossfContributorScore))
+			evidence = append(evidence, fmt.Sprintf("OSSF Contributors score: %d/10 (organizational diversity)", ossfContributorScore))
 			verified = true
 			healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to OSSF Scorecard"})
-			healthChecks = append(healthChecks, models.CheckResult{Name: "OSSF Contributors (fallback)", Status: "PASS", Detail: fmt.Sprintf("OSSF Contributors score %d/10 >= 5 threshold (diverse contributor base)", ossfContributorScore)})
+			healthChecks = append(healthChecks, models.CheckResult{Name: "OSSF Contributors (fallback)", Status: "PASS", Detail: fmt.Sprintf("OSSF Contributors score %d/10 >= 5 threshold (contributors from multiple organizations reduce single-entity control risk)", ossfContributorScore)})
 		} else {
 			// Fallback 2: Maintainer count from package registry
 			maintainerCount := len(result.Metadata.Maintainers)
@@ -71,11 +71,11 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 				healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to maintainer count"})
 				healthChecks = append(healthChecks, models.CheckResult{Name: "Maintainer count (fallback)", Status: "PASS", Detail: fmt.Sprintf("%d maintainers >= 2 threshold", maintainerCount)})
 			} else if hasOSSFContributors && ossfContributorScore > 0 {
-				// OSSF data present but score < 5 — low contributor diversity
-				evidence = append(evidence, fmt.Sprintf("OSSF Contributors score: %d/10 (low)", ossfContributorScore))
+				// OSSF data present but score < 5 — low organizational diversity
+				evidence = append(evidence, fmt.Sprintf("OSSF Contributors score: %d/10 (low organizational diversity)", ossfContributorScore))
 				verified = true
 				healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to OSSF Scorecard"})
-				healthChecks = append(healthChecks, models.CheckResult{Name: "OSSF Contributors (fallback)", Status: "FAIL", Detail: fmt.Sprintf("OSSF Contributors score %d/10 < 5 threshold (limited contributor diversity)", ossfContributorScore)})
+				healthChecks = append(healthChecks, models.CheckResult{Name: "OSSF Contributors (fallback)", Status: "FAIL", Detail: fmt.Sprintf("OSSF Contributors score %d/10 < 5 threshold (limited organizational diversity — few contributing companies)", ossfContributorScore)})
 			} else if maintainerCount > 0 {
 				evidence = append(evidence, fmt.Sprintf("Only %d maintainer(s)", maintainerCount))
 				verified = true

@@ -476,7 +476,7 @@ func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL s
 		result.Findings = append(result.Findings, models.Finding{
 			Severity:    "MEDIUM",
 			Category:    "Low OSSF Score",
-			Description: fmt.Sprintf("OpenSSF Scorecard score is %.1f/10", scorecard.Score),
+			Description: fmt.Sprintf("OpenSSF Scorecard overall score is %.1f/10 — indicates weak supply chain security practices across multiple dimensions (branch protection, code review, signed releases, dependency management)", scorecard.Score),
 			Check:       "OSSF Scorecard Check",
 			SourceURL:   ossfScorecardURL(repoURL),
 		})

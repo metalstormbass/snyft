@@ -208,14 +208,14 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		} else {
 			evidenceParts = append(evidenceParts, "Security policy: OSSF confirmed")
 			govChecks = append(govChecks, models.CheckResult{Name: "SECURITY.md", Status: "FAIL", Detail: "No SECURITY.md file found"})
-			govChecks = append(govChecks, models.CheckResult{Name: "OSSF Security-Policy", Status: "PASS", Detail: "OSSF Scorecard confirms security policy exists"})
+			govChecks = append(govChecks, models.CheckResult{Name: "OSSF Security-Policy", Status: "PASS", Detail: "OSSF Scorecard confirms security policy with vulnerability reporting contact information"})
 		}
 	} else {
 		evidenceParts = append(evidenceParts, "No security policy found")
 		govChecks = append(govChecks, models.CheckResult{Name: "SECURITY.md", Status: "FAIL", Detail: "No SECURITY.md or .github/SECURITY.md found"})
 		if result.Metadata.OSSFChecks != nil {
 			if spScore, exists := result.Metadata.OSSFChecks["Security-Policy"]; exists {
-				govChecks = append(govChecks, models.CheckResult{Name: "OSSF Security-Policy", Status: "FAIL", Detail: fmt.Sprintf("Score: %d/10 (below threshold of 5)", spScore)})
+				govChecks = append(govChecks, models.CheckResult{Name: "OSSF Security-Policy", Status: "FAIL", Detail: fmt.Sprintf("Score: %d/10 (below threshold of 5; may lack vulnerability reporting contact links)", spScore)})
 			}
 		}
 	}

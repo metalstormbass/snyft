@@ -73,8 +73,8 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		}
 		if ossfPackaging >= 7 {
 			points++
-			evidence = append(evidence, fmt.Sprintf("OSSF Packaging: %d/10 (automated publishing)", ossfPackaging))
-			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "PASS", Detail: fmt.Sprintf("OSSF Packaging score: %d/10 (>= 7 threshold)", ossfPackaging)})
+			evidence = append(evidence, fmt.Sprintf("OSSF Packaging: %d/10 (CI-based package publishing detected)", ossfPackaging))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "PASS", Detail: fmt.Sprintf("OSSF Packaging score: %d/10 (>= 7 threshold; GitHub packaging workflow detected for CI-based publishing)", ossfPackaging)})
 		} else {
 			evidence = append(evidence, "No automated release process (local publishing risk)")
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "FAIL", Detail: "No automated release process detected; packages may be published from developer machines"})
@@ -101,10 +101,10 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		if ossfBranchProt >= 7 {
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10", ossfBranchProt))
-			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: fmt.Sprintf("OSSF Branch-Protection score: %d/10 (>= 7 threshold)", ossfBranchProt)})
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: fmt.Sprintf("OSSF Branch-Protection score: %d/10 (>= 7 threshold; PR reviews required with force-push prevention)", ossfBranchProt)})
 		} else if ossfBranchProt > 0 {
-			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10 (weak)", ossfBranchProt))
-			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "FAIL", Detail: fmt.Sprintf("OSSF Branch-Protection score: %d/10 (< 7 threshold)", ossfBranchProt)})
+			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10 (partial — may lack required PR reviews or status checks)", ossfBranchProt))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "FAIL", Detail: fmt.Sprintf("OSSF Branch-Protection score: %d/10 (< 7 threshold; may lack required PR reviews or status checks)", ossfBranchProt)})
 		} else if result.Metadata.BranchProtectionDenied {
 			// API returned 403/404 (admin access required) and OSSF has no data.
 			// Cannot determine branch protection status — report as unavailable,
@@ -132,7 +132,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		if ossfSigned >= 7 {
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Signed-Releases: %d/10", ossfSigned))
-			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "PASS", Detail: fmt.Sprintf("OSSF Signed-Releases score: %d/10 (>= 7 threshold)", ossfSigned)})
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "PASS", Detail: fmt.Sprintf("OSSF Signed-Releases score: %d/10 (>= 7 threshold; checks last 5 releases for cryptographic signatures or SLSA provenance)", ossfSigned)})
 		} else if result.Metadata.TotalReleaseCount == 0 && ossfSigned == 0 {
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Signed releases", Status: "SKIPPED", Detail: "No GitHub releases found to check for signatures"})
 		} else {
@@ -160,7 +160,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		if ossfReview >= 7 {
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Code-Review: %d/10", ossfReview))
-			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "PASS", Detail: fmt.Sprintf("OSSF Code-Review score: %d/10 (>= 7 threshold)", ossfReview)})
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "PASS", Detail: fmt.Sprintf("OSSF Code-Review score: %d/10 (>= 7 threshold; verifies human review of changes before merge)", ossfReview)})
 		} else if result.Metadata.CodeReviewRate >= 50 {
 			evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (moderate)", result.Metadata.CodeReviewRate))
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "FAIL", Detail: fmt.Sprintf("%.0f%% PRs reviewed (< 75%% threshold)", result.Metadata.CodeReviewRate)})
