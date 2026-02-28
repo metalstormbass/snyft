@@ -27,12 +27,17 @@ type MavenClient struct {
 
 // MavenPackage represents package information from Maven Central
 type MavenPackage struct {
-	GroupID       string
-	ArtifactID    string
-	LatestVersion string
-	RepositoryURL string
-	License       string
-	PublishedAt   time.Time
+	GroupID         string
+	ArtifactID      string
+	LatestVersion   string
+	RepositoryURL   string
+	License         string
+	PublishedAt     time.Time // First version publish date (from Solr API)
+	LastPublishedAt time.Time // Latest version publish date (from Solr API)
+	Developers      []MavenDeveloper // From POM <developers> section
+	VersionCount    int              // Number of versions published (from maven-metadata.xml)
+	DirectDepCount  int              // Direct non-test dependencies from POM
+	HasGPGSignature bool             // Whether .asc GPG signature file exists
 }
 
 // NewMavenClient creates a new Maven Central client
@@ -83,6 +88,19 @@ func (c *MavenClient) GetPackageInfo(packageName string) (*MavenPackage, error) 
 	// Source: https://docs.deps.dev/api/v3/
 	if pkg.RepositoryURL == "" {
 		_ = c.enrichFromDepsDev(pkg)
+	}
+
+	// Enrich with publish date timestamps from Solr API.
+	// This provides first publish date (for package maturity/age) and latest
+	// publish date (for staleness detection when no git repo is available).
+	_ = c.enrichWithPublishDates(pkg)
+
+	// Check for GPG signature on the main artifact.
+	// Maven Central has required GPG signatures since 2010, but verifying their
+	// presence indicates the publisher followed proper release procedures.
+	// Source: https://central.sonatype.org/publish/requirements/gpg/
+	if pkg.LatestVersion != "" {
+		pkg.HasGPGSignature = c.CheckGPGSignature(pkg.GroupID, pkg.ArtifactID, pkg.LatestVersion)
 	}
 
 	return pkg, nil
@@ -141,6 +159,7 @@ func (c *MavenClient) getPackageInfoDirect(groupID, artifactID string) (*MavenPa
 		GroupID:       groupID,
 		ArtifactID:    artifactID,
 		LatestVersion: version,
+		VersionCount:  len(metadata.Versioning.Versions),
 	}
 
 	// Try to fetch POM to get more metadata (ignore errors and continue with basic info)
@@ -265,6 +284,24 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 		pkg.License = pom.Licenses[0].Name
 	}
 
+	// Extract developers as proxy for maintainer/publisher data.
+	// Maven Central does not expose a maintainer list via its API, but POM files
+	// include a <developers> section listing the people who maintain the project.
+	// Source: Maven POM reference — https://maven.apache.org/pom.html#developers
+	if len(pom.Developers) > 0 {
+		pkg.Developers = pom.Developers
+	}
+
+	// Count direct non-test dependencies from POM.
+	// This provides a dependency sprawl signal even when no local pom.xml is available.
+	directCount := 0
+	for _, dep := range pom.Dependencies {
+		if dep.Scope != "test" {
+			directCount++
+		}
+	}
+	pkg.DirectDepCount = directCount
+
 	return nil
 }
 
@@ -306,6 +343,99 @@ func (c *MavenClient) enrichFromParentPOM(pkg *MavenPackage, groupID, artifactID
 	return nil
 }
 
+// enrichWithPublishDates queries the Maven Central Solr API to get the first
+// and latest publish timestamps for a package.
+//
+// First publish date feeds into Package Maturity (Category 10) age assessment.
+// Latest publish date provides a staleness fallback when no git repo is available.
+//
+// Source: Maven Central Solr search API — timestamp field on version documents
+func (c *MavenClient) enrichWithPublishDates(pkg *MavenPackage) error {
+	groupID := pkg.GroupID
+	artifactID := pkg.ArtifactID
+
+	// Get first publish date (oldest version)
+	oldestURL := fmt.Sprintf("%s?q=g:%s+AND+a:%s&rows=1&wt=json&core=gav&sort=timestamp+asc",
+		c.searchURL, url.QueryEscape(groupID), url.QueryEscape(artifactID))
+
+	resp, err := c.httpClient.Get(oldestURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch oldest version: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Maven Central returned status %d for oldest version query", resp.StatusCode)
+	}
+
+	var searchResp struct {
+		Response struct {
+			Docs []struct {
+				Timestamp int64 `json:"timestamp"`
+			} `json:"docs"`
+		} `json:"response"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return fmt.Errorf("failed to decode oldest version response: %w", err)
+	}
+
+	if len(searchResp.Response.Docs) > 0 && searchResp.Response.Docs[0].Timestamp > 0 {
+		pkg.PublishedAt = time.Unix(searchResp.Response.Docs[0].Timestamp/1000, 0)
+	}
+
+	// Get latest publish date (newest version)
+	newestURL := fmt.Sprintf("%s?q=g:%s+AND+a:%s&rows=1&wt=json&core=gav&sort=timestamp+desc",
+		c.searchURL, url.QueryEscape(groupID), url.QueryEscape(artifactID))
+
+	resp2, err := c.httpClient.Get(newestURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch newest version: %w", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+
+	if resp2.StatusCode != http.StatusOK {
+		return fmt.Errorf("Maven Central returned status %d for newest version query", resp2.StatusCode)
+	}
+
+	var searchResp2 struct {
+		Response struct {
+			Docs []struct {
+				Timestamp int64 `json:"timestamp"`
+			} `json:"docs"`
+		} `json:"response"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&searchResp2); err != nil {
+		return fmt.Errorf("failed to decode newest version response: %w", err)
+	}
+
+	if len(searchResp2.Response.Docs) > 0 && searchResp2.Response.Docs[0].Timestamp > 0 {
+		pkg.LastPublishedAt = time.Unix(searchResp2.Response.Docs[0].Timestamp/1000, 0)
+	}
+
+	return nil
+}
+
+// CheckGPGSignature checks whether a GPG signature (.asc file) exists for a
+// Maven artifact in Maven Central.
+//
+// Maven Central has required GPG signing for artifact uploads since 2010.
+// The presence of a .asc file indicates the publisher used proper release procedures
+// and their identity can be verified against public keyservers.
+//
+// Source: https://central.sonatype.org/publish/requirements/gpg/
+func (c *MavenClient) CheckGPGSignature(groupID, artifactID, version string) bool {
+	groupPath := strings.ReplaceAll(groupID, ".", "/")
+	ascURL := fmt.Sprintf("%s/%s/%s/%s/%s-%s.jar.asc",
+		c.baseURL, groupPath, artifactID, version, artifactID, version)
+
+	resp, err := c.httpClient.Head(ascURL)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode == http.StatusOK
+}
+
 // Maven API response structures
 type MavenSearchResponse struct {
 	Response MavenSearchResponseBody `json:"response"`
@@ -325,6 +455,25 @@ type MavenSearchDoc struct {
 	Timestamp     int64  `json:"timestamp"`
 }
 
+// MavenDeveloper represents a developer entry from the POM <developers> section.
+// POM developers serve as proxy for maintainer/publisher data, which Maven Central
+// does not expose via its API.
+// Source: Maven POM reference — https://maven.apache.org/pom.html#developers
+type MavenDeveloper struct {
+	ID           string `xml:"id"`
+	Name         string `xml:"name"`
+	Email        string `xml:"email"`
+	Organization string `xml:"organization"`
+}
+
+// MavenPOMDependency represents a dependency entry from the POM <dependencies> section.
+type MavenPOMDependency struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Scope      string `xml:"scope"`
+}
+
 // Maven POM structure (simplified)
 type MavenPOM struct {
 	XMLName         xml.Name              `xml:"project"`
@@ -333,6 +482,8 @@ type MavenPOM struct {
 	SCM             MavenSCM              `xml:"scm"`
 	IssueManagement MavenIssueManagement  `xml:"issueManagement"`
 	Licenses        []MavenLicense        `xml:"licenses>license"`
+	Developers      []MavenDeveloper      `xml:"developers>developer"`
+	Dependencies    []MavenPOMDependency  `xml:"dependencies>dependency"`
 }
 
 type MavenIssueManagement struct {
@@ -365,9 +516,10 @@ type MavenMetadataXML struct {
 }
 
 type MavenMetadataVersioning struct {
-	Latest   string   `xml:"latest"`
-	Release  string   `xml:"release"`
-	Versions []string `xml:"versions>version"`
+	Latest      string   `xml:"latest"`
+	Release     string   `xml:"release"`
+	Versions    []string `xml:"versions>version"`
+	LastUpdated string   `xml:"lastUpdated"` // Format: yyyyMMddHHmmss
 }
 
 // GetVersionHistory fetches version publish timestamps from Maven Central.
