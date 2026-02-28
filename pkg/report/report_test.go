@@ -155,7 +155,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		}
 	})
 
-	t.Run("Markdown format includes key findings", func(t *testing.T) {
+	t.Run("Markdown format includes executive narrative", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{
 			Format:  FormatMarkdown,
@@ -173,16 +173,16 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 
 		output := buf.String()
 
-		if !strings.Contains(output, "### Top Priority Findings") {
-			t.Error("Markdown output missing '### Top Priority Findings' section")
+		if !strings.Contains(output, "### Risk Assessment") {
+			t.Error("Markdown output missing '### Risk Assessment' section")
 		}
 
-		if !strings.Contains(output, "**express@4.17.1**") {
-			t.Error("Markdown output missing bold package name")
+		if !strings.Contains(output, "scanned 3 packages") {
+			t.Error("Markdown output missing package count in narrative")
 		}
 
-		if !strings.Contains(output, "*Evidence:*") {
-			t.Error("Markdown output missing evidence marker")
+		if !strings.Contains(output, "elevated supply chain risk") {
+			t.Error("Markdown output missing risk posture in narrative")
 		}
 	})
 
@@ -221,7 +221,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		}
 	})
 
-	t.Run("HTML format includes key findings", func(t *testing.T) {
+	t.Run("HTML format includes executive narrative", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{
 			Format:  FormatHTML,
@@ -239,16 +239,20 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 
 		output := buf.String()
 
-		if !strings.Contains(output, "Top Priority Findings") {
-			t.Error("HTML output missing top priority findings heading")
+		if !strings.Contains(output, "Executive Summary") {
+			t.Error("HTML output missing Executive Summary heading")
 		}
 
-		if !strings.Contains(output, "express@4.17.1") {
-			t.Error("HTML output missing package details")
+		if !strings.Contains(output, "exec-narrative") {
+			t.Error("HTML output missing exec-narrative CSS class")
 		}
 
-		if !strings.Contains(output, "Single maintainer") {
-			t.Error("HTML output missing finding description")
+		if !strings.Contains(output, "scanned 3 packages") {
+			t.Error("HTML output missing package count in narrative")
+		}
+
+		if !strings.Contains(output, "elevated supply chain risk") {
+			t.Error("HTML output missing risk posture in narrative")
 		}
 	})
 }
@@ -746,23 +750,18 @@ func TestHTMLRiskAreasClickableLinks(t *testing.T) {
 	}
 }
 
-// Test: Top Priority Findings link to package detail sections
-// Justification: When scanning many packages, users need to quickly navigate
+// Test: HTML Executive Summary narrative provides balanced risk overview
+// Justification: Users need a factual, non-alarmist summary of supply chain
 //
-//	from the high-level priority findings to the full package details.
-//	Clickable links reduce triage time for identifying supply chain risks.
+//	risk across all scanned packages for executive stakeholders
 //
-// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - rapid
+// Source: User requirements for balanced, professional report tone
+// Methodology: Generate HTML report and verify narrative contains package counts,
 //
-//	identification of risky packages is critical for incident response
+//	risk posture, and key risk areas without alarmist language
 //
-// Methodology: Generate an HTML report with HIGH and MEDIUM risk packages,
-//
-//	verify top findings contain anchor links matching package detail IDs,
-//	and source URLs are rendered when available
-//
-// Result: Each finding in Top Priority Findings links to its package via #pkg-<slug>
-func TestHTMLTopFindingsLinkToPackageDetails(t *testing.T) {
+// Result: Executive Summary section contains factual summary with measured tone
+func TestHTMLExecutiveNarrative(t *testing.T) {
 	results := []models.AnalysisResult{
 		{
 			Dependency: models.Dependency{
@@ -827,41 +826,44 @@ func TestHTMLTopFindingsLinkToPackageDetails(t *testing.T) {
 
 	output := buf.String()
 
-	// Verify top findings contain anchor links to package details
-	if !strings.Contains(output, `<a href="#pkg-event-stream" class="top-finding-pkg" onclick="showPkg('event-stream')">event-stream@3.3.6</a>`) {
-		t.Error("Top finding missing anchor link for 'event-stream'")
-	}
-	if !strings.Contains(output, `<a href="#pkg-types-node" class="top-finding-pkg" onclick="showPkg('types-node')">@types/node@20.0.0</a>`) {
-		t.Error("Top finding missing anchor link for '@types/node'")
+	// Verify Executive Summary section exists
+	if !strings.Contains(output, "Executive Summary") {
+		t.Error("HTML output missing Executive Summary heading")
 	}
 
-	// Verify source URL is rendered when available
-	if !strings.Contains(output, `Source: <a href="https://arxiv.org/abs/2005.09535"`) {
-		t.Error("Top finding missing source URL link for event-stream")
+	// Verify narrative mentions package count and risk posture
+	if !strings.Contains(output, "scanned 3 packages") {
+		t.Error("Narrative missing package count")
+	}
+	if !strings.Contains(output, "2 of 3 packages show elevated supply chain risk") {
+		t.Error("Narrative missing risk posture")
+	}
+	if !strings.Contains(output, "1 high, 1 medium") {
+		t.Error("Narrative missing risk breakdown")
 	}
 
-	// Extract just the Top Priority Findings section
-	topFindingsStart := strings.Index(output, "Top Priority Findings")
-	topFindingsEnd := strings.Index(output[topFindingsStart:], "</section>") + topFindingsStart
-	topFindingsSection := output[topFindingsStart:topFindingsEnd]
-
-	// Verify source URL is NOT rendered when empty (only event-stream has one)
-	sourceCount := strings.Count(topFindingsSection, "finding-extra")
-	if sourceCount != 1 {
-		t.Errorf("Expected exactly 1 source URL in top findings section, got %d", sourceCount)
+	// Verify no alarmist language
+	alarmist := []string{"CRITICAL DANGER", "immediate attention required", "URGENT"}
+	for _, phrase := range alarmist {
+		if strings.Contains(output, phrase) {
+			t.Errorf("Narrative contains alarmist language: %q", phrase)
+		}
 	}
 
-	// Verify LOW risk packages are NOT in top findings
-	if strings.Contains(topFindingsSection, "safe-pkg") {
-		t.Error("LOW risk package should not appear in Top Priority Findings")
+	// Verify exec-narrative CSS class is present
+	if !strings.Contains(output, "exec-narrative") {
+		t.Error("HTML output missing exec-narrative CSS class")
 	}
 
-	// Verify showPkg function exists in the script
-	if !strings.Contains(output, "function showPkg(slug)") {
-		t.Error("HTML output missing showPkg JavaScript function")
+	// Verify old Top Priority Findings section is NOT present
+	if strings.Contains(output, "Top Priority Findings") {
+		t.Error("HTML output should not contain old Top Priority Findings section")
+	}
+	if strings.Contains(output, "top-finding") {
+		t.Error("HTML output should not contain old top-finding CSS classes")
 	}
 
-	// Verify package detail sections have matching IDs
+	// Verify package detail sections still have navigable IDs
 	if !strings.Contains(output, `id="pkg-event-stream"`) {
 		t.Error("Package detail section missing id='pkg-event-stream'")
 	}
