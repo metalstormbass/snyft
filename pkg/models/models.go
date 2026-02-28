@@ -31,90 +31,6 @@ type SourceVerification struct {
 	Details            string   `json:"details"`               // Human-readable details
 }
 
-// AIAnalysisResult contains AI-powered supply chain security analysis
-type AIAnalysisResult struct {
-	Timestamp         time.Time              `json:"timestamp"`
-	ModelVersion      string                 `json:"model_version"`         // AI model used for analysis
-	OverallConfidence float64                `json:"overall_confidence"`    // 0.0-1.0
-	DeepAnalysis      *DeepAnalysisResult    `json:"deep_analysis,omitempty"`
-	AttackPatterns    []AttackPatternMatch   `json:"attack_patterns,omitempty"`
-	ExecutiveSummary  *ExecutiveExplanation  `json:"executive_summary,omitempty"`
-	UnifiedSummary    *UnifiedAISummary      `json:"unified_summary,omitempty"`
-	AnalysisNotes     string                 `json:"analysis_notes,omitempty"` // Additional context from AI
-}
-
-// UnifiedAISummary synthesizes ALL prior AI findings (deep analysis + attack patterns)
-// with rule-based scores into a single coherent assessment. Unlike the executive summary
-// which is generated independently, the unified summary sees everything and can adjust
-// the risk score when AI analysis reveals something rules missed.
-type UnifiedAISummary struct {
-	Summary          string    `json:"summary"`
-	KeyRisks         []string  `json:"key_risks"`
-	BusinessImpact   string    `json:"business_impact"`
-	TechnicalDetails string    `json:"technical_details,omitempty"`
-	Confidence       float64   `json:"confidence"`
-	ScoreAdjustment  int       `json:"score_adjustment"`          // -2 to +2
-	AdjustmentReason string    `json:"adjustment_reason,omitempty"`
-	GeneratedAt      time.Time `json:"generated_at"`
-}
-
-// DeepAnalysisResult contains the AI's holistic cross-cutting analysis of a package.
-// Unlike per-category analysis that re-examines what rules already found, deep analysis
-// identifies compound risk patterns and behavioral anomalies that rule-based scoring
-// cannot detect — particularly around maintainer behavior and process integrity.
-type DeepAnalysisResult struct {
-	RiskAssessment   string         `json:"risk_assessment"`              // AI's holistic risk assessment
-	CompoundRisks    []CompoundRisk `json:"compound_risks,omitempty"`     // Cross-signal risk patterns
-	BehaviorFindings []string       `json:"behavior_findings,omitempty"`  // Maintainer/process behavioral anomalies
-	MissedByRules    []string       `json:"missed_by_rules,omitempty"`    // Insights rules cannot detect
-	Confidence       float64        `json:"confidence"`                   // 0.0-1.0
-}
-
-// CompoundRisk represents a cross-cutting risk pattern where multiple weak signals
-// combine to indicate a higher likelihood of compromise than any single signal alone.
-type CompoundRisk struct {
-	Pattern      string   `json:"pattern"`       // e.g., "single maintainer + dormancy + no CI"
-	RiskLevel    string   `json:"risk_level"`    // HIGH, MEDIUM, LOW
-	Contributing []string `json:"contributing"`  // Which signals combine
-	Explanation  string   `json:"explanation"`   // Why this combination matters
-}
-
-// SemanticFinding represents a code pattern or behavior identified through AI analysis
-type SemanticFinding struct {
-	Type            string  `json:"type"`              // e.g., "obfuscation", "suspicious_network_call", "credential_harvesting"
-	Description     string  `json:"description"`       // What was found
-	Confidence      float64 `json:"confidence"`        // 0.0-1.0
-	Severity        string  `json:"severity"`          // HIGH, MEDIUM, LOW
-	FilePath        string  `json:"file_path,omitempty"`
-	LineNumber      int     `json:"line_number,omitempty"`
-	CodeSnippet     string  `json:"code_snippet,omitempty"`
-	Evidence        string  `json:"evidence"`          // Why this is concerning
-	RiskExplanation string  `json:"risk_explanation"`  // Impact if exploited
-}
-
-// AttackPatternMatch represents a match to a known supply chain attack pattern
-type AttackPatternMatch struct {
-	PatternName      string   `json:"pattern_name"`      // e.g., "Dependency Confusion", "Typosquatting"
-	Description      string   `json:"description"`       // Attack pattern description
-	Confidence       float64  `json:"confidence"`        // 0.0-1.0
-	Severity         string   `json:"severity"`          // HIGH, MEDIUM, LOW
-	Evidence         []string `json:"evidence"`          // List of evidence points
-	AcademicSource   string   `json:"academic_source,omitempty"`  // Citation for attack pattern
-	Indicators       []string `json:"indicators"`        // Specific indicators found
-	MitigationAdvice string   `json:"mitigation_advice,omitempty"` // Deprecated: per CLAUDE.md, recommendations are out of scope
-}
-
-// ExecutiveExplanation provides a business-friendly summary of AI findings
-type ExecutiveExplanation struct {
-	Summary           string    `json:"summary"`           // High-level summary for stakeholders
-	KeyRisks          []string  `json:"key_risks"`         // Top 3-5 risks in plain language
-	BusinessImpact    string    `json:"business_impact"`   // Potential business consequences
-	RecommendedAction string    `json:"recommended_action"` // Deprecated: per CLAUDE.md, recommendations are out of scope
-	TechnicalDetails  string    `json:"technical_details,omitempty"` // Optional technical context
-	Confidence        float64   `json:"confidence"`        // 0.0-1.0 confidence in assessment
-	GeneratedAt       time.Time `json:"generated_at"`
-}
-
 // AnalysisResult contains the supply chain security analysis for a dependency
 type AnalysisResult struct {
 	Dependency            Dependency             `json:"dependency"`
@@ -129,7 +45,6 @@ type AnalysisResult struct {
 	Findings              []Finding              `json:"findings"`
 	Metadata              PackageMetadata        `json:"metadata"`
 	SupplyChainScore      *SupplyChainScore      `json:"supply_chain_score,omitempty"`
-	AIAnalysis            *AIAnalysisResult      `json:"ai_analysis,omitempty"`
 }
 
 // Finding represents a specific security finding
@@ -330,8 +245,6 @@ type SupplyChainScore struct {
 	TotalScore         int            `json:"total_score"`                      // 0-22 points
 	RiskLevel          string         `json:"risk_level"`                       // LOW (0-9), MEDIUM (10-13), HIGH (14+)
 	CategoryScores     CategoryScores `json:"category_scores"`
-	AIAdjustment       int            `json:"ai_adjustment,omitempty"`          // -2 to +2: AI score adjustment
-	AIAdjustmentReason string         `json:"ai_adjustment_reason,omitempty"`   // Reason for AI adjustment
 }
 
 // CategoryScores contains individual scores for each supply chain security category
@@ -367,34 +280,6 @@ type CategoryScore struct {
 	Verified        bool               `json:"verified"`                        // Whether data was available to verify
 	Methodology     string             `json:"methodology,omitempty"`           // How this check was performed (data sources, APIs)
 	ChecksPerformed []CheckResult      `json:"checks_performed,omitempty"`      // Individual sub-check outcomes
-	AIInsight       *CategoryAIInsight `json:"ai_insight,omitempty"`            // AI-powered deeper analysis (optional)
-}
-
-// CategoryAIInsight contains AI-powered deeper analysis for a single scoring category.
-// This augments the rule-based CategoryScore without replacing it.
-// Populated only when AI analysis is enabled (--ai flag + API key).
-type CategoryAIInsight struct {
-	AIRiskLevel    string   `json:"ai_risk_level"`    // AI's risk assessment: HIGH, MEDIUM, LOW
-	Confidence     float64  `json:"confidence"`       // 0.0-1.0 confidence in the assessment
-	Findings       []string `json:"findings"`         // AI-identified patterns beyond rule-based scoring
-	Context        string   `json:"context"`          // Contextual analysis and amplifying/mitigating factors
-	Recommendation string   `json:"recommendation"`   // Deprecated: per CLAUDE.md, recommendations are out of scope
-}
-
-// ReportAISummary is a report-level AI synthesis generated AFTER all packages
-// are analyzed. Unlike per-package UnifiedAISummary which only sees one package,
-// this summary sees every package's results, risk distribution, and cross-package
-// patterns to produce a holistic supply chain risk assessment for the entire project.
-//
-// Generated last, displayed first (in the executive summary section).
-type ReportAISummary struct {
-	OverallAssessment string   `json:"overall_assessment"`  // 3-5 sentence holistic assessment
-	KeyThreats        []string `json:"key_threats"`         // Top cross-package threats
-	CrossPatterns     []string `json:"cross_patterns"`      // Patterns observed across multiple packages
-	PriorityPackages  []string `json:"priority_packages"`   // Packages requiring immediate attention (with reasoning)
-	RiskPosture       string   `json:"risk_posture"`        // Overall supply chain risk posture summary
-	Confidence        float64  `json:"confidence"`          // 0.0-1.0
-	GeneratedAt       time.Time `json:"generated_at"`
 }
 
 // EcosystemCapabilities describes what data each package registry exposes.

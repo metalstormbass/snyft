@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/metalstormbass/snyft/pkg/ai"
 	"github.com/metalstormbass/snyft/pkg/analyzer"
 	"github.com/metalstormbass/snyft/pkg/models"
 	"github.com/metalstormbass/snyft/pkg/parser"
@@ -25,13 +24,6 @@ var (
 
 	// Transitive dependency flag
 	includeTransitive bool
-
-	// AI configuration flags
-	aiEnabled      bool
-	aiAPIKey       string
-	aiTimeout      int
-	aiDisableCache bool
-	aiDisableRetry bool
 )
 
 var scanCmd = &cobra.Command{
@@ -53,12 +45,6 @@ func init() {
 	// Transitive dependency flag
 	scanCmd.Flags().BoolVar(&includeTransitive, "include-transitive", false, "Include transitive dependencies in analysis (default: direct only)")
 
-	// AI feature flags
-	scanCmd.Flags().BoolVar(&aiEnabled, "ai", false, "Enable AI-powered analysis (requires CLAUDE_API_KEY or --ai-api-key)")
-	scanCmd.Flags().StringVar(&aiAPIKey, "ai-api-key", "", "Claude API key for AI analysis (alternative to CLAUDE_API_KEY env var)")
-	scanCmd.Flags().IntVar(&aiTimeout, "ai-timeout", 60, "Timeout in seconds for AI operations")
-	scanCmd.Flags().BoolVar(&aiDisableCache, "ai-disable-cache", false, "Disable AI response caching")
-	scanCmd.Flags().BoolVar(&aiDisableRetry, "ai-disable-retry", false, "Disable retry on AI API failures")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
@@ -156,78 +142,11 @@ func runScan(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(statusOut, "📦 Found %d dependencies (%d direct, %d transitive)\n\n", len(dependencies), directCount, transitiveCount)
 	}
 
-	// Configure AI if enabled
-	var aiConfig *ai.Config
-	if aiEnabled {
-		// Load base config from environment
-		aiConfig, err = ai.LoadFromEnv()
-		if err != nil {
-			// Create default config if env loading fails
-			aiConfig = ai.DefaultConfig()
-		}
-
-		// Override with CLI flags if provided
-		if aiAPIKey != "" {
-			aiConfig.APIKey = aiAPIKey
-		}
-
-		if aiConfig.APIKey == "" {
-			fmt.Println("⚠️  AI analysis enabled but no API key provided. Set CLAUDE_API_KEY or use --ai-api-key")
-			fmt.Println("    Continuing without AI analysis...")
-			aiConfig = nil
-		} else {
-			if aiTimeout > 0 {
-				aiConfig.Timeout = time.Duration(aiTimeout) * time.Second
-			}
-			if aiDisableCache {
-				aiConfig.EnableCache = false
-			}
-			if aiDisableRetry {
-				aiConfig.EnableRetry = false
-			}
-			_, _ = fmt.Fprintf(statusOut, "🤖 AI analysis enabled (timeout: %v)\n", aiConfig.Timeout)
-		}
-	}
-
 	// Analyze dependencies in parallel
-	results := analyzeDependencies(dependencies, workers, reporter, aiConfig, statusOut)
+	results := analyzeDependencies(dependencies, workers, reporter, statusOut)
 
 	// Clear progress line
 	reporter.ClearProgress()
-
-	// Generate report-level AI summary AFTER all packages are analyzed.
-	// This summary sees everything and provides a holistic assessment.
-	// It is displayed at the TOP of the report (executive summary section).
-	if aiConfig != nil {
-		fmt.Fprintf(statusOut, "🤖 Generating report-level AI summary...\n")
-		a := analyzer.NewAnalyzer(analyzer.WithAIConfig(aiConfig))
-
-		// Count risk distribution for the AI prompt
-		var highRisk, mediumRisk, lowRisk int
-		for _, r := range results {
-			switch r.RiskLevel {
-			case "HIGH":
-				highRisk++
-			case "MEDIUM":
-				mediumRisk++
-			case "LOW":
-				lowRisk++
-			}
-		}
-
-		reportSummary := a.GenerateReportSummary(results, ai.ReportStats{
-			TotalPackages: len(results),
-			HighRisk:      highRisk,
-			MediumRisk:    mediumRisk,
-			LowRisk:       lowRisk,
-		})
-		if reportSummary != nil {
-			reporter.SetReportAISummary(reportSummary)
-			fmt.Fprintf(statusOut, "✅ Report-level AI summary generated\n\n")
-		} else {
-			fmt.Fprintf(statusOut, "⚠️  Report-level AI summary could not be generated\n\n")
-		}
-	}
 
 	// Generate report
 	reporter.AddResults(results)
@@ -327,7 +246,7 @@ func findManifestFiles(dir string) ([]string, error) {
 	return manifestFiles, err
 }
 
-func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, aiConfig *ai.Config, statusOut *os.File) []models.AnalysisResult {
+func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, statusOut *os.File) []models.AnalysisResult {
 	results := make([]models.AnalysisResult, len(deps))
 	jobs := make(chan int, len(deps))
 	var wg sync.WaitGroup
@@ -341,15 +260,8 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 	startTime := time.Now()
 	_ = startTime // used by reporter internally
 
-	// Create analyzer with AI configuration
-	var a *analyzer.Analyzer
-	if aiConfig != nil {
-		a = analyzer.NewAnalyzer(analyzer.WithAIConfig(aiConfig))
-	} else {
-		// Create analyzer without AI if not explicitly enabled via flags
-		// This prevents automatic AI initialization from env vars unless --ai is used
-		a = analyzer.NewAnalyzer(analyzer.WithAIDisabled())
-	}
+	// Create analyzer
+	a := analyzer.NewAnalyzer()
 
 	// Start a heartbeat ticker that refreshes the progress spinner every 500ms.
 	// Without this, the progress bar appears frozen during long network calls

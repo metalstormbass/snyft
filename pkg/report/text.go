@@ -234,69 +234,6 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 		}
 	}
 
-	// AI Executive Summary (if available from any package)
-	r.printAIExecutiveSummary(w)
-}
-
-// printAIExecutiveSummary prints the report-level AI summary in the executive section.
-// This summary is generated AFTER all packages are analyzed and synthesizes
-// all findings into a holistic assessment. Generated last, displayed first.
-func (r *Reporter) printAIExecutiveSummary(w io.Writer) {
-	if r.reportAISummary == nil {
-		return
-	}
-
-	summary := r.reportAISummary
-
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "  %s🤖 AI-Powered Risk Assessment%s\n", ColorBold+ColorCyan, ColorReset)
-	_, _ = fmt.Fprintln(w)
-
-	// Overall Assessment
-	_, _ = fmt.Fprintf(w, "  %s%s%s\n", ColorBold, summary.OverallAssessment, ColorReset)
-	_, _ = fmt.Fprintln(w)
-
-	// Key Threats
-	if len(summary.KeyThreats) > 0 {
-		_, _ = fmt.Fprintf(w, "  %sKey Threats:%s\n", ColorBold, ColorReset)
-		for _, threat := range summary.KeyThreats {
-			_, _ = fmt.Fprintf(w, "    %s•%s %s\n", ColorRed, ColorReset, threat)
-		}
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Cross-Package Patterns
-	if len(summary.CrossPatterns) > 0 {
-		_, _ = fmt.Fprintf(w, "  %sCross-Package Patterns:%s\n", ColorBold, ColorReset)
-		for _, pattern := range summary.CrossPatterns {
-			_, _ = fmt.Fprintf(w, "    %s•%s %s\n", ColorYellow, ColorReset, pattern)
-		}
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Priority Packages
-	if len(summary.PriorityPackages) > 0 {
-		_, _ = fmt.Fprintf(w, "  %sPriority Packages:%s\n", ColorBold, ColorReset)
-		for _, pkg := range summary.PriorityPackages {
-			_, _ = fmt.Fprintf(w, "    %s•%s %s\n", ColorRed, ColorReset, pkg)
-		}
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Risk Posture
-	if summary.RiskPosture != "" {
-		_, _ = fmt.Fprintf(w, "  %sRisk Posture:%s %s\n", ColorBold, ColorReset, summary.RiskPosture)
-		_, _ = fmt.Fprintln(w)
-	}
-
-	// Confidence
-	confidencePct := summary.Confidence * 100
-	confidenceColor := ColorGreen
-	if confidencePct < 50 {
-		confidenceColor = ColorYellow
-	}
-	_, _ = fmt.Fprintf(w, "  %sAI Confidence:%s %s%.0f%%%s\n",
-		ColorBold, ColorReset, confidenceColor, confidencePct, ColorReset)
 }
 
 // printSectionHeader prints a section header
@@ -346,16 +283,6 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 			r.getRiskColor(result.SupplyChainScore.RiskLevel),
 			result.SupplyChainScore.RiskLevel,
 			ColorReset)
-
-		if result.SupplyChainScore.AIAdjustment != 0 {
-			adjSign := "+"
-			if result.SupplyChainScore.AIAdjustment < 0 {
-				adjSign = ""
-			}
-			scoreStr += fmt.Sprintf(" %s[AI adjusted %s%d: %s]%s",
-				ColorCyan, adjSign, result.SupplyChainScore.AIAdjustment,
-				result.SupplyChainScore.AIAdjustmentReason, ColorReset)
-		}
 
 		_, _ = fmt.Fprintf(w, "%s│%s  %sSupply Chain Score:%s %s\n",
 			riskColor, ColorReset,
@@ -435,136 +362,8 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		}
 	}
 
-	// AI Analysis (if available)
-	if result.AIAnalysis != nil {
-		r.printPackageAIAnalysis(w, result.AIAnalysis, riskColor)
-	}
-
 	_, _ = fmt.Fprintf(w, "%s└%s\n", riskColor, strings.Repeat("─", 76)+ColorReset)
 	_, _ = fmt.Fprintln(w)
-}
-
-// printPackageAIAnalysis prints AI analysis results for a package
-func (r *Reporter) printPackageAIAnalysis(w io.Writer, aiAnalysis *models.AIAnalysisResult, borderColor string) {
-	if aiAnalysis == nil {
-		return
-	}
-
-	// Deep Analysis (compound risks, behavioral anomalies, missed-by-rules insights)
-	if aiAnalysis.DeepAnalysis != nil {
-		da := aiAnalysis.DeepAnalysis
-		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-		_, _ = fmt.Fprintf(w, "%s│%s  %s🤖 AI Deep Analysis:%s\n",
-			borderColor, ColorReset,
-			ColorBold+ColorCyan, ColorReset)
-
-		if da.RiskAssessment != "" {
-			_, _ = fmt.Fprintf(w, "%s│%s    %s\n", borderColor, ColorReset, da.RiskAssessment)
-		}
-
-		if len(da.CompoundRisks) > 0 {
-			_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-			_, _ = fmt.Fprintf(w, "%s│%s    %sCompound Risk Patterns:%s\n",
-				borderColor, ColorReset, ColorBold, ColorReset)
-			for _, cr := range da.CompoundRisks {
-				sevColor := r.getSeverityColor(cr.RiskLevel)
-				_, _ = fmt.Fprintf(w, "%s│%s      %s[%s]%s %s\n",
-					borderColor, ColorReset, sevColor, cr.RiskLevel, ColorReset, cr.Pattern)
-				if cr.Explanation != "" {
-					_, _ = fmt.Fprintf(w, "%s│%s        %s%s%s\n",
-						borderColor, ColorReset, ColorDim, cr.Explanation, ColorReset)
-				}
-				if len(cr.Contributing) > 0 {
-					_, _ = fmt.Fprintf(w, "%s│%s        %sContributing signals: %s%s\n",
-						borderColor, ColorReset, ColorDim, strings.Join(cr.Contributing, ", "), ColorReset)
-				}
-			}
-		}
-
-		if len(da.BehaviorFindings) > 0 {
-			_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-			_, _ = fmt.Fprintf(w, "%s│%s    %sBehavioral Anomalies:%s\n",
-				borderColor, ColorReset, ColorBold, ColorReset)
-			for _, bf := range da.BehaviorFindings {
-				_, _ = fmt.Fprintf(w, "%s│%s      • %s\n", borderColor, ColorReset, bf)
-			}
-		}
-
-		if len(da.MissedByRules) > 0 {
-			_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-			_, _ = fmt.Fprintf(w, "%s│%s    %sInsights Beyond Rules:%s\n",
-				borderColor, ColorReset, ColorBold, ColorReset)
-			for _, insight := range da.MissedByRules {
-				_, _ = fmt.Fprintf(w, "%s│%s      • %s\n", borderColor, ColorReset, insight)
-			}
-		}
-
-		confidencePct := da.Confidence * 100
-		_, _ = fmt.Fprintf(w, "%s│%s    %sConfidence: %.0f%%%s\n",
-			borderColor, ColorReset, ColorDim, confidencePct, ColorReset)
-	}
-
-	// Attack Pattern Matches
-	if len(aiAnalysis.AttackPatterns) > 0 {
-		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-		_, _ = fmt.Fprintf(w, "%s│%s  %s🤖 AI-Detected Attack Patterns:%s\n",
-			borderColor, ColorReset,
-			ColorBold+ColorCyan, ColorReset)
-
-		for i, pattern := range aiAnalysis.AttackPatterns {
-			sevColor := r.getSeverityColor(pattern.Severity)
-			_, _ = fmt.Fprintf(w, "%s│%s    %s[%s]%s %s\n",
-				borderColor, ColorReset,
-				sevColor, pattern.Severity, ColorReset,
-				pattern.PatternName)
-
-			if pattern.Description != "" && r.config.Verbose {
-				_, _ = fmt.Fprintf(w, "%s│%s       %s%s%s\n",
-					borderColor, ColorReset,
-					ColorDim, pattern.Description, ColorReset)
-			}
-
-			// Show confidence
-			confidencePct := pattern.Confidence * 100
-			_, _ = fmt.Fprintf(w, "%s│%s       %sConfidence: %.0f%%%s\n",
-				borderColor, ColorReset,
-				ColorDim, confidencePct, ColorReset)
-
-			// Always show academic source for AI findings - required for traceability
-			if pattern.AcademicSource != "" {
-				_, _ = fmt.Fprintf(w, "%s│%s       %sSource: %s%s\n",
-					borderColor, ColorReset,
-					ColorDim, pattern.AcademicSource, ColorReset)
-			}
-
-			// Show evidence in verbose mode
-			if r.config.Verbose && len(pattern.Evidence) > 0 {
-				_, _ = fmt.Fprintf(w, "%s│%s       %sEvidence:%s\n",
-					borderColor, ColorReset,
-					ColorDim, ColorReset)
-				for _, evidence := range pattern.Evidence {
-					_, _ = fmt.Fprintf(w, "%s│%s         %s• %s%s\n",
-						borderColor, ColorReset,
-						ColorDim, evidence, ColorReset)
-				}
-			}
-
-			if i < len(aiAnalysis.AttackPatterns)-1 {
-				_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-			}
-		}
-	}
-
-	// AI Analysis Notes
-	if aiAnalysis.AnalysisNotes != "" && r.config.Verbose {
-		_, _ = fmt.Fprintf(w, "%s│%s\n", borderColor, ColorReset)
-		_, _ = fmt.Fprintf(w, "%s│%s  %s🤖 AI Analysis Notes:%s\n",
-			borderColor, ColorReset,
-			ColorBold+ColorCyan, ColorReset)
-		_, _ = fmt.Fprintf(w, "%s│%s  %s%s%s\n",
-			borderColor, ColorReset,
-			ColorDim, aiAnalysis.AnalysisNotes, ColorReset)
-	}
 }
 
 // printCategoryScoreTable prints category scores in a table format
