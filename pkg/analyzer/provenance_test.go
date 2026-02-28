@@ -175,64 +175,10 @@ func TestScoreProvenance_PartialProvenance_SignedReleases(t *testing.T) {
 	}
 }
 
-// Test: scoreProvenance assigns partial credit for reproducible build alone
-// Justification: Reproducible build configuration (e.g. Dockerfiles, Nix)
-//                is a weaker signal — it indicates the build *could* be
-//                reproduced but doesn't prove the published artifact matches
-// Source: SLSA specification v1.0 — reproducible builds at SLSA Level 4
-// Methodology: Set only ReproducibleBuild=true (weak indicator, 1 point)
-// Result: 1 risk point (partial provenance), score 1
-func TestScoreProvenance_PartialProvenance_ReproducibleBuild(t *testing.T) {
-	a := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			ReproducibleBuild: true,
-		},
-	}
-
-	score := a.scoreProvenance(result)
-
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for partial provenance, got %d", score.RiskPoints)
-	}
-
-	if score.Score != 1 {
-		t.Errorf("Expected score 1 for partial provenance, got %d", score.Score)
-	}
-}
-
-// Test: scoreProvenance promotes two weak indicators to full provenance
-// Justification: Multiple independent weak signals (signed releases +
-//                reproducible build) collectively provide stronger assurance
-//                than either alone — defense in depth principle
-// Source: SLSA specification v1.0 — layered security controls
-// Methodology: Set SignedReleases=true AND ReproducibleBuild=true (1+1=2 points)
-// Result: 0 risk points (full provenance), score 2
-func TestScoreProvenance_PartialProvenance_Combined(t *testing.T) {
-	a := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			SignedReleases:    true,
-			ReproducibleBuild: true,
-		},
-	}
-
-	score := a.scoreProvenance(result)
-
-	// Two weak indicators (1 point each) = full provenance (2 total)
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points with two weak indicators, got %d", score.RiskPoints)
-	}
-
-	if score.Score != 2 {
-		t.Errorf("Expected score 2 with two weak indicators, got %d", score.Score)
-	}
-}
-
 // Test: scoreProvenance gives full credit with multiple strong indicators
 // Justification: Packages with overlapping provenance signals (SLSA + Sigstore
-//                + signed releases + reproducible builds) represent best-in-class
-//                supply chain hygiene; score should not exceed maximum
+//                + signed releases) represent best-in-class supply chain hygiene;
+//                score should not exceed maximum
 // Source: SLSA specification v1.0 — defense in depth
 // Methodology: Set all strong and weak provenance indicators simultaneously
 // Result: 0 risk points (capped at full provenance), score 2
@@ -244,7 +190,6 @@ func TestScoreProvenance_FullProvenance_Multiple(t *testing.T) {
 			SLSALevel:            "SLSA_LEVEL_3",
 			HasSigstoreSignature: true,
 			SignedReleases:       true,
-			ReproducibleBuild:    true,
 		},
 	}
 

@@ -116,6 +116,12 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 		points++
 		evidence = append(evidence, "Review oversight unavailable (no repository URL)")
 		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "UNAVAILABLE", Detail: "No repository URL available to check review practices; benefit of doubt awarded"})
+	} else if result.Metadata.BranchProtectionDenied {
+		// API returned 403/404 (admin access required) and we have no code review data.
+		// Cannot determine review oversight — don't penalize for what we can't check.
+		points++
+		evidence = append(evidence, "Review oversight unavailable (branch protection API access denied, no code review data)")
+		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "UNAVAILABLE", Detail: "GitHub API requires admin access to read branch protection rules; no code review data available; benefit of doubt awarded"})
 	} else {
 		evidence = append(evidence, "No review oversight detected")
 		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "FAIL", Detail: "No branch protection or code review data detected"})

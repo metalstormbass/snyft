@@ -104,7 +104,8 @@ type PackageMetadata struct {
 	HasSelfHosted    bool              `json:"has_self_hosted"`          // Any self-hosted runners detected
 	HasReleaseProcess bool             `json:"has_release_process"`
 	CIWorkflowRisks  []CIWorkflowRisk `json:"ci_workflow_risks,omitempty"` // Parsed CI/CD workflow risk signals
-	SignedReleases   bool              `json:"signed_releases"`
+	SignedReleases    bool              `json:"signed_releases"`
+	TotalReleaseCount int               `json:"total_release_count"` // 0 means no GitHub releases to check
 
 	// Provenance information
 	HasSLSAAttestation  bool   `json:"has_slsa_attestation"`
@@ -113,7 +114,6 @@ type PackageMetadata struct {
 	HasNPMProvenance     bool  `json:"has_npm_provenance"`
 	HasPyPISignatures    bool  `json:"has_pypi_signatures"`
 	HasMavenGPGSignature bool  `json:"has_maven_gpg_signature"`       // Maven Central GPG .asc signature
-	ReproducibleBuild    bool  `json:"reproducible_build"`
 	ProvenanceDetails    string `json:"provenance_details,omitempty"`  // Additional context
 
 	// Health metrics (Category 7)
@@ -125,7 +125,6 @@ type PackageMetadata struct {
 	HasBranchProtection    bool           `json:"has_branch_protection"`     // Whether branch protection is enabled
 	BranchProtectionDenied bool           `json:"branch_protection_denied"` // True when API returned 403/404 (admin access required)
 	CIQualityScore      int               `json:"ci_quality_score"`       // 0-10 CI quality score
-	CIHasTests          bool              `json:"ci_has_tests"`           // Whether CI runs tests
 
 	// Install-time execution
 	InstallScripts      map[string]string `json:"install_scripts,omitempty"`       // postinstall, preinstall, etc.
@@ -271,7 +270,6 @@ type ProvenanceInfo struct {
 	HasPyPISignatures    bool     `json:"has_pypi_signatures"`
 	SignedReleaseCount   int      `json:"signed_release_count"`
 	TotalReleaseCount    int      `json:"total_release_count"`
-	ReproducibleBuild    bool     `json:"reproducible_build"`
 	BuildSystem          string   `json:"build_system,omitempty"`
 }
 
