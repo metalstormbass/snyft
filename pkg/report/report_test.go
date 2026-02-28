@@ -81,7 +81,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		},
 	}
 
-	t.Run("Text format includes package results", func(t *testing.T) {
+	t.Run("Text format compact output hides findings", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{
 			Format:  FormatText,
@@ -114,9 +114,43 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 			t.Error("Output missing specific package 'express@4.17.1'")
 		}
 
-		// Check findings are shown under packages
+		// Default (non-verbose) output should NOT show detailed findings
+		if strings.Contains(output, "Single maintainer") {
+			t.Error("Default output should not show finding details (use --verbose)")
+		}
+
+		// Should hint at verbose flag
+		if !strings.Contains(output, "-v") {
+			t.Error("Default output should hint at -v for detailed report")
+		}
+	})
+
+	t.Run("Text format verbose output shows findings", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		reporter := NewReporter(Config{
+			Format:  FormatText,
+			Verbose: true,
+			Writer:  buf,
+		})
+		reporter.stats.StartTime = time.Now().Add(-5 * time.Second)
+		reporter.stats.EndTime = time.Now()
+		reporter.AddResults(results)
+
+		err := reporter.Generate()
+		if err != nil {
+			t.Fatalf("Generate() failed: %v", err)
+		}
+
+		output := buf.String()
+
+		// Verbose output should show findings
 		if !strings.Contains(output, "Single maintainer") {
-			t.Error("Output missing finding description")
+			t.Error("Verbose output missing finding description")
+		}
+
+		// Verbose output should show evidence
+		if !strings.Contains(output, "Evidence:") {
+			t.Error("Verbose output missing evidence details")
 		}
 	})
 
