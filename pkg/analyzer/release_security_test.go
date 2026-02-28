@@ -1347,9 +1347,9 @@ func TestScoreReleaseSecurity_OSSFFallback_LowScoresNoCredit(t *testing.T) {
 		t.Errorf("Expected 2 risk points with low OSSF scores, got %d", score.RiskPoints)
 	}
 
-	// Evidence should note weak branch protection
-	if !strings.Contains(score.Evidence, "OSSF Branch-Protection: 5/10 (weak)") {
-		t.Errorf("Expected weak branch protection evidence, got: %q", score.Evidence)
+	// Evidence should note partial branch protection
+	if !strings.Contains(score.Evidence, "OSSF Branch-Protection: 5/10 (partial") {
+		t.Errorf("Expected partial branch protection evidence, got: %q", score.Evidence)
 	}
 }
 

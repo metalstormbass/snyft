@@ -110,9 +110,9 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		if signingScore, exists := result.Metadata.OSSFChecks["Signed-Releases"]; exists && signingScore >= 7 {
 			provenanceScore += 1
 			evidence = append(evidence, fmt.Sprintf("OSSF Signed-Releases: %d/10", signingScore))
-			checks = append(checks, models.CheckResult{Name: "OSSF Signed-Releases", Status: "PASS", Detail: fmt.Sprintf("Score: %d/10", signingScore)})
+			checks = append(checks, models.CheckResult{Name: "OSSF Signed-Releases", Status: "PASS", Detail: fmt.Sprintf("Score: %d/10 (checks last 5 releases for cryptographic signatures or SLSA provenance)", signingScore)})
 		} else if signingScore, exists := result.Metadata.OSSFChecks["Signed-Releases"]; exists {
-			checks = append(checks, models.CheckResult{Name: "OSSF Signed-Releases", Status: "FAIL", Detail: fmt.Sprintf("Score: %d/10 (below threshold of 7)", signingScore)})
+			checks = append(checks, models.CheckResult{Name: "OSSF Signed-Releases", Status: "FAIL", Detail: fmt.Sprintf("Score: %d/10 (below threshold of 7; last 5 releases lack signatures or SLSA provenance)", signingScore)})
 		}
 	}
 
