@@ -31,11 +31,11 @@ make build
 ```bash
 ./snyft scan                              # Scan current directory
 ./snyft scan /path/to/project             # Scan specific directory
+./snyft scan -v                           # Detailed output with findings
 ./snyft scan --format json -o results.json  # JSON output to file
 ./snyft scan --format markdown -o SECURITY.md
 ./snyft scan --format html -o report.html
 ./snyft scan --workers 20                 # Increase concurrency
-./snyft scan --verbose=false              # Quieter output
 ```
 
 ### Options
@@ -44,7 +44,7 @@ make build
 |------|-------------|---------|
 | `-f, --format` | Output format: `text`, `markdown`, `json`, `html` | `text` |
 | `-w, --workers` | Concurrent workers | 10 |
-| `-v, --verbose` | Verbose output | `false` |
+| `-v, --verbose` | Detailed output with findings and evidence | `false` |
 | `-o, --output` | Write results to file | stdout |
 | `--include-transitive` | Analyze transitive dependencies | `false` |
 | `-c, --check` | Run only specific checks (comma-separated) | all checks |
@@ -68,8 +68,8 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 | **5. Dependency Sprawl** | Many transitive dependencies (50+) |
 | **6. Provenance** | No source verification, no SLSA/Sigstore attestations |
 | **7. Health** | Low bus factor, no review oversight |
-| **8. Governance** | No SECURITY.md, slow issue response |
-| **9. Release Security** | Manual publishing, no branch protection, insecure CI config |
+| **8. Governance** | No SECURITY.md, slow issue response, no documented release process |
+| **9. Release Security** | Manual publishing, no branch protection, insecure CI config, undocumented release process |
 | **10. Package Maturity** | New/abandoned package, irregular updates |
 
 **Total Score**: 0-20 points
