@@ -365,13 +365,10 @@ func (r *Reporter) printHTMLRiskAreas(w io.Writer) {
 		f(w, "<div class=\"success-msg\">&#10003; No critical supply chain risk factors identified.</div>\n")
 	} else {
 		for _, area := range areas {
-			areaCls := "area-med"
-			switch area.Tag {
-			case "HIGH RISK":
+			var areaCls string
+			if area.Tag == "HIGH RISK" {
 				areaCls = "area-high"
-			case "MISSING PROVENANCE", "RELEASE SECURITY", "INSTALL-TIME EXECUTION":
-				areaCls = "area-med"
-			default:
+			} else {
 				areaCls = "area-med"
 			}
 			f(w, "<div class=\"risk-area %s\">\n", areaCls)

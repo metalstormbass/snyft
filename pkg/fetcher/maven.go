@@ -398,7 +398,7 @@ func (c *MavenClient) GetVersionHistory(packageName string) ([]RegistryRelease, 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Maven Central search returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("maven Central search returned status %d", resp.StatusCode)
 	}
 
 	var searchResp struct {
