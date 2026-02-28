@@ -123,9 +123,6 @@ func (r *Reporter) printExecutiveSummary(w io.Writer) {
 			if issue.Evidence != "" {
 				f(w, "       %sEvidence:%s %s\n", ColorDim, ColorReset, issue.Evidence)
 			}
-			if impact := riskImpactDescription(issue.Severity); impact != "" {
-				f(w, "       %sImpact:%s %s\n", ColorDim, ColorReset, impact)
-			}
 			if i < len(criticalIssues)-1 {
 				p(w, "")
 			}

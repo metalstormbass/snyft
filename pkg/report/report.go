@@ -490,19 +490,6 @@ func severityColor(severity string) string {
 	}
 }
 
-func riskImpactDescription(severity string) string {
-	switch severity {
-	case "CRITICAL", "HIGH":
-		return "If compromised, could lead to full system compromise, data exfiltration, or supply chain contamination"
-	case "MEDIUM":
-		return "If compromised, could enable lateral movement or unauthorized access to sensitive resources"
-	case "LOW":
-		return "Limited impact if compromised, but contributes to overall attack surface"
-	default:
-		return ""
-	}
-}
-
 func calculateOverallRisk(stats ScanStats) string {
 	if stats.TotalPackages == 0 {
 		return "UNKNOWN"

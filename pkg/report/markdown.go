@@ -79,9 +79,6 @@ func (r *Reporter) generateMarkdown() error {
 			if issue.Evidence != "" {
 				f(w, "   - *Evidence:* %s\n", issue.Evidence)
 			}
-			if impact := riskImpactDescription(issue.Severity); impact != "" {
-				f(w, "   - *Impact:* %s\n", impact)
-			}
 		}
 		p(w, "")
 	}
