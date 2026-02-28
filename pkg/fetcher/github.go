@@ -703,209 +703,12 @@ func (c *GitHubClient) GetProvenanceInfo(repoURL string) (*models.ProvenanceInfo
 
 	info := &models.ProvenanceInfo{}
 
-	// Check for SLSA attestations
-	info.HasSLSAAttestation, info.SLSALevel = c.checkSLSAAttestation(owner, repo)
-
-	// Check for Sigstore signatures
-	info.HasSigstoreSignature = c.checkSigstoreSignatures(owner, repo)
-
 	// Check signed releases
 	signedCount, totalCount := c.checkSignedReleases(owner, repo)
 	info.SignedReleaseCount = signedCount
 	info.TotalReleaseCount = totalCount
 
 	return info, nil
-}
-
-// checkSLSAAttestation checks for SLSA attestations in the repository.
-// Uses a three-tier approach:
-//  1. Check for known SLSA provenance files (fastest, HEAD requests)
-//  2. Check workflow filenames for attestation keywords
-//  3. Check workflow file content for attestation actions (via raw.githubusercontent.com
-//     to avoid API rate limits)
-func (c *GitHubClient) checkSLSAAttestation(owner, repo string) (bool, string) {
-	// Tier 1: Check for SLSA provenance files
-	slsaFiles := []string{
-		".slsa-provenance.json",
-		".github/workflows/slsa-generic-generator.yml",
-		".github/workflows/slsa.yml",
-		".github/workflows/slsa-goreleaser.yml",
-		".github/workflows/provenance.yml",
-		".github/workflows/attest.yml",
-	}
-
-	for _, file := range slsaFiles {
-		if c.fileExists(owner, repo, file) {
-			return true, "SLSA_LEVEL_2"
-		}
-	}
-
-	// Tier 2: Check workflow filenames for SLSA/attestation patterns
-	workflows, err := c.getWorkflowFiles(owner, repo)
-	if err == nil {
-		slsaKeywords := []string{"slsa", "provenance", "attest", "supply-chain", "supply_chain"}
-		for _, wf := range workflows {
-			lower := strings.ToLower(wf)
-			for _, keyword := range slsaKeywords {
-				if strings.Contains(lower, keyword) {
-					return true, "SLSA_LEVEL_2"
-				}
-			}
-		}
-	}
-
-	// Tier 3: Check workflow content for attestation actions.
-	// Many projects use attestation actions in generically-named workflows
-	// (e.g., "release.yml", "publish.yml"). We scan the content of publish/release
-	// workflows for known attestation action references.
-	// Uses raw.githubusercontent.com to avoid GitHub API rate limit consumption.
-	if workflows != nil {
-		found, level := c.checkWorkflowContentForSLSA(owner, repo, workflows)
-		if found {
-			return found, level
-		}
-	}
-
-	return false, ""
-}
-
-// slsaActionPatterns are GitHub Action references and shell commands that indicate
-// SLSA provenance generation. These are checked against workflow file content.
-var slsaActionPatterns = []string{
-	"actions/attest-build-provenance",       // GitHub's official attestation action
-	"slsa-framework/slsa-github-generator",  // SLSA framework's provenance generator
-	"npm publish --provenance",              // npm CLI provenance flag
-	"npm publish --access public --provenance", // common variant
-}
-
-// checkWorkflowContentForSLSA reads workflow file content and searches for
-// attestation action patterns. Uses raw.githubusercontent.com (CDN) when no
-// token is set, or the API when a token provides higher rate limits.
-// Only checks publish/release-related workflows to minimize network calls.
-func (c *GitHubClient) checkWorkflowContentForSLSA(owner, repo string, workflows []string) (bool, string) {
-	// Prioritize workflows likely to contain publish/release steps
-	publishKeywords := []string{"release", "publish", "deploy", "build", "ci", "cd"}
-	var prioritized []string
-	var others []string
-	for _, wf := range workflows {
-		lower := strings.ToLower(wf)
-		isPriority := false
-		for _, kw := range publishKeywords {
-			if strings.Contains(lower, kw) {
-				isPriority = true
-				break
-			}
-		}
-		if isPriority {
-			prioritized = append(prioritized, wf)
-		} else {
-			others = append(others, wf)
-		}
-	}
-
-	// Check prioritized workflows first, then others. Cap at 5 content fetches
-	// to avoid excessive network calls.
-	toCheck := append(prioritized, others...)
-	maxChecks := 5
-	if len(toCheck) < maxChecks {
-		maxChecks = len(toCheck)
-	}
-
-	for _, wf := range toCheck[:maxChecks] {
-		path := ".github/workflows/" + wf
-		content := c.getWorkflowContent(owner, repo, path)
-		if content == "" {
-			continue
-		}
-		lower := strings.ToLower(content)
-		for _, pattern := range slsaActionPatterns {
-			if strings.Contains(lower, strings.ToLower(pattern)) {
-				return true, "SLSA_BUILD_LEVEL_2"
-			}
-		}
-	}
-
-	return false, ""
-}
-
-// getWorkflowContent fetches workflow file content. When no token is set,
-// raw.githubusercontent.com (CDN) is tried first. With a token, the API
-// is used for reliability, with raw URL as fallback.
-func (c *GitHubClient) getWorkflowContent(owner, repo, path string) string {
-	// Raw-URL-first path: when no token, use CDN to avoid API rate limits.
-	if c.shouldPreferScraping() {
-		content, err := c.getFileContentViaRawURL(owner, repo, path)
-		if err == nil {
-			return content
-		}
-		// Raw URL failed — fall through to try API
-	}
-
-	// API path (primary with token, fallback without)
-	apiURL := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err == nil {
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
-		req.Header.Set("Accept", "application/vnd.github.v3.raw")
-		resp, err := c.httpClient.Do(req)
-		if err == nil {
-			if resp.StatusCode == http.StatusOK {
-				body, readErr := io.ReadAll(resp.Body)
-				_ = resp.Body.Close()
-				if readErr == nil {
-					return string(body)
-				}
-			} else {
-				_ = resp.Body.Close()
-			}
-		}
-	}
-
-	// Final fallback: raw URL (if we haven't tried it already)
-	if !c.shouldPreferScraping() {
-		content, err := c.getFileContentViaRawURL(owner, repo, path)
-		if err == nil {
-			return content
-		}
-	}
-
-	return ""
-}
-
-// checkSigstoreSignatures checks for Sigstore/Cosign signatures
-func (c *GitHubClient) checkSigstoreSignatures(owner, repo string) bool {
-	// Check for cosign signature files or Sigstore configuration
-	sigstoreFiles := []string{
-		".cosign",
-		".sigstore",
-		".rekor",
-	}
-
-	for _, file := range sigstoreFiles {
-		if c.fileExists(owner, repo, file) {
-			return true
-		}
-	}
-
-	// Check releases for .sig files (common signature extension)
-	releases, err := c.getReleases(owner, repo)
-	if err != nil {
-		return false
-	}
-
-	for _, release := range releases {
-		for _, asset := range release.Assets {
-			if strings.HasSuffix(asset.Name, ".sig") ||
-			   strings.HasSuffix(asset.Name, ".asc") ||
-			   strings.HasSuffix(asset.Name, ".minisig") {
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 // checkSignedReleases checks how many releases have signatures
@@ -947,9 +750,9 @@ func (c *GitHubClient) checkSignedReleases(owner, repo string) (signedCount, tot
 // When no token is set, the GitHub releases page is scraped first.
 // With a token, the API provides richer release data (assets, draft status).
 func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) {
-	// Cache releases — called three times per package from provenance checks
-	// (checkSigstoreSignatures, checkSignedReleases, and the public-facing
-	// CheckSignedReleases). A cache hit eliminates two redundant network calls.
+	// Cache releases — called from provenance checks (checkSignedReleases
+	// and the public-facing CheckSignedReleases). A cache hit eliminates
+	// redundant network calls.
 	cacheKey := owner + "/" + repo
 	if c.cache != nil {
 		if cached, ok := c.cache.getCachedReleases(cacheKey); ok {

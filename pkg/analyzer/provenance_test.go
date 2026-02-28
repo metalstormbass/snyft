@@ -36,63 +36,6 @@ func TestScoreProvenance_NoProvenance(t *testing.T) {
 	}
 }
 
-// Test: scoreProvenance gives full credit for SLSA attestation
-// Justification: SLSA attestations provide the strongest supply chain integrity
-//                guarantee — cryptographic proof linking a package to its source
-//                commit and build environment
-// Source: SLSA specification v1.0 — https://slsa.dev/spec/v1.0/
-// Methodology: Set HasSLSAAttestation=true with SLSA_LEVEL_3; call scoreProvenance
-// Result: 0 risk points (full provenance), score 2
-func TestScoreProvenance_SLSAAttestation(t *testing.T) {
-	a := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasSLSAAttestation: true,
-			SLSALevel:         "SLSA_LEVEL_3",
-		},
-	}
-
-	score := a.scoreProvenance(result)
-
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points with SLSA attestation, got %d", score.RiskPoints)
-	}
-
-	if score.Score != 2 {
-		t.Errorf("Expected score 2 with SLSA attestation, got %d", score.Score)
-	}
-
-	if !strings.Contains(score.Description, "SLSA") || !strings.Contains(score.Description, "verified") {
-		t.Errorf("Description should reference SLSA attestation and verification, got '%s'", score.Description)
-	}
-}
-
-// Test: scoreProvenance gives full credit for Sigstore signatures
-// Justification: Sigstore/Cosign provides keyless signing tied to OIDC
-//                identities, enabling verification that releases were created
-//                by authorized maintainers without managing long-lived keys
-// Source: Sigstore documentation — https://www.sigstore.dev/
-// Methodology: Set HasSigstoreSignature=true; call scoreProvenance
-// Result: 0 risk points (full provenance), score 2
-func TestScoreProvenance_SigstoreSignatures(t *testing.T) {
-	a := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasSigstoreSignature: true,
-		},
-	}
-
-	score := a.scoreProvenance(result)
-
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points with Sigstore signatures, got %d", score.RiskPoints)
-	}
-
-	if score.Score != 2 {
-		t.Errorf("Expected score 2 with Sigstore signatures, got %d", score.Score)
-	}
-}
-
 // Test: scoreProvenance gives full credit for npm provenance attestations
 // Justification: npm provenance links published packages to specific GitHub
 //                Actions workflow runs, proving the package was built from
@@ -116,32 +59,6 @@ func TestScoreProvenance_NPMProvenance(t *testing.T) {
 
 	if score.Score != 2 {
 		t.Errorf("Expected score 2 with npm provenance, got %d", score.Score)
-	}
-}
-
-// Test: scoreProvenance gives full credit for PyPI cryptographic signatures
-// Justification: PGP signatures on PyPI distributions allow verification that
-//                the published files were created by the key holder, though
-//                PyPI deprecated PGP upload support in May 2023
-// Source: PyPI blog — "Removing PGP from PyPI" (2023-05-23)
-// Methodology: Set HasPyPISignatures=true; call scoreProvenance
-// Result: 0 risk points (full provenance), score 2
-func TestScoreProvenance_PyPISignatures(t *testing.T) {
-	a := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasPyPISignatures: true,
-		},
-	}
-
-	score := a.scoreProvenance(result)
-
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points with PyPI signatures, got %d", score.RiskPoints)
-	}
-
-	if score.Score != 2 {
-		t.Errorf("Expected score 2 with PyPI signatures, got %d", score.Score)
 	}
 }
 
@@ -177,20 +94,18 @@ func TestScoreProvenance_PartialProvenance_SignedReleases(t *testing.T) {
 }
 
 // Test: scoreProvenance gives full credit with multiple strong indicators
-// Justification: Packages with overlapping provenance signals (SLSA + Sigstore
+// Justification: Packages with overlapping provenance signals (npm provenance
 //                + signed releases) represent best-in-class supply chain hygiene;
 //                score should not exceed maximum
 // Source: SLSA specification v1.0 — defense in depth
-// Methodology: Set all strong and weak provenance indicators simultaneously
+// Methodology: Set multiple provenance indicators simultaneously
 // Result: 0 risk points (capped at full provenance), score 2
 func TestScoreProvenance_FullProvenance_Multiple(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			HasSLSAAttestation:   true,
-			SLSALevel:            "SLSA_LEVEL_3",
-			HasSigstoreSignature: true,
-			SignedReleases:       true,
+			HasNPMProvenance: true,
+			SignedReleases:   true,
 		},
 	}
 
@@ -202,10 +117,6 @@ func TestScoreProvenance_FullProvenance_Multiple(t *testing.T) {
 
 	if score.Score != 2 {
 		t.Errorf("Expected score 2 with multiple strong indicators, got %d", score.Score)
-	}
-
-	if !strings.Contains(score.Description, "SLSA") || !strings.Contains(score.Description, "Sigstore") {
-		t.Errorf("Description should reference SLSA and Sigstore attestations, got '%s'", score.Description)
 	}
 }
 
@@ -268,33 +179,30 @@ func TestScoreProvenance_LowOSSFScorecard(t *testing.T) {
 	}
 }
 
-// Test: scoreProvenance handles npm provenance combined with SLSA
-// Justification: npm packages built via GitHub Actions can have both npm
-//                provenance attestations and SLSA attestations — both should
-//                be recognized without double-counting risk reduction
+// Test: scoreProvenance handles npm provenance combined with signed releases
+// Justification: npm packages with both provenance attestations and signed releases
+//                represent strong supply chain hygiene
 // Source: npm provenance documentation — https://docs.npmjs.com/generating-provenance-statements
-//         SLSA specification v1.0 — https://slsa.dev/spec/v1.0/
-// Methodology: Set HasNPMProvenance=true and HasSLSAAttestation=true together
-// Result: 0 risk points (full provenance from either strong indicator)
-func TestScoreProvenance_NPMWithSLSA(t *testing.T) {
+// Methodology: Set HasNPMProvenance=true and SignedReleases=true together
+// Result: 0 risk points (full provenance from strong indicator)
+func TestScoreProvenance_NPMWithSignedReleases(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			HasNPMProvenance:   true,
-			HasSLSAAttestation: true,
-			SLSALevel:          "SLSA_LEVEL_2",
+			HasNPMProvenance: true,
+			SignedReleases:   true,
 		},
 	}
 
 	score := a.scoreProvenance(result)
 
-	// npm provenance + SLSA = strong provenance
+	// npm provenance + signed releases = strong provenance
 	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points with npm provenance and SLSA, got %d", score.RiskPoints)
+		t.Errorf("Expected 0 risk points with npm provenance and signed releases, got %d", score.RiskPoints)
 	}
 
 	if score.Score != 2 {
-		t.Errorf("Expected score 2 with npm provenance and SLSA, got %d", score.Score)
+		t.Errorf("Expected score 2 with npm provenance and signed releases, got %d", score.Score)
 	}
 }
 
@@ -418,18 +326,17 @@ func TestScoreProvenance_CIAloneIsNotProvenance(t *testing.T) {
 
 // Test: scoreProvenance does not double-count CI when stronger indicators exist
 // Justification: CI is only added when provenanceScore is 0; when stronger
-//                indicators (SLSA, Sigstore, etc.) already contribute points,
+//                indicators (npm provenance, etc.) already contribute points,
 //                CI should not be counted again
 // Source: SLSA specification v1.0 — higher levels subsume lower ones
-// Methodology: Set HasCI=true AND HasSLSAAttestation=true; verify CI is not added
-// Result: 0 risk points (full provenance from SLSA, CI not double-counted)
+// Methodology: Set HasCI=true AND HasNPMProvenance=true; verify CI is not added
+// Result: 0 risk points (full provenance from npm provenance, CI not double-counted)
 func TestScoreProvenance_CINotDoubleCountedWithStrongIndicator(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			HasCI:              true,
-			HasSLSAAttestation: true,
-			SLSALevel:          "SLSA_LEVEL_2",
+			HasCI:            true,
+			HasNPMProvenance: true,
 		},
 	}
 
