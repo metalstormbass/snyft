@@ -14,7 +14,8 @@ const Banner = "\033[32m\033[1m" +
 	" \\__ \\| .`" + " | \\ V / | _|  | |  \n" +
 	" |___/|_|\\_|  |_|  |_|   |_|  " +
 	"\033[0m\n" +
-	"\033[2m  Supply Chain Risk Analyzer\033[0m\n"
+	"\033[2m  Supply Chain Risk Analyzer\033[0m\n" +
+	"\033[3m  Does it pass the snyft test?\033[0m\n"
 
 var rootCmd = &cobra.Command{
 	Use:   "snyft",
