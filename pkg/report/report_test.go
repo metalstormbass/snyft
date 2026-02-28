@@ -574,3 +574,139 @@ func TestHTMLReportPackageDetailIDs(t *testing.T) {
 		t.Error("Package header missing onclick with slug-based toggle for scoped package")
 	}
 }
+
+// Test: Key Risk Areas show package names as clickable anchor links
+// Justification: When the Key Risk Areas section flags patterns like "HIGH RISK"
+//
+//	or "INSTALL-TIME EXECUTION", users need to see which specific
+//	packages are affected and navigate directly to their details for
+//	triage. Plain-text package lists without links force manual
+//	scrolling, slowing incident response.
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - rapid
+//
+//	identification of risky packages is critical for incident response
+//
+// Methodology: Generate an HTML report with packages that trigger multiple risk
+//
+//	areas (HIGH risk, install scripts, missing provenance), then verify
+//	the Key Risk Areas section renders package names as anchor links
+//	matching the #pkg-<slug> pattern used in package detail sections.
+//
+// Result: Each package name in Key Risk Areas links to its detail via #pkg-<slug>
+func TestHTMLRiskAreasClickableLinks(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{
+				Name:      "evil-pkg",
+				Version:   "1.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel:           "HIGH",
+			SourceCodeAvailable: false,
+			Metadata:            models.PackageMetadata{HasInstallScripts: true},
+			Findings: []models.Finding{
+				{Severity: "HIGH", Description: "Single maintainer"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 14,
+				RiskLevel:  "HIGH",
+				CategoryScores: models.CategoryScores{
+					Provenance:      models.CategoryScore{RiskPoints: 2, Score: 2},
+					ReleaseSecurity: models.CategoryScore{RiskPoints: 2, Score: 2},
+				},
+			},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "@shady/lib",
+				Version:   "0.1.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel:           "HIGH",
+			SourceCodeAvailable: false,
+			Metadata:            models.PackageMetadata{HasInstallScripts: true},
+			Findings: []models.Finding{
+				{Severity: "HIGH", Description: "Recent ownership transfer"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 12,
+				RiskLevel:  "HIGH",
+				CategoryScores: models.CategoryScores{
+					Provenance:      models.CategoryScore{RiskPoints: 2, Score: 2},
+					ReleaseSecurity: models.CategoryScore{RiskPoints: 2, Score: 2},
+				},
+			},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "safe-pkg",
+				Version:   "2.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel:           "LOW",
+			SourceCodeAvailable: true,
+			Findings: []models.Finding{
+				{Severity: "LOW", Description: "Well maintained"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 1,
+				RiskLevel:  "LOW",
+				CategoryScores: models.CategoryScores{
+					Provenance:      models.CategoryScore{RiskPoints: 0, Score: 0},
+					ReleaseSecurity: models.CategoryScore{RiskPoints: 0, Score: 0},
+				},
+			},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format: FormatHTML,
+		Writer: buf,
+	})
+	reporter.stats.StartTime = time.Now().Add(-3 * time.Second)
+	reporter.stats.EndTime = time.Now()
+	reporter.AddResults(results)
+
+	err := reporter.Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// Verify "HIGH RISK" area lists package names as clickable links
+	if !strings.Contains(output, `<a href="#pkg-evil-pkg">evil-pkg</a>`) {
+		t.Error("Key Risk Areas: HIGH RISK section missing clickable link for 'evil-pkg'")
+	}
+	if !strings.Contains(output, `<a href="#pkg-shady-lib">@shady/lib</a>`) {
+		t.Error("Key Risk Areas: HIGH RISK section missing clickable link for '@shady/lib'")
+	}
+
+	// Verify "UNVERIFIABLE SOURCE" area lists affected packages as links
+	if !strings.Contains(output, `Affected:`) {
+		t.Error("Key Risk Areas missing 'Affected:' label for package examples")
+	}
+
+	// Verify "INSTALL-TIME EXECUTION" area lists affected packages as links
+	// Both evil-pkg and @shady/lib have install scripts
+	if !strings.Contains(output, `<a href="#pkg-evil-pkg">evil-pkg</a>`) {
+		t.Error("Key Risk Areas: INSTALL-TIME EXECUTION missing clickable link for 'evil-pkg'")
+	}
+
+	// Verify links use the same anchor pattern as package detail sections
+	if !strings.Contains(output, `id="pkg-evil-pkg"`) {
+		t.Error("Package detail section missing matching id='pkg-evil-pkg'")
+	}
+	if !strings.Contains(output, `id="pkg-shady-lib"`) {
+		t.Error("Package detail section missing matching id='pkg-shady-lib'")
+	}
+
+	// Verify the risk-area-examples div has anchor tags (not plain text)
+	// The old behavior was: <div class="risk-area-examples">Affected: evil-pkg, @shady/lib</div>
+	// The new behavior should have <a> tags inside
+	if strings.Contains(output, `risk-area-examples">Affected: evil-pkg,`) {
+		t.Error("Key Risk Areas still using plain text for package names instead of anchor links")
+	}
+}

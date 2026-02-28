@@ -222,8 +222,8 @@ func (r *Reporter) printRiskSummary(w io.Writer) {
 		}
 		f(w, "  %s%d.%s %s %s\n", ColorBold, i+1, ColorReset, tag, area.Summary)
 		f(w, "     %s%s%s\n", ColorDim, area.Explanation, ColorReset)
-		if area.Examples != "" {
-			f(w, "     %sAffected:%s %s\n", ColorDim, ColorReset, area.Examples)
+		if len(area.Examples) > 0 {
+			f(w, "     %sAffected:%s %s\n", ColorDim, ColorReset, joinExamples(area.Examples))
 		}
 		p(w, "")
 	}
