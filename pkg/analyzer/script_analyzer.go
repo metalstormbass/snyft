@@ -180,7 +180,10 @@ func AnalyzeNPMScripts(scripts map[string]string) ScriptAnalysis {
 func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 	analysis := AnalyzeScript(setupContent)
 
-	// Additional Python-specific checks
+	// Additional Python-specific checks for supply chain attack patterns.
+	// These patterns are documented in real-world attacks against PyPI packages.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	//         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
 	pythonPatterns := []struct {
 		regex       *regexp.Regexp
 		description string
@@ -189,21 +192,99 @@ func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 	}{
 		{
 			regex:       regexp.MustCompile(`(?i)cmdclass\s*=`),
-			description: "Overrides setup.py command classes (can execute arbitrary code)",
+			description: "Overrides setup.py command classes (can execute arbitrary code during install/build)",
 			severity:    "MEDIUM",
 			pattern:     "cmdclass override",
 		},
 		{
-			regex:       regexp.MustCompile(`(?i)import\s+(requests|urllib|http\.client)`),
-			description: "Makes network requests during installation",
+			regex:       regexp.MustCompile(`(?i)import\s+(requests|urllib|http\.client|httplib|httpx|aiohttp)`),
+			description: "Imports network libraries during installation — common in data exfiltration attacks",
 			severity:    "MEDIUM",
 			pattern:     "network import",
 		},
 		{
+			regex:       regexp.MustCompile(`(?i)from\s+(requests|urllib|urllib\.request|http\.client|httplib|httpx|aiohttp)\s+import`),
+			description: "Imports network libraries during installation — common in data exfiltration attacks",
+			severity:    "MEDIUM",
+			pattern:     "network from-import",
+		},
+		{
 			regex:       regexp.MustCompile(`(?i)__import__\s*\(`),
-			description: "Dynamic imports (can load arbitrary modules)",
+			description: "Dynamic imports can load arbitrary modules at install time",
 			severity:    "MEDIUM",
 			pattern:     "__import__",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)os\.(system|popen|exec[lv]p?e?)\s*\(`),
+			description: "Executes system commands during installation — direct code execution vector",
+			severity:    "HIGH",
+			pattern:     "os.system/popen/exec",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)subprocess\.(call|run|Popen|check_output|check_call|getoutput)\s*\(`),
+			description: "Spawns subprocesses during installation — used in malicious packages to run payloads",
+			severity:    "HIGH",
+			pattern:     "subprocess call",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)base64\.(b64decode|decodebytes|decodestring)\s*\(`),
+			description: "Decodes base64 data during installation — commonly used to hide malicious payloads",
+			severity:    "HIGH",
+			pattern:     "base64 decode",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)\bexec\s*\(`),
+			description: "Executes dynamically constructed code — primary vector for obfuscated malware in setup.py",
+			severity:    "HIGH",
+			pattern:     "exec()",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)socket\.(socket|create_connection|connect)\s*\(`),
+			description: "Creates network sockets during installation — used for reverse shells and data exfiltration",
+			severity:    "HIGH",
+			pattern:     "socket connection",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)import\s+socket`),
+			description: "Imports socket module during installation — potential network backdoor",
+			severity:    "MEDIUM",
+			pattern:     "socket import",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)codecs\.decode\s*\(`),
+			description: "Uses codecs.decode which can obfuscate malicious strings (e.g., rot13 encoding)",
+			severity:    "MEDIUM",
+			pattern:     "codecs.decode",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)marshal\.loads\s*\(`),
+			description: "Deserializes Python bytecode — can execute arbitrary code without visible source",
+			severity:    "HIGH",
+			pattern:     "marshal.loads",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)compile\s*\([^)]*,\s*['\"]exec['\"]\s*\)`),
+			description: "Compiles code for execution — used to run dynamically generated malicious code",
+			severity:    "HIGH",
+			pattern:     "compile(exec)",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)(ctypes\.CDLL|ctypes\.cdll|ctypes\.windll)\s*\(`),
+			description: "Loads native shared libraries — can execute arbitrary native code",
+			severity:    "HIGH",
+			pattern:     "ctypes library load",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)\\x[0-9a-f]{2}(\\x[0-9a-f]{2}){7,}`),
+			description: "Contains hex-escaped byte sequences — common obfuscation technique in malicious packages",
+			severity:    "MEDIUM",
+			pattern:     "hex-obfuscated data",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)import\s+webbrowser`),
+			description: "Imports webbrowser module during installation — can open arbitrary URLs",
+			severity:    "MEDIUM",
+			pattern:     "webbrowser import",
 		},
 	}
 

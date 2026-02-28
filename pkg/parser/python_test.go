@@ -718,3 +718,260 @@ func TestParsePipfileLock_VersionStripping(t *testing.T) {
 		}
 	}
 }
+
+// ---- parseSetupPy tests ----
+
+// Test: parseSetupPy extracts install_requires and setup_requires
+// Justification: setup.py is the traditional Python packaging format — many packages
+//                still use it exclusively. install_requires lists runtime dependencies
+//                that are attack surface for supply chain compromise.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - setup.py is
+//         a primary attack vector in Python supply chain attacks
+// Methodology: Parse a setup.py with install_requires and setup_requires lists
+// Result: Returns all dependencies from both lists with correct versions
+func TestParseSetupPy_InstallAndSetupRequires(t *testing.T) {
+	deps, err := parseSetupPy("testdata/setup-simple.py")
+	if err != nil {
+		t.Fatalf("Failed to parse setup.py: %v", err)
+	}
+
+	// Should have: requests, Flask, numpy (install_requires) + setuptools, wheel (setup_requires) = 5
+	if len(deps) != 5 {
+		t.Fatalf("Expected 5 dependencies, got %d", len(deps))
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	if v, ok := depMap["requests"]; !ok || v != "2.28.0" {
+		t.Errorf("Expected requests@2.28.0, got %v", v)
+	}
+	if v, ok := depMap["Flask"]; !ok || v != "2.3.0" {
+		t.Errorf("Expected Flask@2.3.0, got %v", v)
+	}
+	if v, ok := depMap["numpy"]; !ok || v != "1.24.0" {
+		t.Errorf("Expected numpy@1.24.0, got %v", v)
+	}
+	if v, ok := depMap["setuptools"]; !ok || v != "40.0" {
+		t.Errorf("Expected setuptools@40.0, got %v", v)
+	}
+	if v, ok := depMap["wheel"]; !ok || v != "latest" {
+		t.Errorf("Expected wheel@latest, got %v", v)
+	}
+}
+
+// Test: parseSetupPy extracts extras_require and dependency_links
+// Justification: extras_require provides optional dependency groups that can still
+//                be installed automatically. dependency_links can point to arbitrary
+//                URLs, representing a supply chain risk.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020) - package manager
+//         dependency resolution as attack surface
+// Methodology: Parse setup.py with extras_require dict and dependency_links list
+// Result: Returns all extra dependencies and parses egg name from dependency_links
+func TestParseSetupPy_ExtrasAndDepLinks(t *testing.T) {
+	deps, err := parseSetupPy("testdata/setup-extras.py")
+	if err != nil {
+		t.Fatalf("Failed to parse setup.py: %v", err)
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	// install_requires: requests
+	if v, ok := depMap["requests"]; !ok || v != "2.28.0" {
+		t.Errorf("Expected requests@2.28.0, got %v", v)
+	}
+
+	// extras_require: pytest, coverage, sphinx
+	if _, ok := depMap["pytest"]; !ok {
+		t.Error("Expected pytest from extras_require")
+	}
+	if _, ok := depMap["coverage"]; !ok {
+		t.Error("Expected coverage from extras_require")
+	}
+	if _, ok := depMap["sphinx"]; !ok {
+		t.Error("Expected sphinx from extras_require")
+	}
+
+	// dependency_links: custom-pkg
+	if v, ok := depMap["custom-pkg"]; !ok || v != "latest" {
+		t.Errorf("Expected custom-pkg@latest from dependency_links, got %v", v)
+	}
+}
+
+// Test: parseSetupPy handles file reading pattern for dependencies
+// Justification: Many setup.py files read dependencies from requirements.txt via
+//                open('requirements.txt').readlines(). The parser must follow these
+//                references to capture the full dependency list.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - complete dependency
+//         enumeration is critical for supply chain risk assessment
+// Methodology: Parse a setup.py that references requirements-small.txt
+// Result: Returns dependencies from the referenced requirements file
+func TestParseSetupPy_FileReadPattern(t *testing.T) {
+	deps, err := parseSetupPy("testdata/setup-filereader.py")
+	if err != nil {
+		t.Fatalf("Failed to parse setup.py: %v", err)
+	}
+
+	// Should have the 3 deps from requirements-small.txt
+	if len(deps) != 3 {
+		t.Fatalf("Expected 3 dependencies from referenced file, got %d", len(deps))
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	if v, ok := depMap["requests"]; !ok || v != "2.28.0" {
+		t.Errorf("Expected requests@2.28.0, got %v", v)
+	}
+}
+
+// Test: parseSetupPy returns empty list for setup.py with no dependencies
+// Justification: Not all packages have dependencies. The parser must handle
+//                setup.py files with no dependency-related keyword arguments.
+// Source: Defense-in-depth principle
+// Methodology: Parse a minimal setup.py with only name and version
+// Result: Returns empty dependency list without error
+func TestParseSetupPy_NoDependencies(t *testing.T) {
+	deps, err := parseSetupPy("testdata/setup-empty.py")
+	if err != nil {
+		t.Fatalf("Failed to parse setup.py: %v", err)
+	}
+
+	if len(deps) != 0 {
+		t.Errorf("Expected 0 dependencies, got %d", len(deps))
+	}
+}
+
+// Test: parseSetupPy sets correct ecosystem for all dependencies
+// Justification: setup.py is a Python/PyPI packaging format — all extracted
+//                dependencies must be tagged with PyPI ecosystem for correct
+//                registry API lookups during supply chain analysis
+// Source: OSSF Scorecard methodology - ecosystem-specific checks
+// Methodology: Verify all parsed deps have PyPI ecosystem
+// Result: All dependencies have EcosystemPyPI
+func TestParseSetupPy_Ecosystem(t *testing.T) {
+	deps, err := parseSetupPy("testdata/setup-simple.py")
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	for _, dep := range deps {
+		if dep.Ecosystem != models.EcosystemPyPI {
+			t.Errorf("Expected pypi ecosystem for %s, got %s", dep.Name, dep.Ecosystem)
+		}
+	}
+}
+
+// Test: parseSetupPy returns error for nonexistent file
+// Justification: Graceful error handling for missing files
+// Source: Defense-in-depth principle
+// Methodology: Attempt to parse a nonexistent setup.py
+// Result: Returns file read error
+func TestParseSetupPy_NonexistentFile(t *testing.T) {
+	_, err := parseSetupPy("testdata/nonexistent-setup.py")
+	if err == nil {
+		t.Error("Expected error for nonexistent file")
+	}
+}
+
+// Test: parseSetupPyContent handles inline content
+// Justification: When setup.py content is fetched from a repository (not a local
+//                file), we need to parse it from a string rather than reading a file
+// Source: Snyft architecture - setup.py is fetched via git platform client
+// Methodology: Pass setup.py content directly as a string
+// Result: Extracts dependencies from inline content
+func TestParseSetupPyContent_InlineContent(t *testing.T) {
+	content := `
+from setuptools import setup
+setup(
+    name='test',
+    install_requires=['click>=7.0', 'rich'],
+)
+`
+	deps, err := parseSetupPyContent("inline", content)
+	if err != nil {
+		t.Fatalf("Failed to parse inline content: %v", err)
+	}
+
+	if len(deps) != 2 {
+		t.Fatalf("Expected 2 dependencies, got %d", len(deps))
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	if v, ok := depMap["click"]; !ok || v != "7.0" {
+		t.Errorf("Expected click@7.0, got %v", v)
+	}
+	if v, ok := depMap["rich"]; !ok || v != "latest" {
+		t.Errorf("Expected rich@latest, got %v", v)
+	}
+}
+
+// ---- extractSetupPyList tests ----
+
+// Test: extractSetupPyList handles single-line list
+// Justification: Some setup.py files have all deps on one line
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Extract from a single-line install_requires
+// Result: Returns all quoted strings from the list
+func TestExtractSetupPyList_SingleLine(t *testing.T) {
+	content := `setup(install_requires=['pkg1>=1.0', 'pkg2', "pkg3==2.0"])`
+	result := extractSetupPyList(content, "install_requires")
+	if len(result) != 3 {
+		t.Fatalf("Expected 3 items, got %d: %v", len(result), result)
+	}
+}
+
+// Test: extractSetupPyList handles multi-line list
+// Justification: Most setup.py files use multi-line lists for readability
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Extract from a multi-line install_requires
+// Result: Returns all quoted strings from the multi-line list
+func TestExtractSetupPyList_MultiLine(t *testing.T) {
+	content := `setup(
+    install_requires=[
+        'pkg1>=1.0',
+        'pkg2',
+    ],
+)`
+	result := extractSetupPyList(content, "install_requires")
+	if len(result) != 2 {
+		t.Fatalf("Expected 2 items, got %d: %v", len(result), result)
+	}
+}
+
+// ---- extractPackageFromDepLink tests ----
+
+// Test: extractPackageFromDepLink extracts package name from egg fragment
+// Justification: dependency_links use #egg=name-version format to identify packages
+// Source: pip documentation on dependency_links
+// Methodology: Parse a dependency_links URL with #egg= fragment
+// Result: Returns the package name without version
+func TestExtractPackageFromDepLink_WithEgg(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"https://github.com/user/pkg/tarball/master#egg=mypkg-1.0", "mypkg"},
+		{"https://example.com/pkg.tar.gz#egg=pkg-2.3.1", "pkg"},
+		{"https://example.com/pkg.tar.gz#egg=pkg", "pkg"},
+		{"https://example.com/no-egg-fragment", ""},
+	}
+
+	for _, tt := range tests {
+		got := extractPackageFromDepLink(tt.input)
+		if got != tt.want {
+			t.Errorf("extractPackageFromDepLink(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
