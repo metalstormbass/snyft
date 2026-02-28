@@ -66,22 +66,11 @@ func (r *Reporter) generateMarkdown() error {
 		f(w, "> ⚠️ **%d MEDIUM risk** package%s — monitoring recommended.\n\n", r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
 	}
 
-	// Top findings
-	criticalIssues := r.extractCriticalIssues(5)
-	if len(criticalIssues) > 0 {
-		p(w, "### Top Priority Findings")
-		p(w, "")
-		for i, issue := range criticalIssues {
-			f(w, "%d. %s **%s@%s** (%s) — **[%s]** %s\n",
-				i+1, riskIcon(issue.RiskLevel),
-				issue.PackageName, issue.PackageVersion, issue.Ecosystem,
-				issue.Severity, issue.Description)
-			if issue.Evidence != "" {
-				f(w, "   - *Evidence:* %s\n", issue.Evidence)
-			}
-		}
-		p(w, "")
-	}
+	// Executive narrative
+	p(w, "### Risk Assessment")
+	p(w, "")
+	p(w, r.generateExecutiveNarrative())
+	p(w, "")
 
 	p(w, "---")
 	p(w, "")

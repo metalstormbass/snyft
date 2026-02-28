@@ -2,7 +2,6 @@ package report
 
 import (
 	"encoding/json"
-	"fmt"
 )
 
 // JSONReport represents the JSON output structure
@@ -86,18 +85,7 @@ func (r *Reporter) generateJSON() error {
 		}
 	}
 
-	if len(criticalIssues) > 0 {
-		report.ExecutiveSummary.Summary = fmt.Sprintf(
-			"Supply Chain Risk Assessment: Scanned %d packages and identified %d with elevated supply chain compromise risk. "+
-				"%d packages are HIGH risk (immediate attention required), %d are MEDIUM risk (monitoring recommended). "+
-				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
-			r.stats.TotalPackages, r.stats.HighRisk+r.stats.MediumRisk, r.stats.HighRisk, r.stats.MediumRisk)
-	} else {
-		report.ExecutiveSummary.Summary = fmt.Sprintf(
-			"Supply Chain Risk Assessment: Scanned %d packages with overall risk level: %s. "+
-				"This assessment evaluates likelihood of compromise through supply chain attacks, not known CVEs.",
-			r.stats.TotalPackages, calculateOverallRisk(r.stats))
-	}
+	report.ExecutiveSummary.Summary = r.generateExecutiveNarrative()
 
 	// Key Risk Areas
 	areas := r.generateRiskAreas()

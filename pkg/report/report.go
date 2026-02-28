@@ -251,6 +251,53 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 	return issues
 }
 
+// generateExecutiveNarrative builds a balanced, factual executive summary.
+// Returns 3-5 sentences covering: packages scanned, risk posture, key risk areas.
+func (r *Reporter) generateExecutiveNarrative() string {
+	var sb strings.Builder
+
+	fmt.Fprintf(&sb, "Snyft scanned %d package%s for supply chain compromise risk.",
+		r.stats.TotalPackages, pluralize(r.stats.TotalPackages))
+
+	elevated := r.stats.HighRisk + r.stats.MediumRisk
+	if elevated > 0 {
+		fmt.Fprintf(&sb, " %d of %d", elevated, r.stats.TotalPackages)
+		if elevated == 1 {
+			sb.WriteString(" package shows")
+		} else {
+			sb.WriteString(" packages show")
+		}
+		sb.WriteString(" elevated supply chain risk")
+		if r.stats.HighRisk > 0 && r.stats.MediumRisk > 0 {
+			fmt.Fprintf(&sb, " (%d high, %d medium).", r.stats.HighRisk, r.stats.MediumRisk)
+		} else if r.stats.HighRisk > 0 {
+			fmt.Fprintf(&sb, " (%d high).", r.stats.HighRisk)
+		} else {
+			fmt.Fprintf(&sb, " (%d medium).", r.stats.MediumRisk)
+		}
+	} else {
+		sb.WriteString(" No packages show elevated supply chain risk.")
+	}
+
+	areas := r.generateRiskAreas()
+	if len(areas) > 0 {
+		sb.WriteString(" Key risk areas identified: ")
+		for i, area := range areas {
+			if i > 0 && i == len(areas)-1 {
+				sb.WriteString(", and ")
+			} else if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(strings.ToLower(area.Summary))
+		}
+		sb.WriteString(".")
+	}
+
+	sb.WriteString(" This assessment evaluates the likelihood of compromise through supply chain attacks, not known CVEs or code vulnerabilities.")
+
+	return sb.String()
+}
+
 // shouldSwapRisk returns true if b should be sorted before a.
 func shouldSwapRisk(a, b models.AnalysisResult) bool {
 	if b.RiskLevel == "HIGH" && a.RiskLevel != "HIGH" {

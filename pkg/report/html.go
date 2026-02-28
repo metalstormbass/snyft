@@ -44,7 +44,7 @@ func (r *Reporter) generateHTML() error {
 	if err := r.printHTMLExecutiveSummary(w); err != nil {
 		return err
 	}
-	r.printHTMLTopFindings(w)
+	r.printHTMLExecutiveNarrative(w)
 	r.printHTMLRiskAreas(w)
 
 	// Detailed findings
@@ -159,16 +159,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .section-title{font-size:16px;font-weight:700;color:#40916c;margin-bottom:4px}
 .section-desc{font-size:13px;color:#808080;margin-bottom:16px}
 
-/* Top findings */
-.top-finding{display:flex;align-items:flex-start;gap:12px;padding:12px 16px;border-radius:8px;margin-bottom:8px;border:1px solid #1b4332;background:#222222;transition:background 0.15s}
-.top-finding:hover{background:#2a2a2a}
-.top-finding-num{font-size:12px;font-weight:700;color:#666666;min-width:20px;padding-top:2px}
-.top-finding-body{flex:1;min-width:0}
-.top-finding-pkg{font-weight:600;color:#e0e0e0;font-size:14px}
-a.top-finding-pkg{text-decoration:none}
-a.top-finding-pkg:hover{text-decoration:underline;color:#52b788}
-.top-finding-eco{font-size:11px;color:#666666;font-weight:400;margin-left:6px}
-.top-finding-desc{font-size:13px;color:#b0b0b0;margin-top:2px}
+/* Executive summary */
+.exec-narrative{font-size:14px;color:#c0c0c0;line-height:1.8}
 .sev-badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.03em;vertical-align:middle}
 .sev-badge.critical,.sev-badge.high{background:#3a1111;color:#ef4444;border:1px solid #5c2020}
 .sev-badge.medium{background:#3a2a0a;color:#f59e0b;border:1px solid #5c4510}
@@ -346,42 +338,11 @@ func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
 	return nil
 }
 
-func (r *Reporter) printHTMLTopFindings(w io.Writer) {
-	criticalIssues := r.extractCriticalIssues(5)
-	if len(criticalIssues) == 0 {
-		return
-	}
-
+func (r *Reporter) printHTMLExecutiveNarrative(w io.Writer) {
+	narrative := r.generateExecutiveNarrative()
 	f(w, "<section class=\"section\">\n")
-	f(w, "<h2 class=\"section-title\">Top Priority Findings</h2>\n")
-	f(w, "<p class=\"section-desc\">Most critical supply chain risk signals across all packages.</p>\n")
-
-	for i, issue := range criticalIssues {
-		sevCls := "medium"
-		if issue.Severity == "HIGH" || issue.Severity == "CRITICAL" {
-			sevCls = "high"
-		}
-		slug := packageSlug(issue.PackageName)
-		f(w, "<div class=\"top-finding\">\n")
-		f(w, "<div class=\"top-finding-num\">%d</div>\n", i+1)
-		f(w, "<div class=\"top-finding-body\">\n")
-		f(w, "<div><a href=\"#pkg-%s\" class=\"top-finding-pkg\" onclick=\"showPkg('%s')\">%s@%s</a><span class=\"top-finding-eco\">%s</span> <span class=\"sev-badge %s\">%s</span></div>\n",
-			slug,
-			slug,
-			html.EscapeString(issue.PackageName),
-			html.EscapeString(issue.PackageVersion),
-			html.EscapeString(issue.Ecosystem),
-			sevCls,
-			html.EscapeString(issue.Severity))
-		f(w, "<div class=\"top-finding-desc\">%s</div>\n", html.EscapeString(issue.Description))
-		if issue.SourceURL != "" {
-			f(w, "<div class=\"finding-extra\">Source: <a href=\"%s\" target=\"_blank\" rel=\"noopener\">%s</a></div>\n",
-				html.EscapeString(issue.SourceURL), html.EscapeString(issue.SourceURL))
-		}
-		f(w, "</div>\n")
-		f(w, "</div>\n")
-	}
-
+	f(w, "<h2 class=\"section-title\">Executive Summary</h2>\n")
+	f(w, "<p class=\"exec-narrative\">%s</p>\n", html.EscapeString(narrative))
 	f(w, "</section>\n")
 }
 
