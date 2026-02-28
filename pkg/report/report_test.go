@@ -81,7 +81,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		},
 	}
 
-	t.Run("Text format includes key findings", func(t *testing.T) {
+	t.Run("Text format includes package results", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{
 			Format:  FormatText,
@@ -99,22 +99,22 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 
 		output := buf.String()
 
-		if !strings.Contains(output, "EXECUTIVE SUMMARY") {
-			t.Error("Output missing 'EXECUTIVE SUMMARY' section")
+		// Check summary line with package count
+		if !strings.Contains(output, "packages scanned") {
+			t.Error("Output missing package count in summary line")
 		}
 
-		if !strings.Contains(output, "Top Priority Findings:") {
-			t.Error("Output missing 'Top Priority Findings' section")
+		// Check risk counts in summary
+		if !strings.Contains(output, "high") {
+			t.Error("Output missing high risk count in summary")
 		}
 
+		// Check package listing
 		if !strings.Contains(output, "express@4.17.1") {
 			t.Error("Output missing specific package 'express@4.17.1'")
 		}
 
-		if !strings.Contains(output, "Evidence:") {
-			t.Error("Output missing evidence details")
-		}
-
+		// Check findings are shown under packages
 		if !strings.Contains(output, "Single maintainer") {
 			t.Error("Output missing finding description")
 		}

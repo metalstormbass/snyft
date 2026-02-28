@@ -452,6 +452,18 @@ func joinExamples(names []string) string {
 	return strings.Join(names, ", ")
 }
 
+// scoreColor returns a color based on the numeric supply chain risk score.
+// 0-7: green (low), 8-13: yellow (medium), 14+: red (high).
+func scoreColor(score int) string {
+	if score <= 7 {
+		return ColorGreen
+	}
+	if score <= 13 {
+		return ColorYellow
+	}
+	return ColorRed
+}
+
 func riskColor(level string) string {
 	switch level {
 	case "HIGH":
