@@ -23,7 +23,6 @@ const (
 func (r *Reporter) generateText() error {
 	w := r.config.Writer
 
-	r.printBanner(w)
 	r.printHeader(w)
 	r.printSummaryLine(w)
 
@@ -43,19 +42,6 @@ func (r *Reporter) generateText() error {
 }
 
 // --- sections ---
-
-func (r *Reporter) printBanner(w io.Writer) {
-	logo := []string{
-		`  ___  _  _ __   __ ___ _____ `,
-		` / __|| \| |\ \ / /| __|_   _|`,
-		` \__ \| .` + "`" + ` | \ V / | _|  | |  `,
-		` |___/|_|\_|  |_|  |_|   |_|  `,
-	}
-	for _, line := range logo {
-		f(w, "  %s%s%s%s\n", ColorGreen, ColorBold, line, ColorReset)
-	}
-	f(w, "  %s  Supply Chain Risk Analyzer%s\n\n", ColorDim, ColorReset)
-}
 
 func (r *Reporter) printHeader(w io.Writer) {
 	width := 80
