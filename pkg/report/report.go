@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -516,6 +517,60 @@ func scoreColor(score int) string {
 func scoreColorCSS(score int) string {
 	r, g, b := scoreGradientRGB(score)
 	return fmt.Sprintf("rgb(%d,%d,%d)", r, g, b)
+}
+
+// severityOrdinal maps finding severity to a numeric value for sorting.
+func severityOrdinal(severity string) int {
+	switch severity {
+	case "CRITICAL":
+		return 4
+	case "HIGH":
+		return 3
+	case "MEDIUM":
+		return 2
+	case "LOW":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// sortedResults returns a copy of results sorted by risk score descending.
+// Packages with higher supply chain risk scores appear first. When scores
+// are equal, packages are sorted by risk level (HIGH > MEDIUM > LOW).
+// Findings within each package are also sorted by severity descending.
+func (r *Reporter) sortedResults() []models.AnalysisResult {
+	sorted := make([]models.AnalysisResult, len(r.results))
+	copy(sorted, r.results)
+
+	// Sort packages by risk score descending
+	sort.SliceStable(sorted, func(i, j int) bool {
+		si, sj := 0, 0
+		if sorted[i].SupplyChainScore != nil {
+			si = sorted[i].SupplyChainScore.TotalScore
+		}
+		if sorted[j].SupplyChainScore != nil {
+			sj = sorted[j].SupplyChainScore.TotalScore
+		}
+		if si != sj {
+			return si > sj
+		}
+		return riskOrdinal(sorted[i].RiskLevel) > riskOrdinal(sorted[j].RiskLevel)
+	})
+
+	// Sort findings within each result by severity descending
+	for i := range sorted {
+		if len(sorted[i].Findings) > 1 {
+			sf := make([]models.Finding, len(sorted[i].Findings))
+			copy(sf, sorted[i].Findings)
+			sort.SliceStable(sf, func(a, b int) bool {
+				return severityOrdinal(sf[a].Severity) > severityOrdinal(sf[b].Severity)
+			})
+			sorted[i].Findings = sf
+		}
+	}
+
+	return sorted
 }
 
 func riskColor(level string) string {

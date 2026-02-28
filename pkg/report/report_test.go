@@ -870,6 +870,254 @@ func TestHTMLTopFindingsLinkToPackageDetails(t *testing.T) {
 	}
 }
 
+// Test: Packages sorted by risk score descending, findings by severity descending
+// Justification: Highest-risk packages should appear first in all report formats
+//
+//	so that users can immediately triage the most dangerous dependencies.
+//	Within each package, the most severe findings should come first.
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — rapid
+//
+//	identification of risky packages is critical for incident response
+//
+// Methodology: Create packages with known scores in mixed order, generate each
+//
+//	report format, verify output order matches risk score descending
+//
+// Result: All formats show highest-risk packages first, highest-severity findings first
+func TestSortedResultsByRiskScore(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{Name: "low-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "LOW",
+			Findings: []models.Finding{
+				{Severity: "LOW", Description: "Well maintained"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 3, RiskLevel: "LOW"},
+		},
+		{
+			Dependency: models.Dependency{Name: "high-pkg", Version: "2.0.0", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "HIGH",
+			Findings: []models.Finding{
+				{Severity: "LOW", Description: "Minor issue"},
+				{Severity: "CRITICAL", Description: "Critical compromise vector"},
+				{Severity: "MEDIUM", Description: "Moderate concern"},
+				{Severity: "HIGH", Description: "Significant risk factor"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 15, RiskLevel: "HIGH"},
+		},
+		{
+			Dependency: models.Dependency{Name: "medium-pkg", Version: "3.0.0", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "MEDIUM",
+			Findings: []models.Finding{
+				{Severity: "MEDIUM", Description: "Missing provenance"},
+			},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 9, RiskLevel: "MEDIUM"},
+		},
+	}
+
+	t.Run("sortedResults orders by score descending", func(t *testing.T) {
+		reporter := NewReporter(Config{})
+		reporter.AddResults(results)
+
+		sorted := reporter.sortedResults()
+
+		if len(sorted) != 3 {
+			t.Fatalf("Expected 3 results, got %d", len(sorted))
+		}
+		if sorted[0].Dependency.Name != "high-pkg" {
+			t.Errorf("Expected first package to be 'high-pkg' (score 15), got %s", sorted[0].Dependency.Name)
+		}
+		if sorted[1].Dependency.Name != "medium-pkg" {
+			t.Errorf("Expected second package to be 'medium-pkg' (score 9), got %s", sorted[1].Dependency.Name)
+		}
+		if sorted[2].Dependency.Name != "low-pkg" {
+			t.Errorf("Expected third package to be 'low-pkg' (score 3), got %s", sorted[2].Dependency.Name)
+		}
+	})
+
+	t.Run("sortedResults sorts findings by severity descending", func(t *testing.T) {
+		reporter := NewReporter(Config{})
+		reporter.AddResults(results)
+
+		sorted := reporter.sortedResults()
+
+		// high-pkg has 4 findings in mixed order; should be CRITICAL > HIGH > MEDIUM > LOW
+		highPkg := sorted[0]
+		if highPkg.Dependency.Name != "high-pkg" {
+			t.Fatalf("Expected high-pkg first, got %s", highPkg.Dependency.Name)
+		}
+		expectedSeverities := []string{"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+		for i, finding := range highPkg.Findings {
+			if finding.Severity != expectedSeverities[i] {
+				t.Errorf("Finding %d: expected severity %s, got %s", i, expectedSeverities[i], finding.Severity)
+			}
+		}
+	})
+
+	t.Run("sortedResults does not mutate original", func(t *testing.T) {
+		reporter := NewReporter(Config{})
+		reporter.AddResults(results)
+
+		_ = reporter.sortedResults()
+
+		// Original order should be preserved
+		if reporter.results[0].Dependency.Name != "low-pkg" {
+			t.Error("sortedResults mutated original results slice")
+		}
+		// Original finding order should be preserved
+		if reporter.results[1].Findings[0].Severity != "LOW" {
+			t.Error("sortedResults mutated original findings slice")
+		}
+	})
+
+	t.Run("Text format shows highest risk first", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		reporter := NewReporter(Config{Format: FormatText, Verbose: false, Writer: buf})
+		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
+		reporter.stats.EndTime = time.Now()
+		reporter.AddResults(results)
+
+		if err := reporter.Generate(); err != nil {
+			t.Fatalf("Generate() failed: %v", err)
+		}
+
+		output := buf.String()
+		highIdx := strings.Index(output, "high-pkg@2.0.0")
+		medIdx := strings.Index(output, "medium-pkg@3.0.0")
+		lowIdx := strings.Index(output, "low-pkg@1.0.0")
+
+		if highIdx == -1 || medIdx == -1 || lowIdx == -1 {
+			t.Fatal("Output missing one or more package names")
+		}
+		if highIdx > medIdx {
+			t.Error("Text: high-pkg should appear before medium-pkg")
+		}
+		if medIdx > lowIdx {
+			t.Error("Text: medium-pkg should appear before low-pkg")
+		}
+	})
+
+	t.Run("Markdown format shows highest risk first", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		reporter := NewReporter(Config{Format: FormatMarkdown, Verbose: false, Writer: buf})
+		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
+		reporter.stats.EndTime = time.Now()
+		reporter.AddResults(results)
+
+		if err := reporter.Generate(); err != nil {
+			t.Fatalf("Generate() failed: %v", err)
+		}
+
+		output := buf.String()
+		// Find in the "Detailed Findings" section
+		detailedIdx := strings.Index(output, "## Detailed Findings")
+		if detailedIdx == -1 {
+			t.Fatal("Markdown output missing '## Detailed Findings' section")
+		}
+		detailed := output[detailedIdx:]
+
+		highIdx := strings.Index(detailed, "high-pkg@2.0.0")
+		medIdx := strings.Index(detailed, "medium-pkg@3.0.0")
+		lowIdx := strings.Index(detailed, "low-pkg@1.0.0")
+
+		if highIdx == -1 || medIdx == -1 || lowIdx == -1 {
+			t.Fatal("Markdown detailed section missing one or more package names")
+		}
+		if highIdx > medIdx {
+			t.Error("Markdown: high-pkg should appear before medium-pkg in detailed findings")
+		}
+		if medIdx > lowIdx {
+			t.Error("Markdown: medium-pkg should appear before low-pkg in detailed findings")
+		}
+	})
+
+	t.Run("HTML format shows highest risk first", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		reporter := NewReporter(Config{Format: FormatHTML, Verbose: false, Writer: buf})
+		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
+		reporter.stats.EndTime = time.Now()
+		reporter.AddResults(results)
+
+		if err := reporter.Generate(); err != nil {
+			t.Fatalf("Generate() failed: %v", err)
+		}
+
+		output := buf.String()
+		// Look at "Package Details" section
+		detailsIdx := strings.Index(output, "Package Details")
+		if detailsIdx == -1 {
+			t.Fatal("HTML output missing 'Package Details' section")
+		}
+		details := output[detailsIdx:]
+
+		highIdx := strings.Index(details, "high-pkg@2.0.0")
+		medIdx := strings.Index(details, "medium-pkg@3.0.0")
+		lowIdx := strings.Index(details, "low-pkg@1.0.0")
+
+		if highIdx == -1 || medIdx == -1 || lowIdx == -1 {
+			t.Fatal("HTML details section missing one or more package names")
+		}
+		if highIdx > medIdx {
+			t.Error("HTML: high-pkg should appear before medium-pkg")
+		}
+		if medIdx > lowIdx {
+			t.Error("HTML: medium-pkg should appear before low-pkg")
+		}
+	})
+
+	t.Run("JSON format shows highest risk first", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		reporter := NewReporter(Config{Format: FormatJSON, Verbose: false, Writer: buf})
+		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
+		reporter.stats.EndTime = time.Now()
+		reporter.AddResults(results)
+
+		if err := reporter.Generate(); err != nil {
+			t.Fatalf("Generate() failed: %v", err)
+		}
+
+		output := buf.String()
+		highIdx := strings.Index(output, `"high-pkg"`)
+		medIdx := strings.Index(output, `"medium-pkg"`)
+		lowIdx := strings.Index(output, `"low-pkg"`)
+
+		if highIdx == -1 || medIdx == -1 || lowIdx == -1 {
+			t.Fatal("JSON output missing one or more package names")
+		}
+		if highIdx > medIdx {
+			t.Error("JSON: high-pkg should appear before medium-pkg in results")
+		}
+		if medIdx > lowIdx {
+			t.Error("JSON: medium-pkg should appear before low-pkg in results")
+		}
+	})
+
+	t.Run("HTML format sorts findings by severity within package", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		reporter := NewReporter(Config{Format: FormatHTML, Verbose: true, Writer: buf})
+		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
+		reporter.stats.EndTime = time.Now()
+		reporter.AddResults(results)
+
+		if err := reporter.Generate(); err != nil {
+			t.Fatalf("Generate() failed: %v", err)
+		}
+
+		output := buf.String()
+		// Within high-pkg's findings, CRITICAL should appear before LOW
+		criticalIdx := strings.Index(output, "Critical compromise vector")
+		lowFindingIdx := strings.Index(output, "Minor issue")
+
+		if criticalIdx == -1 || lowFindingIdx == -1 {
+			t.Fatal("HTML output missing expected finding descriptions")
+		}
+		if criticalIdx > lowFindingIdx {
+			t.Error("HTML: CRITICAL finding should appear before LOW finding within a package")
+		}
+	})
+}
+
 // Test: Score gradient produces smooth color transitions across the 0-20 range
 // Justification: A smooth gradient from green to red enables faster visual triage
 //

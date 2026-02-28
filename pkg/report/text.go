@@ -29,7 +29,7 @@ func (r *Reporter) generateText() error {
 	f(w, "  %s%s%s\n", ColorDim, strings.Repeat("─", 76), ColorReset)
 	p(w, "")
 
-	for _, result := range r.results {
+	for _, result := range r.sortedResults() {
 		r.printPackageResult(w, result)
 	}
 

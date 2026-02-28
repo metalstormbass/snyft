@@ -52,7 +52,7 @@ type JSONRiskArea struct {
 
 func (r *Reporter) generateJSON() error {
 	report := JSONReport{
-		Results: r.results,
+		Results: r.sortedResults(),
 	}
 
 	// Metadata
