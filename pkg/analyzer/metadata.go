@@ -16,6 +16,13 @@ import (
 // verifySourceCode performs primary source code availability verification
 // This is the FIRST check before any other scoring
 func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.Dependency, repoURL string) {
+	// Skip version-dependent source verification when version could not be
+	// determined (e.g. Maven BOM imports, unresolved property references).
+	// An undetermined version is a parser limitation, not a supply chain risk.
+	if dep.IsVersionUnknown() {
+		return
+	}
+
 	var sourceVerification *models.SourceVerification
 
 	// Get the appropriate git platform client for this repository

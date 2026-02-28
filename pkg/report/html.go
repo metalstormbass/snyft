@@ -446,7 +446,7 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 	// Clickable header
 	f(w, "<div class=\"pkg-header\" onclick=\"toggle('%s')\">\n", slug)
 	f(w, "<div class=\"pkg-left\">\n")
-	name := html.EscapeString(result.Dependency.Name) + "@" + html.EscapeString(result.Dependency.Version)
+	name := html.EscapeString(result.Dependency.Name) + "@" + html.EscapeString(result.Dependency.DisplayVersion())
 	f(w, "<span class=\"pkg-name\">%s</span>\n", name)
 	if result.Dependency.IsTransitive {
 		f(w, "<span class=\"pkg-trans\">transitive</span>\n")
