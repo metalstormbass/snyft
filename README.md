@@ -40,6 +40,8 @@ make build
 ./snyft scan --workers 20                 # Increase concurrency
 ```
 
+If you installed snyft via `go`, you can run commands without the `./` part. Running a scan of your current directory would be done via `snyft scan`.
+
 ### Options
 
 | Flag | Description | Default |
