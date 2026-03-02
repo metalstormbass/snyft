@@ -375,16 +375,32 @@ func formatDuration(d time.Duration) string {
 }
 
 func deduplicateDependencies(deps []models.Dependency) []models.Dependency {
-	// Track index of first occurrence so we can replace transitive with direct
+	// Key on Ecosystem|Name so the same library at different versions is
+	// collapsed to a single entry using the most recent version. This avoids
+	// redundant scans when a project references the same package at multiple
+	// pinned versions across different manifest files.
 	seen := make(map[string]int) // key -> index in unique slice
 	var unique []models.Dependency
 
 	for _, dep := range deps {
-		key := fmt.Sprintf("%s|%s|%s", dep.Ecosystem, dep.Name, dep.Version)
+		key := fmt.Sprintf("%s|%s", dep.Ecosystem, dep.Name)
 		if idx, exists := seen[key]; exists {
-			// If we already have a transitive entry and this one is direct, replace it
-			if unique[idx].IsTransitive && !dep.IsTransitive {
+			existing := unique[idx]
+
+			cmp := compareVersions(dep.Version, existing.Version)
+			if cmp > 0 {
+				// New version is newer — replace, but preserve direct flag
+				if !existing.IsTransitive {
+					dep.IsTransitive = false
+				}
 				unique[idx] = dep
+			} else if cmp == 0 && existing.IsTransitive && !dep.IsTransitive {
+				// Same version — prefer direct over transitive
+				unique[idx] = dep
+			} else if cmp < 0 && !dep.IsTransitive {
+				// Existing version is newer but new entry is direct — keep
+				// the newer version but mark it as direct
+				unique[idx].IsTransitive = false
 			}
 		} else {
 			seen[key] = len(unique)
@@ -393,6 +409,80 @@ func deduplicateDependencies(deps []models.Dependency) []models.Dependency {
 	}
 
 	return unique
+}
+
+// compareVersions compares two version strings and returns:
+//
+//	 1 if a is newer than b
+//	-1 if a is older than b
+//	 0 if they are equal
+//
+// Handles semver, Maven versions, and arbitrary dotted version strings.
+// Unknown/empty versions always lose to known versions.
+func compareVersions(a, b string) int {
+	aUnknown := a == "" || a == "unknown"
+	bUnknown := b == "" || b == "unknown"
+	if aUnknown && bUnknown {
+		return 0
+	}
+	if aUnknown {
+		return -1
+	}
+	if bUnknown {
+		return 1
+	}
+
+	// Strip leading 'v' prefix (common in git tags: v1.2.3)
+	a = strings.TrimPrefix(a, "v")
+	b = strings.TrimPrefix(b, "v")
+
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+
+	maxLen := len(aParts)
+	if len(bParts) > maxLen {
+		maxLen = len(bParts)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var aVal, bVal int
+		if i < len(aParts) {
+			aVal = parseVersionPart(aParts[i])
+		}
+		if i < len(bParts) {
+			bVal = parseVersionPart(bParts[i])
+		}
+		if aVal > bVal {
+			return 1
+		}
+		if aVal < bVal {
+			return -1
+		}
+	}
+
+	// Numeric parts equal — fall back to lexicographic comparison
+	// to handle pre-release suffixes (e.g. 1.0.0-alpha < 1.0.0-beta)
+	if a > b {
+		return 1
+	}
+	if a < b {
+		return -1
+	}
+	return 0
+}
+
+// parseVersionPart extracts the leading integer from a version component.
+// For example: "3" -> 3, "3-beta" -> 3, "rc1" -> 0.
+func parseVersionPart(s string) int {
+	var num int
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			num = num*10 + int(c-'0')
+		} else {
+			break
+		}
+	}
+	return num
 }
 
 // resolveMavenBOMVersions resolves "unknown" versions in Maven dependencies
