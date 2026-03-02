@@ -47,6 +47,16 @@ If you installed snyft via `go`, you can run commands without the `./` part. Run
 
 > **Note:** Scanning projects with many dependencies may take several minutes. Running multiple scans concurrently may trigger GitHub rate limits (60 requests/hour unauthenticated, 5,000/hour with `GITHUB_TOKEN`).
 
+### Dependency Deduplication
+
+When a project references the same package at multiple versions across different manifest files, snyft **deduplicates by name and keeps the most recent version** by default. This avoids redundant scans for the same library.
+
+To scan every version individually, use the `--all-versions` flag:
+
+```bash
+snyft scan --all-versions
+```
+
 ### Options
 
 | Flag | Description | Default |
@@ -56,7 +66,8 @@ If you installed snyft via `go`, you can run commands without the `./` part. Run
 | `-v, --verbose` | Detailed output with findings and evidence | `false` |
 | `-o, --output` | Write results to file | stdout |
 | `--include-transitive` | Analyze transitive dependencies | `false` |
-| `-c, --check` | Run only specific checks (comma-separated) | all checks |
+| `--all-versions` | Scan all versions of duplicate dependencies (skip deduplication) | `false` |
+| `--check` | Run only specific checks (comma-separated) | all checks |
 
 Valid check names: `publisher-control`, `ownership-changes`, `release-anomalies`, `install-execution`, `dependency-sprawl`, `provenance`, `health`, `governance`, `release-security`, `package-maturity`
 
