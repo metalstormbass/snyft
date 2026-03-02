@@ -33,14 +33,37 @@ make build
 
 ## Usage
 
+### HTML Report (Recommended)
+
+The HTML report is the best way to review Snyft results. It generates a self-contained, interactive report you can open in any browser — no server required.
+
 ```bash
-./snyft scan                              # Scan current directory
-./snyft scan /path/to/project             # Scan specific directory
-./snyft scan -v                           # Detailed output with findings
-./snyft scan --format json -o results.json  # JSON output to file
-./snyft scan --format markdown -o SECURITY.md
-./snyft scan --format html -o report.html
-./snyft scan --workers 20                 # Increase concurrency
+snyft scan --format html -o report.html
+open report.html
+```
+
+The HTML report includes:
+- **Executive dashboard** — overall risk level, package breakdown, and risk distribution at a glance
+- **Executive summary** — a narrative overview of key findings across your dependencies
+- **Key risk areas** — cross-cutting supply chain risk patterns (e.g. missing provenance, install-time execution)
+- **Interactive package cards** — expand any package for category scores, risk findings, evidence, and methodology
+- **Print-friendly** — renders cleanly for PDF export or printing
+
+Use `-v` (verbose) for full evidence and methodology details in the report:
+
+```bash
+snyft scan --format html -v -o report.html
+```
+
+### Other Formats
+
+```bash
+snyft scan                                # Terminal output (default)
+snyft scan /path/to/project               # Scan a specific directory
+snyft scan -v                             # Verbose terminal output
+snyft scan --format json -o results.json  # JSON for CI/CD pipelines
+snyft scan --format markdown -o SECURITY.md  # Markdown for repos/wikis
+snyft scan --workers 20                   # Increase concurrency
 ```
 
 If you installed snyft via `go`, you can run commands without the `./` part. Running a scan of your current directory would be done via `snyft scan`.
@@ -51,7 +74,7 @@ If you installed snyft via `go`, you can run commands without the `./` part. Run
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `-f, --format` | Output format: `text`, `markdown`, `json`, `html` | `text` |
+| `-f, --format` | Output format: `html` (recommended), `text`, `markdown`, `json` | `text` |
 | `-w, --workers` | Concurrent workers | 10 |
 | `-v, --verbose` | Detailed output with findings and evidence | `false` |
 | `-o, --output` | Write results to file | stdout |
