@@ -30,6 +30,9 @@ var (
 
 	// Check filter flag
 	checkFilter string
+
+	// All versions flag (skip deduplication)
+	allVersions bool
 )
 
 var scanCmd = &cobra.Command{
@@ -50,6 +53,9 @@ func init() {
 
 	// Transitive dependency flag
 	scanCmd.Flags().BoolVar(&includeTransitive, "include-transitive", false, "Include transitive dependencies in analysis (default: direct only)")
+
+	// All versions flag (skip deduplication)
+	scanCmd.Flags().BoolVar(&allVersions, "all-versions", false, "Scan all versions of duplicate dependencies (default: deduplicate by name, keeping the most recent version)")
 
 	// Check filter flag
 	scanCmd.Flags().StringVar(&checkFilter, "check", "", `Comma-separated list of checks to run. Valid check names:
@@ -252,6 +258,9 @@ func parseManifests(dir string, statusOut *os.File) (int, []models.Dependency, e
 		mu.Unlock()
 	}
 
+	if allVersions {
+		return len(manifestFiles), allDeps, nil
+	}
 	return len(manifestFiles), deduplicateDependencies(allDeps), nil
 }
 
