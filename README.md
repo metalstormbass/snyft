@@ -16,7 +16,10 @@ Unlike vulnerability scanners focused on CVEs, Snyft assesses the **likelihood o
 
 ```bash
 go install github.com/metalstormbass/snyft@latest
+export PATH=${PATH}:`go env GOPATH`/bin
 ```
+
+If it is your first time using `go` to install packages, you'll need to run the second line in the snippet above.
 
 ### Build from Source
 
