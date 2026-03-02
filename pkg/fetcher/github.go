@@ -79,32 +79,36 @@ func (rc *repoCache) setFileExists(key string, exists bool) {
 // By default, web scraping is the primary data-fetching method, with API calls
 // used to supplement when a GITHUB_TOKEN is available.
 type GitHubClient struct {
-	token      string
-	httpClient *http.Client
-	baseURL    string
-	cache      *repoCache
-	preferAPI  bool // when true, always try API first (used by test helpers with mock servers)
+	token       string
+	httpClient  *http.Client
+	baseURL     string
+	cache       *repoCache
+	preferAPI   bool // when true, always try API first (used by test helpers with mock servers)
+	rateLimiter *GitHubRateLimiter
 }
 
 // NewGitHubClient creates a new GitHub client. Web scraping is the primary
 // data-fetching method. When GITHUB_TOKEN is set, API calls supplement
 // scraped data with richer metadata and higher rate limits.
 func NewGitHubClient() *GitHubClient {
+	token := os.Getenv("GITHUB_TOKEN")
 	return &GitHubClient{
-		token: os.Getenv("GITHUB_TOKEN"),
+		token: token,
 		httpClient: &http.Client{
 			// 10s timeout keeps failures fast — both API rate-limit
 			// responses and slow scraping targets are bounded.
 			Timeout: 10 * time.Second,
 		},
-		baseURL: "https://api.github.com",
-		cache:   newRepoCache(),
+		baseURL:     "https://api.github.com",
+		cache:       newRepoCache(),
+		rateLimiter: NewGitHubRateLimiter(token != ""),
 	}
 }
 
 // NewGitHubClientWithBaseURL creates a GitHubClient pointing at a custom API base URL.
 // This is primarily used for testing with httptest servers. The client uses
 // API-first mode since mock servers don't support web scraping.
+// No rate limiter is configured since mock servers are not rate-limited.
 func NewGitHubClientWithBaseURL(baseURL string) *GitHubClient {
 	return &GitHubClient{
 		httpClient: &http.Client{Timeout: 10 * time.Second},
@@ -122,6 +126,27 @@ func NewGitHubClientWithBaseURL(baseURL string) *GitHubClient {
 // targets real github.com regardless of the base URL.
 func (c *GitHubClient) shouldPreferScraping() bool {
 	return c.token == "" && !c.preferAPI && c.baseURL == "https://api.github.com"
+}
+
+// doRequest executes an HTTP request with proactive rate limiting for GitHub
+// API calls. It waits for the rate limiter to permit the request, executes it,
+// then updates the limiter based on GitHub's X-RateLimit-* response headers.
+//
+// Use this for all requests to c.baseURL (the GitHub API). Do NOT use for
+// requests to raw.githubusercontent.com or github.com web pages, as those
+// have separate (or no) rate limits.
+func (c *GitHubClient) doRequest(req *http.Request) (*http.Response, error) {
+	if c.rateLimiter != nil {
+		c.rateLimiter.Wait()
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if c.rateLimiter != nil {
+		c.rateLimiter.Update(resp)
+	}
+	return resp, nil
 }
 
 // GetRepositoryInfo fetches repository information from GitHub.
@@ -168,7 +193,7 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		// API unreachable — try scraping if we haven't already
 		if !c.shouldPreferScraping() {
@@ -359,7 +384,7 @@ func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +454,7 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 		}
 		req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.doRequest(req)
 		if err != nil {
 			continue
 		}
@@ -511,7 +536,7 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return false
 	}
@@ -791,7 +816,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		}
 		req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.doRequest(req)
 		if err != nil {
 			// Network error — try scraping if we haven't already
 			if page == 0 && !c.shouldPreferScraping() {
@@ -967,7 +992,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3.raw")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try raw URL if we haven't already
 		if !c.shouldPreferScraping() {
@@ -1051,7 +1076,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		}
 		req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.doRequest(req)
 		if err != nil {
 			if page == 1 {
 				return nil, err
@@ -1153,7 +1178,7 @@ func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return false, 0, err
 	}
@@ -1323,7 +1348,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
 		if !c.shouldPreferScraping() {
@@ -1470,7 +1495,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1525,7 +1550,7 @@ func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return false
 	}
@@ -1565,7 +1590,7 @@ func (c *GitHubClient) getBranchProtection(owner, repo string) (*GitHubBranchPro
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return nil, false
 	}
@@ -1655,7 +1680,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
 		if !c.shouldPreferScraping() {
@@ -1796,7 +1821,7 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return 0, err
 	}
@@ -1842,7 +1867,7 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 		}
 		commentsReq.Header.Set("Accept", "application/vnd.github.v3+json")
 
-		commentsResp, err := c.httpClient.Do(commentsReq)
+		commentsResp, err := c.doRequest(commentsReq)
 		if err != nil {
 			continue
 		}
@@ -1924,7 +1949,7 @@ func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return false, ""
 	}
@@ -2002,7 +2027,7 @@ func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return false
 	}
@@ -2049,7 +2074,7 @@ func (c *GitHubClient) CheckOrgMFARequired(owner string) (required bool, availab
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return false, false
 	}
@@ -2091,7 +2116,7 @@ func (c *GitHubClient) GetUserAccountCreatedDate(username string) (time.Time, er
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest(req)
 	if err != nil {
 		return time.Time{}, err
 	}
