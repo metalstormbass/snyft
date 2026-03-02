@@ -45,6 +45,8 @@ make build
 
 If you installed snyft via `go`, you can run commands without the `./` part. Running a scan of your current directory would be done via `snyft scan`.
 
+> **Note:** Scanning projects with many dependencies may take several minutes. Running multiple scans concurrently may trigger GitHub rate limits (60 requests/hour unauthenticated, 5,000/hour with `GITHUB_TOKEN`).
+
 ### Options
 
 | Flag | Description | Default |
@@ -98,6 +100,21 @@ Repository analysis works across:
 - **GitHub**, **GitLab**, **Bitbucket** (auto-detected from URLs)
 - Works out of the box with zero configuration — web scraping is the primary data source
 - Optional API tokens (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `BITBUCKET_TOKEN`) for richer data and higher rate limits
+
+## Rate Limits
+
+Snyft works without authentication, but GitHub limits unauthenticated requests to **60/hour**. For large projects, set a token for **5,000 requests/hour**:
+
+```bash
+export GITHUB_TOKEN="ghp_..."
+```
+
+| | Unauthenticated | With `GITHUB_TOKEN` |
+|---|---|---|
+| **GitHub API** | 60 req/hour | 5,000 req/hour |
+| **npm/PyPI/Maven** | No strict limits | - |
+
+The token is **optional** — snyft uses web scraping as the primary data source. The token supplements scraping with richer GitHub data and higher rate limits.
 
 ## License
 
