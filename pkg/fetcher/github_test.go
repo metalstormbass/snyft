@@ -3119,3 +3119,177 @@ func TestGitHubClient_ShouldPreferScraping_AlwaysTrueForRealGitHub(t *testing.T)
 		t.Error("shouldPreferScraping() = false in scraping-only mode, want true")
 	}
 }
+
+// Test: Shared OrgCache prevents duplicate org-level API calls across GitHubClient instances
+// Justification: When scanning 100+ packages from the same GitHub org (e.g. aws/,
+//                apache/, google/), org-level checks (identity, verification, MFA) are
+//                identical for every package. Sharing the cache eliminates redundant API
+//                calls that waste rate limit budget. Account takeover risk assessment
+//                depends on org-level signals, so accurate caching directly impacts
+//                supply chain risk scoring.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — 90% of attacks target
+//         maintainer accounts; org-level MFA is the #1 mitigation.
+// Methodology: Create two GitHubClient instances sharing one OrgCache, verify the API
+//              server is called only once for the same owner.
+// Result: Second client reuses cached identity/orgInfo from first client's API call.
+func TestSharedOrgCache_IdentityReusedAcrossClients(t *testing.T) {
+	var apiCalls atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/users/") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"login":      "google",
+				"type":       "Organization",
+				"name":       "Google",
+				"created_at": "2012-01-01T00:00:00Z",
+			})
+		} else if strings.Contains(r.URL.Path, "/orgs/") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"is_verified":                     true,
+				"two_factor_requirement_enabled":   true,
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Create a shared OrgCache and two clients that use it
+	shared := NewOrgCache()
+
+	client1 := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+		orgCache:   shared,
+		preferAPI:  true,
+	}
+	client2 := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+		orgCache:   shared,
+		preferAPI:  true,
+	}
+
+	// Client 1 fetches identity — should make an API call
+	isOrg1, name1 := client1.CheckIfOrganization("google")
+	if !isOrg1 || name1 != "Google" {
+		t.Fatalf("Client1 CheckIfOrganization() = (%v, %q), want (true, \"Google\")", isOrg1, name1)
+	}
+	if got := apiCalls.Load(); got != 1 {
+		t.Fatalf("Expected 1 API call after client1, got %d", got)
+	}
+
+	// Client 2 fetches identity for the SAME owner — should reuse cache (no new API call)
+	isOrg2, name2 := client2.CheckIfOrganization("google")
+	if !isOrg2 || name2 != "Google" {
+		t.Fatalf("Client2 CheckIfOrganization() = (%v, %q), want (true, \"Google\")", isOrg2, name2)
+	}
+	if got := apiCalls.Load(); got != 1 {
+		t.Fatalf("Expected still 1 API call after client2 (cache hit), got %d", got)
+	}
+
+	// Client 1 fetches org info — should make one more API call
+	verified1 := client1.CheckVerifiedOrganization("google")
+	if !verified1 {
+		t.Fatal("Client1 CheckVerifiedOrganization() = false, want true")
+	}
+	if got := apiCalls.Load(); got != 2 {
+		t.Fatalf("Expected 2 API calls after client1 org info, got %d", got)
+	}
+
+	// Client 2 fetches org info for the SAME owner — should reuse cache
+	verified2 := client2.CheckVerifiedOrganization("google")
+	if !verified2 {
+		t.Fatal("Client2 CheckVerifiedOrganization() = false, want true")
+	}
+	if got := apiCalls.Load(); got != 2 {
+		t.Fatalf("Expected still 2 API calls after client2 org info (cache hit), got %d", got)
+	}
+
+	// MFA should also be cached from the same org info call
+	mfa, available := client2.CheckOrgMFARequired("google")
+	if !mfa || !available {
+		t.Fatalf("Client2 CheckOrgMFARequired() = (%v, %v), want (true, true)", mfa, available)
+	}
+	if got := apiCalls.Load(); got != 2 {
+		t.Fatalf("Expected still 2 API calls after MFA check (cache hit), got %d", got)
+	}
+}
+
+// Test: Separate OrgCache instances do NOT share data (isolation check)
+// Justification: Ensures that without explicit sharing, clients maintain independent
+//                caches — important for test isolation and confirming the opt-in nature
+//                of cache sharing.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Create two clients with separate OrgCache instances, verify both make
+//              independent API calls for the same owner.
+// Result: Each client makes its own API call, confirming no accidental sharing.
+func TestSeparateOrgCaches_NoSharing(t *testing.T) {
+	var apiCalls atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"login": "apache",
+			"type":  "Organization",
+			"name":  "Apache",
+		})
+	}))
+	defer server.Close()
+
+	// Two clients with SEPARATE OrgCaches (default behavior)
+	client1 := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+		orgCache:   NewOrgCache(),
+		preferAPI:  true,
+	}
+	client2 := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+		orgCache:   NewOrgCache(),
+		preferAPI:  true,
+	}
+
+	client1.CheckIfOrganization("apache")
+	if got := apiCalls.Load(); got != 1 {
+		t.Fatalf("Expected 1 API call after client1, got %d", got)
+	}
+
+	// Client 2 with separate cache must make its own call
+	client2.CheckIfOrganization("apache")
+	if got := apiCalls.Load(); got != 2 {
+		t.Fatalf("Expected 2 API calls (separate caches), got %d", got)
+	}
+}
+
+// Test: WithSharedOrgCache option correctly injects shared cache
+// Justification: The option pattern must correctly override the default per-client
+//                OrgCache. This validates the constructor wiring that the scan-level
+//                Analyzer relies on.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Use NewGitHubClient with WithSharedOrgCache, verify the injected cache
+//              is the same instance via pointer equality.
+// Result: Option correctly replaces the default OrgCache with the shared instance.
+func TestWithSharedOrgCache_Option(t *testing.T) {
+	shared := NewOrgCache()
+	client := NewGitHubClient(WithSharedOrgCache(shared))
+
+	if client.orgCache != shared {
+		t.Error("WithSharedOrgCache did not inject the shared cache instance")
+	}
+
+	// Default client should have its own cache (not nil)
+	defaultClient := NewGitHubClient()
+	if defaultClient.orgCache == nil {
+		t.Error("Default NewGitHubClient() should have a non-nil orgCache")
+	}
+	if defaultClient.orgCache == shared {
+		t.Error("Default client should NOT share the same OrgCache as the shared one")
+	}
+}
