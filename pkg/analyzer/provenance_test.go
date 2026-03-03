@@ -7,14 +7,15 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
-// Test: scoreProvenance assigns maximum risk when no provenance signals exist
-// Justification: Packages without any provenance evidence cannot be verified as
-//                originating from their stated source, making them susceptible
-//                to supply chain substitution attacks
+// Test: scoreProvenance assigns moderate risk when source check not performed and no attestations
+// Justification: When SourceVerification is nil, we couldn't check source availability —
+//                this is unknown, not explicitly failed. Distinguish from verified-and-failed
+//                (which gets 2 risk points). Unknown state gets 1 risk point (moderate).
 // Source: SLSA specification v1.0 — https://slsa.dev/spec/v1.0/
 //         "Backstabber's Knife Collection" (Ohm et al., 2020) — https://arxiv.org/abs/2005.09535
-// Methodology: Call scoreProvenance with empty PackageMetadata (no provenance fields set)
-// Result: 2 risk points, score 0, description "No provenance evidence"
+// Methodology: Call scoreProvenance with empty PackageMetadata (no provenance fields set,
+//              nil SourceVerification)
+// Result: 1 risk point (unknown source, no attestations), score 1
 func TestScoreProvenance_NoProvenance(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -23,16 +24,16 @@ func TestScoreProvenance_NoProvenance(t *testing.T) {
 
 	score := a.scoreProvenance(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for no provenance, got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for nil source verification (unknown, not failed), got %d", score.RiskPoints)
 	}
 
-	if score.Score != 0 {
-		t.Errorf("Expected score 0 for no provenance, got %d", score.Score)
+	if score.Score != 1 {
+		t.Errorf("Expected score 1 for nil source verification, got %d", score.Score)
 	}
 
-	if !strings.Contains(score.Description, "No provenance evidence") || !strings.Contains(score.Description, "unverifiable") {
-		t.Errorf("Description should explain no provenance was found and its risk, got '%s'", score.Description)
+	if !strings.Contains(score.Description, "could not be determined") {
+		t.Errorf("Description should explain source availability could not be determined, got '%s'", score.Description)
 	}
 }
 
@@ -59,6 +60,38 @@ func TestScoreProvenance_NPMProvenance(t *testing.T) {
 
 	if score.Score != 2 {
 		t.Errorf("Expected score 2 with npm provenance, got %d", score.Score)
+	}
+}
+
+// Test: scoreProvenance gives full credit for Maven Central GPG signatures
+// Justification: Maven Central has required GPG signing for all published
+//                artifacts since 2010. This is a mandatory, enforced provenance
+//                signal — not an optional best practice. It proves the publisher
+//                holds the signing key and went through proper release procedures.
+// Source: Maven Central publishing requirements — https://central.sonatype.org/publish/requirements/gpg/
+// Methodology: Set HasMavenGPGSignature=true with Maven ecosystem; call scoreProvenance
+// Result: 0 risk points (full provenance), score 2 — GPG signing is strong (+2 points)
+func TestScoreProvenance_MavenGPGSignature(t *testing.T) {
+	a := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{Ecosystem: models.EcosystemMaven},
+		Metadata: models.PackageMetadata{
+			HasMavenGPGSignature: true,
+		},
+	}
+
+	score := a.scoreProvenance(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points with Maven GPG signature (strong provenance), got %d", score.RiskPoints)
+	}
+
+	if score.Score != 2 {
+		t.Errorf("Expected score 2 with Maven GPG signature, got %d", score.Score)
+	}
+
+	if !strings.Contains(score.Evidence, "Maven Central GPG signature") {
+		t.Errorf("Expected evidence to mention Maven Central GPG signature, got '%s'", score.Evidence)
 	}
 }
 
@@ -126,10 +159,11 @@ func TestScoreProvenance_OSSFScorecard(t *testing.T) {
 // Test: scoreProvenance ignores low OSSF Signed-Releases score
 // Justification: OSSF Signed-Releases scores below 7 indicate inconsistent
 //                or absent release signing — not sufficient to serve as a
-//                provenance indicator
+//                provenance indicator. With nil SourceVerification (unknown),
+//                this gets moderate risk (1) not worst case (2).
 // Source: OSSF Scorecard — Signed-Releases check threshold
 // Methodology: Set OSSFChecks["Signed-Releases"]=3 (below 7 threshold)
-// Result: 2 risk points (no provenance — low score is not counted)
+// Result: 1 risk point (nil source verification + low OSSF not counted = unknown state)
 func TestScoreProvenance_LowOSSFScorecard(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -142,13 +176,13 @@ func TestScoreProvenance_LowOSSFScorecard(t *testing.T) {
 
 	score := a.scoreProvenance(result)
 
-	// Low OSSF score doesn't contribute to provenance
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points with low OSSF score, got %d", score.RiskPoints)
+	// Low OSSF score doesn't contribute to provenance; nil source → moderate risk
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with low OSSF score and nil source verification, got %d", score.RiskPoints)
 	}
 
-	if score.Score != 0 {
-		t.Errorf("Expected score 0 with low OSSF score, got %d", score.Score)
+	if score.Score != 1 {
+		t.Errorf("Expected score 1 with low OSSF score and nil source verification, got %d", score.Score)
 	}
 }
 
@@ -176,12 +210,13 @@ func TestScoreProvenance_ProvenanceDetails(t *testing.T) {
 	}
 }
 
-// Test: scoreProvenance assigns 2 risk points when OSSF score is at boundary
+// Test: scoreProvenance assigns moderate risk when OSSF score is at boundary
 // Justification: The threshold for OSSF Signed-Releases is >= 7; a score of
-//                exactly 6 must not be counted as a provenance indicator
+//                exactly 6 must not be counted as a provenance indicator.
+//                With nil SourceVerification (unknown), this gets moderate risk (1).
 // Source: OSSF Scorecard — Signed-Releases check threshold
 // Methodology: Set OSSFChecks["Signed-Releases"]=6 (just below 7 threshold)
-// Result: 2 risk points (no provenance — score below threshold)
+// Result: 1 risk point (nil source verification + OSSF below threshold = unknown state)
 func TestScoreProvenance_OSSFBelowThreshold(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -194,12 +229,12 @@ func TestScoreProvenance_OSSFBelowThreshold(t *testing.T) {
 
 	score := a.scoreProvenance(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points with OSSF score 6 (below threshold), got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with OSSF score 6 and nil source verification, got %d", score.RiskPoints)
 	}
 
-	if score.Score != 0 {
-		t.Errorf("Expected score 0 with OSSF score below threshold, got %d", score.Score)
+	if score.Score != 1 {
+		t.Errorf("Expected score 1 with OSSF score below threshold and nil source verification, got %d", score.Score)
 	}
 }
 
@@ -235,9 +270,10 @@ func TestScoreProvenance_OSSFAtThreshold(t *testing.T) {
 //                cryptographic or verifiable provenance evidence. Provenance requires
 //                attestations (npm provenance, Maven GPG) or signed releases.
 //                CI without attestations leaves build integrity unverifiable.
+//                With nil SourceVerification (unknown), this gets moderate risk (1).
 // Source: SLSA specification v1.0 — CI is not a provenance level
 // Methodology: Set HasCI=true with no attestation signals, verify no provenance credit
-// Result: 2 risk points (no provenance evidence despite CI)
+// Result: 1 risk point (nil source verification + CI alone = unknown state)
 func TestScoreProvenance_CIAloneIsNotProvenance(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -248,16 +284,16 @@ func TestScoreProvenance_CIAloneIsNotProvenance(t *testing.T) {
 
 	score := a.scoreProvenance(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points with CI only (no attestations), got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point with CI only and nil source verification, got %d", score.RiskPoints)
 	}
 
-	if score.Score != 0 {
-		t.Errorf("Expected score 0 with CI only (no attestations), got %d", score.Score)
+	if score.Score != 1 {
+		t.Errorf("Expected score 1 with CI only and nil source verification, got %d", score.Score)
 	}
 
-	if !strings.Contains(score.Description, "No provenance evidence") || !strings.Contains(score.Description, "unverifiable") {
-		t.Errorf("Description should explain no provenance evidence and unverifiable risk, got '%s'", score.Description)
+	if !strings.Contains(score.Description, "could not be determined") {
+		t.Errorf("Description should explain source could not be determined, got '%s'", score.Description)
 	}
 }
 
