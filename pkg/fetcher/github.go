@@ -40,6 +40,57 @@ type cachedOrgInfo struct {
 	found       bool // false when owner is not an org (404)
 }
 
+// OrgCache is a scan-level cache for organization and identity data. It is
+// shared across ALL GitHubClient instances within a single scan so that
+// org-level API calls (GET /users/{owner}, GET /orgs/{owner}) are made at most
+// once per owner, even when packages from the same GitHub org are analyzed by
+// different workers or different GitHubClient instances.
+//
+// Justification: When scanning 100+ packages from orgs like aws/, apache/,
+// google/, the org identity and verification status is identical for every
+// package. Sharing this cache eliminates redundant API calls and reduces
+// GitHub API rate limit consumption.
+type OrgCache struct {
+	mu       sync.RWMutex
+	identity map[string]*cachedIdentity // key: owner (user/org identity)
+	orgInfo  map[string]*cachedOrgInfo  // key: owner (org details)
+}
+
+// NewOrgCache creates a new thread-safe organization cache. Create one per scan
+// and pass it to all GitHubClient instances via WithSharedOrgCache.
+func NewOrgCache() *OrgCache {
+	return &OrgCache{
+		identity: make(map[string]*cachedIdentity),
+		orgInfo:  make(map[string]*cachedOrgInfo),
+	}
+}
+
+func (oc *OrgCache) getIdentity(key string) (*cachedIdentity, bool) {
+	oc.mu.RLock()
+	defer oc.mu.RUnlock()
+	v, ok := oc.identity[key]
+	return v, ok
+}
+
+func (oc *OrgCache) setIdentity(key string, id *cachedIdentity) {
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	oc.identity[key] = id
+}
+
+func (oc *OrgCache) getOrgInfo(key string) (*cachedOrgInfo, bool) {
+	oc.mu.RLock()
+	defer oc.mu.RUnlock()
+	v, ok := oc.orgInfo[key]
+	return v, ok
+}
+
+func (oc *OrgCache) setOrgInfo(key string, info *cachedOrgInfo) {
+	oc.mu.Lock()
+	defer oc.mu.Unlock()
+	oc.orgInfo[key] = info
+}
+
 // cachedSignedCommits stores the result of CheckSignedCommits so that
 // multiple packages from the same repo don't re-fetch commit signatures.
 type cachedSignedCommits struct {
@@ -67,8 +118,6 @@ type repoCache struct {
 	repoInfo          map[string]*models.RepositoryInfo   // key: "owner/repo"
 	releases          map[string][]GitHubRelease          // key: "owner/repo"
 	fileExists        map[string]bool                     // key: "owner/repo/path"
-	identity          map[string]*cachedIdentity          // key: owner (user/org identity)
-	orgInfo           map[string]*cachedOrgInfo           // key: owner (org details)
 	tags              map[string][]string                 // key: "owner/repo" → all discovered tag names
 	commitStats       map[string]*CommitStats             // key: "owner/repo"
 	commitAuthors     map[string]*CommitAuthorStats       // key: "owner/repo"
@@ -85,8 +134,6 @@ func newRepoCache() *repoCache {
 		repoInfo:          make(map[string]*models.RepositoryInfo),
 		releases:          make(map[string][]GitHubRelease),
 		fileExists:        make(map[string]bool),
-		identity:          make(map[string]*cachedIdentity),
-		orgInfo:           make(map[string]*cachedOrgInfo),
 		tags:              make(map[string][]string),
 		commitStats:       make(map[string]*CommitStats),
 		commitAuthors:     make(map[string]*CommitAuthorStats),
@@ -136,32 +183,6 @@ func (rc *repoCache) setFileExists(key string, exists bool) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.fileExists[key] = exists
-}
-
-func (rc *repoCache) getIdentity(key string) (*cachedIdentity, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	v, ok := rc.identity[key]
-	return v, ok
-}
-
-func (rc *repoCache) setIdentity(key string, id *cachedIdentity) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	rc.identity[key] = id
-}
-
-func (rc *repoCache) getOrgInfo(key string) (*cachedOrgInfo, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	v, ok := rc.orgInfo[key]
-	return v, ok
-}
-
-func (rc *repoCache) setOrgInfo(key string, info *cachedOrgInfo) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	rc.orgInfo[key] = info
 }
 
 func (rc *repoCache) getTagNames(key string) ([]string, bool) {
@@ -276,7 +297,8 @@ type GitHubClient struct {
 	httpClient   *http.Client
 	baseURL      string
 	cache        *repoCache
-	preferAPI    bool // when true, always try API first (used by test helpers with mock servers)
+	orgCache     *OrgCache // scan-level shared cache for org identity/info
+	preferAPI    bool      // when true, always try API first (used by test helpers with mock servers)
 	rateLimiter  *GitHubRateLimiter
 	scrapingOnly atomic.Bool // when true, all API calls are skipped; only web scraping is used
 }
@@ -284,9 +306,21 @@ type GitHubClient struct {
 // NewGitHubClient creates a new GitHub client. Web scraping is the primary
 // data-fetching method. When GITHUB_TOKEN is set, API calls supplement
 // scraped data with richer metadata and higher rate limits.
-func NewGitHubClient() *GitHubClient {
+// GitHubClientOption configures a GitHubClient during construction.
+type GitHubClientOption func(*GitHubClient)
+
+// WithSharedOrgCache injects a scan-level shared OrgCache into the client.
+// All GitHubClient instances that share the same OrgCache will reuse org-level
+// API results (identity, org info) instead of making duplicate requests.
+func WithSharedOrgCache(oc *OrgCache) GitHubClientOption {
+	return func(c *GitHubClient) {
+		c.orgCache = oc
+	}
+}
+
+func NewGitHubClient(opts ...GitHubClientOption) *GitHubClient {
 	token := os.Getenv("GITHUB_TOKEN")
-	return &GitHubClient{
+	c := &GitHubClient{
 		token: token,
 		httpClient: &http.Client{
 			// 10s timeout keeps failures fast — both API rate-limit
@@ -295,8 +329,13 @@ func NewGitHubClient() *GitHubClient {
 		},
 		baseURL:     "https://api.github.com",
 		cache:       newRepoCache(),
+		orgCache:    NewOrgCache(), // default: per-client cache; override with WithSharedOrgCache
 		rateLimiter: NewGitHubRateLimiter(token != ""),
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // NewGitHubClientWithBaseURL creates a GitHubClient pointing at a custom API base URL.
@@ -308,6 +347,7 @@ func NewGitHubClientWithBaseURL(baseURL string) *GitHubClient {
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		baseURL:    baseURL,
 		cache:      newRepoCache(),
+		orgCache:   NewOrgCache(),
 		preferAPI:  true,
 	}
 }
@@ -3113,8 +3153,8 @@ func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
 // Called by CheckIfOrganization and GetUserAccountCreatedDate to avoid
 // duplicate network calls for the same owner within a scan.
 func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
-	if c.cache != nil {
-		if cached, ok := c.cache.getIdentity(owner); ok {
+	if c.orgCache != nil {
+		if cached, ok := c.orgCache.getIdentity(owner); ok {
 			return cached
 		}
 	}
@@ -3122,8 +3162,8 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 	// Scraping-first path: always try scraping the profile page first.
 	if c.shouldPreferScraping() {
 		if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
-			if c.cache != nil {
-				c.cache.setIdentity(owner, id)
+			if c.orgCache != nil {
+				c.orgCache.setIdentity(owner, id)
 			}
 			return id
 		}
@@ -3146,8 +3186,8 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 		// Network error — try scraping if we haven't already
 		if !c.shouldPreferScraping() {
 			if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
-				if c.cache != nil {
-					c.cache.setIdentity(owner, id)
+				if c.orgCache != nil {
+					c.orgCache.setIdentity(owner, id)
 				}
 				return id
 			}
@@ -3160,8 +3200,8 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 		// Rate limit or auth error — try scraping if we haven't already
 		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
-				if c.cache != nil {
-					c.cache.setIdentity(owner, id)
+				if c.orgCache != nil {
+					c.orgCache.setIdentity(owner, id)
 				}
 				return id
 			}
@@ -3190,8 +3230,8 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 		name:      name,
 		createdAt: user.CreatedAt,
 	}
-	if c.cache != nil {
-		c.cache.setIdentity(owner, id)
+	if c.orgCache != nil {
+		c.orgCache.setIdentity(owner, id)
 	}
 	return id
 }
@@ -3239,8 +3279,8 @@ func (c *GitHubClient) scrapeIdentity(owner string) *cachedIdentity {
 // Both CheckVerifiedOrganization and CheckOrgMFARequired share this single
 // request, saving one API call per org per scan.
 func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
-	if c.cache != nil {
-		if cached, ok := c.cache.getOrgInfo(owner); ok {
+	if c.orgCache != nil {
+		if cached, ok := c.orgCache.getOrgInfo(owner); ok {
 			return cached
 		}
 	}
@@ -3250,8 +3290,8 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 	if c.shouldPreferScraping() {
 		info := c.scrapeOrgInfo(owner)
 		if info != nil {
-			if c.cache != nil {
-				c.cache.setOrgInfo(owner, info)
+			if c.orgCache != nil {
+				c.orgCache.setOrgInfo(owner, info)
 			}
 			return info
 		}
@@ -3274,8 +3314,8 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 		// Network error — try scraping if we haven't already
 		if !c.shouldPreferScraping() {
 			if info := c.scrapeOrgInfo(owner); info != nil {
-				if c.cache != nil {
-					c.cache.setOrgInfo(owner, info)
+				if c.orgCache != nil {
+					c.orgCache.setOrgInfo(owner, info)
 				}
 				return info
 			}
@@ -3289,15 +3329,15 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 		// Rate limit — try scraping if we haven't already
 		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			if info := c.scrapeOrgInfo(owner); info != nil {
-				if c.cache != nil {
-					c.cache.setOrgInfo(owner, info)
+				if c.orgCache != nil {
+					c.orgCache.setOrgInfo(owner, info)
 				}
 				return info
 			}
 		}
 		info := &cachedOrgInfo{found: false}
-		if c.cache != nil {
-			c.cache.setOrgInfo(owner, info)
+		if c.orgCache != nil {
+			c.orgCache.setOrgInfo(owner, info)
 		}
 		return info
 	}
@@ -3316,8 +3356,8 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 		mfaRequired: org.TwoFactorRequirementEnabled,
 		found:       true,
 	}
-	if c.cache != nil {
-		c.cache.setOrgInfo(owner, info)
+	if c.orgCache != nil {
+		c.orgCache.setOrgInfo(owner, info)
 	}
 	return info
 }
