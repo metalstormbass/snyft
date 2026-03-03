@@ -935,15 +935,33 @@ func TestDetectCommitFrequencyAnomaly(t *testing.T) {
 	analyzer := NewAnalyzer()
 	repoCreatedAt := time.Now().AddDate(-3, 0, 0) // 3 years old
 
+	// Helper to create a single commit at a specific date (for anchoring data coverage)
+	anchorCommit := func(date time.Time) []fetcher.GitHubCommit {
+		return []fetcher.GitHubCommit{{
+			SHA: "anchor",
+			Commit: fetcher.GitHubCommitInfo{
+				Author: fetcher.GitHubCommitAuthor{
+					Name: "anchor", Email: "a@example.com", Date: date,
+				},
+			},
+		}}
+	}
+
 	tests := []struct {
 		name           string
 		recentCommits  []fetcher.GitHubCommit
 		olderCommits   []fetcher.GitHubCommit
 		repoAge        time.Time
+		releases       []fetcher.RegistryRelease
 		expectedRisk   *int // nil if no anomaly
 		expectedDesc   string
 	}{
 		{
+			// Test: Suspicious spike with adequate data coverage
+			// Justification: Near-dormant project with sudden burst of activity is characteristic
+			//                of account takeover — but only valid when data covers the full 2-year window.
+			// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+			// Methodology: 25 recent commits vs 2 old commits, oldest commit 2 years ago (passes 18-month check)
 			name:          "Suspicious spike - dormant then active",
 			recentCommits: makeCommits(25, time.Now().AddDate(0, -6, 0)), // 25 commits in last year
 			olderCommits:  makeCommits(2, time.Now().AddDate(-2, 0, 0)),  // 2 commits in previous year
@@ -952,17 +970,22 @@ func TestDetectCommitFrequencyAnomaly(t *testing.T) {
 			expectedDesc:  "Suspicious commit frequency spike",
 		},
 		{
-			name:          "Moderate reactivation",
-			recentCommits: makeCommits(10, time.Now().AddDate(0, -6, 0)), // 10 commits in last year
-			olderCommits:  makeCommits(0, time.Now().AddDate(-2, 0, 0)),  // 0 commits in previous year
+			// Test: Moderate reactivation with adequate data coverage
+			// Justification: A repo that truly had zero activity in the prior year but resumes
+			//                with small commit counts is moderate reactivation. The anchor commit
+			//                at 19 months ago proves data coverage while counting as 1 prior-year commit.
+			// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+			// Methodology: 10 recent commits, 1 prior-year anchor → previousYearCount=1, no trigger
+			name:          "Low prior activity with data coverage - no anomaly",
+			recentCommits: makeCommits(10, time.Now().AddDate(0, -6, 0)),      // 10 commits in last year
+			olderCommits:  anchorCommit(time.Now().AddDate(-1, -7, 0)),        // 1 commit at 19 months ago
 			repoAge:       repoCreatedAt,
-			expectedRisk:  intPtr(1),
-			expectedDesc:  "Package reactivated after dormancy",
+			expectedRisk:  nil, // previousYearCount=1, recentCount=10: doesn't hit any threshold
 		},
 		{
 			name:          "Consistent activity",
 			recentCommits: makeCommits(20, time.Now().AddDate(0, -6, 0)), // 20 commits
-			olderCommits:  makeCommits(18, time.Now().AddDate(-2, 0, 0)), // 18 commits
+			olderCommits:  makeCommits(18, time.Now().AddDate(-2, 0, 0)), // 18 commits (oldest is 2yr ago)
 			repoAge:       repoCreatedAt,
 			expectedRisk:  nil, // No anomaly
 		},
@@ -981,7 +1004,7 @@ func TestDetectCommitFrequencyAnomaly(t *testing.T) {
 			// Methodology: Check recentCount >= previousYearCount*10 AND recentCount >= 30
 			name:          "Relative spike - 10x increase from moderate baseline",
 			recentCommits: makeCommits(50, time.Now().AddDate(0, -6, 0)), // 50 in last year
-			olderCommits:  makeCommits(5, time.Now().AddDate(-2, 0, 0)),  // 5 in prior year
+			olderCommits:  makeCommits(5, time.Now().AddDate(-2, 0, 0)),  // 5 in prior year (oldest ~2yr ago)
 			repoAge:       repoCreatedAt,
 			expectedRisk:  intPtr(2), // 50 >= 5*10=50 AND 50 >= 30
 			expectedDesc:  "Suspicious commit frequency increase",
@@ -993,19 +1016,66 @@ func TestDetectCommitFrequencyAnomaly(t *testing.T) {
 			// Methodology: Same ratio check - 5x should NOT trigger
 			name:          "Moderate increase - 5x does not trigger",
 			recentCommits: makeCommits(30, time.Now().AddDate(0, -6, 0)), // 30 in last year
-			olderCommits:  makeCommits(8, time.Now().AddDate(-2, 0, 0)),  // 8 in prior year  (but only 5 pass filter)
+			olderCommits:  makeCommits(8, time.Now().AddDate(-2, 0, 0)),  // 8 in prior year (but only 5 pass filter)
 			repoAge:       repoCreatedAt,
 			expectedRisk:  nil, // 30 >= 5*10=50? No → no anomaly
+		},
+		{
+			// Test: Insufficient data coverage — oldest commit only 6 months old
+			// Justification: When API/clone returns only recent commits (GitHub caps at 100/request),
+			//                the "previous year" count is artificially zero. We must not flag this.
+			// Source: API pagination limits in GitHub REST API (per_page=100)
+			// Methodology: All commits within last 6 months → oldest < 18 months → insufficient data
+			name:          "Insufficient data coverage - should not flag",
+			recentCommits: makeCommits(100, time.Now().AddDate(0, -6, 0)), // 100 commits, all recent
+			olderCommits:  makeCommits(0, time.Now().AddDate(-2, 0, 0)),   // no older commits returned
+			repoAge:       repoCreatedAt,
+			expectedRisk:  nil, // Data doesn't cover enough history
+		},
+		{
+			// Test: Mature project (5+ years) with apparent spike is likely data artifact
+			// Justification: A 10-year-old project like Spring Boot going from 0 to 50+ commits
+			//                in our dataset is clearly because the API didn't return full history,
+			//                not because the project was dormant.
+			// Source: "Small World with High Risks" (Zimmermann et al., 2019) — npm dependency analysis
+			// Methodology: Repo age 10 years + 50+ recent commits + near-zero prior → data artifact
+			name:          "Mature project - high activity spike is data artifact",
+			recentCommits: makeCommits(60, time.Now().AddDate(0, -6, 0)),  // 60 recent commits
+			olderCommits:  makeCommits(2, time.Now().AddDate(-2, 0, 0)),   // 2 old commits (data cap artifact)
+			repoAge:       time.Now().AddDate(-10, 0, 0),                  // 10 years old
+			expectedRisk:  nil,                                            // Mature project exemption
+		},
+		{
+			// Test: High-activity repo with consistent release history — data artifact
+			// Justification: If release history shows consistent activity over 2+ years,
+			//                the commit spike is a data coverage artifact, not real dormancy.
+			// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+			// Methodology: 100+ recent commits + releases spanning 3 years → cross-validation pass
+			name: "High-activity repo with consistent releases - not flagged",
+			recentCommits: makeCommits(100, time.Now().AddDate(0, -11, 0)), // 100 recent, oldest ~11mo ago
+			olderCommits: func() []fetcher.GitHubCommit {
+				// Include an anchor commit at 20 months to pass coverage check
+				commits := anchorCommit(time.Now().AddDate(-1, -8, 0))
+				return commits
+			}(),
+			repoAge: repoCreatedAt,
+			releases: []fetcher.RegistryRelease{
+				{PublishedAt: time.Now().AddDate(0, -1, 0)},
+				{PublishedAt: time.Now().AddDate(-1, 0, 0)},
+				{PublishedAt: time.Now().AddDate(-2, 0, 0)},
+				{PublishedAt: time.Now().AddDate(-3, 0, 0)},
+			},
+			expectedRisk: nil, // Release history confirms consistent activity
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			score := analyzer.detectCommitFrequencyAnomaly(tt.recentCommits, tt.olderCommits, tt.repoAge)
+			score := analyzer.detectCommitFrequencyAnomaly(tt.recentCommits, tt.olderCommits, tt.repoAge, tt.releases)
 
 			if tt.expectedRisk == nil {
 				if score != nil {
-					t.Errorf("Expected no anomaly, but got RiskPoints=%d", score.RiskPoints)
+					t.Errorf("Expected no anomaly, but got RiskPoints=%d, Description=%s", score.RiskPoints, score.Description)
 				}
 			} else {
 				if score == nil {

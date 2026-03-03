@@ -106,7 +106,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 		olderCommits, err2 := gitClient.GetCommitActivity(result.RepositoryURL, twoYearsAgo)
 
 		if err1 == nil && err2 == nil {
-			anomaly := a.detectCommitFrequencyAnomaly(recentCommits, olderCommits, result.Metadata.RepoCreatedAt)
+			anomaly := a.detectCommitFrequencyAnomaly(recentCommits, olderCommits, result.Metadata.RepoCreatedAt, registryReleases)
 			if anomaly != nil {
 				return *anomaly
 			}
@@ -251,8 +251,9 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repo
 //                to avoid detection window.
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 //         https://arxiv.org/abs/2005.09535
-// Methodology: Compare commit counts in last 12 months vs preceding 12 months
-func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fetcher.GitHubCommit, repoCreatedAt time.Time) *models.CategoryScore {
+// Methodology: Compare commit counts in last 12 months vs preceding 12 months,
+//              with data coverage validation to prevent false positives from API pagination limits
+func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fetcher.GitHubCommit, repoCreatedAt time.Time, releases []fetcher.RegistryRelease) *models.CategoryScore {
 	oneYearAgo := time.Now().AddDate(-1, 0, 0)
 
 	// Count commits in last year vs previous year
@@ -260,9 +261,22 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 
 	// Filter older commits to only count those from 1-2 years ago (the preceding year)
 	previousYearCount := 0
+	var oldestCommitDate time.Time
 	for _, commit := range olderCommits {
-		if commit.Commit.Author.Date.Before(oneYearAgo) {
+		commitDate := commit.Commit.Author.Date
+		if commitDate.Before(oneYearAgo) {
 			previousYearCount++
+		}
+		// Track the oldest commit in the dataset to assess data coverage
+		if oldestCommitDate.IsZero() || commitDate.Before(oldestCommitDate) {
+			oldestCommitDate = commitDate
+		}
+	}
+	// Also check recent commits for oldest date (in case olderCommits is empty)
+	for _, commit := range recentCommits {
+		commitDate := commit.Commit.Author.Date
+		if oldestCommitDate.IsZero() || commitDate.Before(oldestCommitDate) {
+			oldestCommitDate = commitDate
 		}
 	}
 
@@ -272,10 +286,37 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 		return nil
 	}
 
-	commitMethodology := "Compared commit counts from last 12 months against preceding 12 months via Git API. Thresholds: <5 prior + >20 recent = absolute spike; >=5 prior + 10x increase = relative spike; 0 prior + any recent = reactivation."
+	// Fix 1: Data coverage validation — if the oldest commit in our dataset is less than
+	// 18 months old, the API/clone didn't return enough history for a valid comparison.
+	// GitHub API caps at 100 commits per request and clones at depth=500. For active
+	// projects (Spring Boot, Guava, aiohttp), 100 commits may only cover a few months,
+	// making the "previous year" count artificially zero.
+	eighteenMonthsAgo := time.Now().AddDate(-1, -6, 0)
+	if !oldestCommitDate.IsZero() && oldestCommitDate.After(eighteenMonthsAgo) {
+		// Data doesn't reach back far enough for a meaningful year-over-year comparison
+		return nil
+	}
 
-	// Check 1: Absolute spike
+	// Fix 3: Project age weighting — for mature projects (5+ years old), a spike from
+	// 0 to many commits is far more likely a data artifact than dormancy reactivation.
+	// A 10-year-old project like Spring Boot wouldn't truly go dormant and reactivate.
+	// Require proportionally stronger evidence for older projects.
+	isMaturedProject := repoAgeYears >= 5
+
+	commitMethodology := "Compared commit counts from last 12 months against preceding 12 months via Git API. Includes data coverage validation (oldest commit must be ≥18 months old), project age weighting (mature projects require stronger evidence), and release history cross-validation for high-activity repos."
+
+	// Check 1: Absolute spike — near-dormant then suddenly active
 	if previousYearCount < 5 && recentCount > 20 {
+		// Fix 2: For repos with 100+ recent commits, cross-validate against release history.
+		// If releases show consistent activity, the commit "spike" is a data coverage artifact.
+		if recentCount >= 100 && hasConsistentReleaseHistory(releases) {
+			return nil
+		}
+		// Fix 3: For mature projects (5+ years), a high recent count with near-zero prior
+		// is almost certainly a data artifact — the API simply didn't return older commits.
+		if isMaturedProject && recentCount >= 50 {
+			return nil
+		}
 		return &models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
@@ -290,8 +331,16 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 		}
 	}
 
-	// Check 2: Relative spike
+	// Check 2: Relative spike — 10x+ increase from a moderate baseline
 	if previousYearCount >= 5 && recentCount >= previousYearCount*10 && recentCount >= 30 {
+		// Fix 2: Cross-validate high-activity repos against release history
+		if recentCount >= 100 && hasConsistentReleaseHistory(releases) {
+			return nil
+		}
+		// Fix 3: Mature projects with very high activity are likely data artifacts
+		if isMaturedProject && recentCount >= 100 {
+			return nil
+		}
 		return &models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
@@ -306,8 +355,13 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 		}
 	}
 
-	// Check 3: Reactivation after dormancy
+	// Check 3: Reactivation after dormancy — 0 prior, small recent count
 	if previousYearCount == 0 && recentCount > 0 && recentCount < 20 {
+		// Fix 3: Mature projects with moderate reactivation — more likely legitimate
+		// renewed interest or data artifact than account takeover
+		if isMaturedProject {
+			return nil
+		}
 		return &models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
@@ -322,4 +376,42 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 	}
 
 	return nil
+}
+
+// hasConsistentReleaseHistory checks if release history shows consistent activity
+// over time, indicating that a commit frequency "spike" is likely a data coverage
+// artifact (API pagination) rather than actual dormancy reactivation.
+//
+// Justification: If a project has regular releases spanning 2+ years, the project
+//                was clearly active even if our commit data doesn't reach back far enough.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020) — attack pattern analysis
+//         shows compromised packages typically have gaps in release history, not consistent cadence.
+func hasConsistentReleaseHistory(releases []fetcher.RegistryRelease) bool {
+	if len(releases) < 3 {
+		return false
+	}
+
+	// Check if releases span at least 2 years
+	var oldest, newest time.Time
+	validCount := 0
+	for _, r := range releases {
+		if r.PublishedAt.IsZero() || r.IsPrerelease {
+			continue
+		}
+		validCount++
+		if oldest.IsZero() || r.PublishedAt.Before(oldest) {
+			oldest = r.PublishedAt
+		}
+		if newest.IsZero() || r.PublishedAt.After(newest) {
+			newest = r.PublishedAt
+		}
+	}
+
+	if validCount < 3 {
+		return false
+	}
+
+	releaseSpanDays := newest.Sub(oldest).Hours() / 24
+	// Releases must span at least 2 years to indicate consistent long-term activity
+	return releaseSpanDays >= 730
 }
