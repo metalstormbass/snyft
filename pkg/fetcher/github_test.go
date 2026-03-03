@@ -1821,18 +1821,91 @@ func TestDetectCISystems_GitHubActionsFileFallback(t *testing.T) {
 	}
 }
 
-// Test: DetectCISystems skips remaining config files once a platform is detected
-// Justification: GitHub Actions now lists ~16 fallback paths (directory + common filenames).
-//                Without the skip optimization, each path triggers a HEAD request even after
-//                the first match, wasting API rate limit budget.
+// Test: DetectCISystems uses a single tree API call instead of per-file checks
+// Justification: The Git Trees API fetches the full file listing in 1 request,
+//                reducing CI detection from ~16+ API calls to 1. This preserves
+//                API rate limit budget for other supply chain checks.
 // Source: GitHub API rate limiting documentation
-// Methodology: Count HEAD requests to the mock server; verify only one request per platform
-// Result: Only 1 request for GitHub Actions (first match stops further probing)
-func TestDetectCISystems_SkipsAlreadyDetectedPlatform(t *testing.T) {
+// Methodology: Mock Git Trees API returning tree with CI files; count total requests
+// Result: Only 1 request (the tree fetch) instead of ~27 individual file checks
+func TestDetectCISystems_UsesTreeAPI(t *testing.T) {
 	var requestCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount.Add(1)
 		path := r.URL.Path
+		// Handle tree API request
+		if strings.Contains(path, "/git/trees/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"tree": [
+					{"path": ".github/workflows/ci.yml", "type": "blob"},
+					{"path": ".github/workflows/release.yml", "type": "blob"},
+					{"path": ".travis.yml", "type": "blob"},
+					{"path": "README.md", "type": "blob"},
+					{"path": "src/main.go", "type": "blob"}
+				],
+				"truncated": false
+			}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	ciSystems, err := client.DetectCISystems("https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should detect both platforms
+	if len(ciSystems) < 2 {
+		t.Errorf("expected at least 2 CI systems, got %v", ciSystems)
+	}
+
+	hasGHA := false
+	hasTravis := false
+	for _, ci := range ciSystems {
+		if ci == "GitHub Actions" {
+			hasGHA = true
+		}
+		if ci == "Travis CI" {
+			hasTravis = true
+		}
+	}
+	if !hasGHA {
+		t.Error("expected GitHub Actions to be detected")
+	}
+	if !hasTravis {
+		t.Error("expected Travis CI to be detected")
+	}
+
+	// Tree API should resolve CI detection in just 1 request
+	if requestCount.Load() != 1 {
+		t.Errorf("expected 1 request (tree API), got %d", requestCount.Load())
+	}
+}
+
+// Test: DetectCISystems falls back to per-file checks when tree API fails
+// Justification: When the Git Trees API is unavailable (rate-limited, error, etc.),
+//                CI detection must still work via individual file existence checks.
+//                Graceful degradation prevents false negatives in risk assessment.
+// Source: GitHub API rate limiting documentation
+// Methodology: Mock server that rejects tree API but responds to file checks; verify fallback works
+// Result: CI systems still detected via fileExists fallback
+func TestDetectCISystems_FallbackToFileExists(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		// Tree API fails
+		if strings.Contains(path, "/git/trees/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		// First GitHub Actions path (.github/workflows) succeeds
 		if strings.HasSuffix(path, "/contents/.github/workflows") {
 			w.WriteHeader(http.StatusOK)
@@ -1858,29 +1931,26 @@ func TestDetectCISystems_SkipsAlreadyDetectedPlatform(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should detect both platforms
+	// Should detect both platforms via fallback
 	if len(ciSystems) < 2 {
 		t.Errorf("expected at least 2 CI systems, got %v", ciSystems)
 	}
 
-	// Count how many GitHub Actions paths were checked — should be exactly 1
-	// because the directory check succeeds and remaining GHA paths are skipped.
-	// Total requests = 1 (GHA directory) + N (other CI platforms)
-	// Without the skip optimization, it would be 1 + 15 (GHA files) + N
-	totalGHAPaths := 0
-	for _, entry := range ExtendedCIConfigFiles() {
-		if entry.Name == "GitHub Actions" {
-			totalGHAPaths++
+	hasGHA := false
+	hasTravis := false
+	for _, ci := range ciSystems {
+		if ci == "GitHub Actions" {
+			hasGHA = true
+		}
+		if ci == "Travis CI" {
+			hasTravis = true
 		}
 	}
-
-	// The request count should be significantly less than the total number of
-	// config files because all GitHub Actions fallbacks are skipped.
-	totalPossible := len(ExtendedCIConfigFiles())
-	saved := totalPossible - int(requestCount.Load())
-	if saved < totalGHAPaths-1 {
-		t.Errorf("skip optimization not working: made %d requests out of %d possible (expected to save at least %d GitHub Actions fallback checks)",
-			requestCount.Load(), totalPossible, totalGHAPaths-1)
+	if !hasGHA {
+		t.Error("expected GitHub Actions to be detected via fallback")
+	}
+	if !hasTravis {
+		t.Error("expected Travis CI to be detected via fallback")
 	}
 }
 

@@ -364,20 +364,79 @@ func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*model
 }
 
 
-// DetectCISystems checks for common CI/CD systems in the repository
+// DetectCISystems checks for common CI/CD systems in the repository.
+// It first attempts a single Git Trees API call to fetch the full file listing,
+// then matches CI config paths against that tree. This reduces CI detection
+// from ~16+ API calls to 1. Falls back to individual fileExists checks if the
+// tree API call fails.
 func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
+	// Try the efficient tree-based approach first.
+	if ciSystems, ok := c.detectCIViaTree(owner, repo); ok {
+		return ciSystems, nil
+	}
+
+	// Fallback: individual fileExists checks (original behavior).
+	return c.detectCIViaFileExists(owner, repo), nil
+}
+
+// detectCIViaTree fetches the repo's full file tree in a single API call and
+// matches CI config paths against it. Returns (results, true) on success, or
+// (nil, false) if the tree API is unavailable (no token, API error, etc.).
+func (c *GitHubClient) detectCIViaTree(owner, repo string) ([]string, bool) {
+	treePaths, ok := c.getRepoTree(owner, repo)
+	if !ok {
+		return nil, false
+	}
+
 	var ciSystems []string
 	detected := make(map[string]bool)
 
 	for _, entry := range ExtendedCIConfigFiles() {
-		// Skip remaining config files once a platform is already detected.
-		// GitHub Actions lists ~16 fallback paths (directory + common filenames)
-		// but only the first match matters. This avoids unnecessary API/HEAD calls.
+		if detected[entry.Name] {
+			continue
+		}
+		// Check exact match first (files like ".travis.yml").
+		if treePaths[entry.Path] {
+			detected[entry.Name] = true
+			ciSystems = append(ciSystems, entry.Name)
+			continue
+		}
+		// Check if entry.Path is a directory by looking for any tree path
+		// that has it as a prefix (e.g. ".github/workflows" matches
+		// ".github/workflows/ci.yml" in the tree).
+		if c.treeHasPrefix(treePaths, entry.Path) {
+			detected[entry.Name] = true
+			ciSystems = append(ciSystems, entry.Name)
+		}
+	}
+
+	return ciSystems, true
+}
+
+// treeHasPrefix checks if any path in the tree starts with the given prefix
+// followed by a "/". This detects directory entries like ".github/workflows".
+func (c *GitHubClient) treeHasPrefix(treePaths map[string]bool, prefix string) bool {
+	dirPrefix := prefix + "/"
+	for p := range treePaths {
+		if strings.HasPrefix(p, dirPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// detectCIViaFileExists is the original per-file detection approach, used as
+// fallback when the tree API is unavailable.
+func (c *GitHubClient) detectCIViaFileExists(owner, repo string) []string {
+	var ciSystems []string
+	detected := make(map[string]bool)
+
+	for _, entry := range ExtendedCIConfigFiles() {
 		if detected[entry.Name] {
 			continue
 		}
@@ -387,7 +446,73 @@ func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
 		}
 	}
 
-	return ciSystems, nil
+	return ciSystems
+}
+
+// getRepoTree fetches the full recursive file tree for a repository using the
+// Git Trees API (GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1).
+// Returns a set of file paths and true on success, or (nil, false) on failure.
+// When scraping is preferred (no token), this is skipped since the Git Trees
+// API requires authentication for useful results on large repos.
+func (c *GitHubClient) getRepoTree(owner, repo string) (map[string]bool, bool) {
+	if c.shouldPreferScraping() {
+		return nil, false
+	}
+
+	branches := c.defaultBranchCandidates(owner, repo)
+	for _, branch := range branches {
+		url := fmt.Sprintf("%s/repos/%s/%s/git/trees/%s?recursive=1", c.baseURL, owner, repo, branch)
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+
+		resp, err := c.doRequest(req)
+		if err != nil {
+			continue
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		var treeResp struct {
+			Tree []struct {
+				Path string `json:"path"`
+				Type string `json:"type"`
+			} `json:"tree"`
+			Truncated bool `json:"truncated"`
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			continue
+		}
+		if err := json.Unmarshal(body, &treeResp); err != nil {
+			continue
+		}
+
+		paths := make(map[string]bool, len(treeResp.Tree))
+		for _, entry := range treeResp.Tree {
+			paths[entry.Path] = true
+		}
+
+		// Populate the fileExists cache so other callers benefit.
+		if c.cache != nil {
+			for _, ciFile := range ExtendedCIConfigFiles() {
+				cacheKey := owner + "/" + repo + "/" + ciFile.Path
+				c.cache.setFileExists(cacheKey, paths[ciFile.Path])
+			}
+		}
+
+		return paths, true
+	}
+
+	return nil, false
 }
 
 // HasAutomatedReleases checks if the repository has automated releases.
