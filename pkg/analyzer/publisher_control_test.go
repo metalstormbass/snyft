@@ -722,11 +722,12 @@ func TestCompleteRiskAssessment_RealWorldPackage(t *testing.T) {
 
 // Test: Zero maintainers - no maintainer data available
 // Justification: When no maintainer info is available, we cannot assess ownership control.
-//   This is itself a moderate risk signal - legitimate packages should have identifiable maintainers.
-//   An inability to verify who controls the package means we cannot assess account-takeover risk.
+//   However, zero maintainers may indicate data retrieval failure (scraping fallback, API
+//   error) rather than confirmed absence. The system treats this as "unknown" (0.3) to
+//   avoid a double penalty from data loss inflating risk scores.
 // Source: OSSF Scorecard - maintainer identity is a key security health metric
 // Methodology: Count maintainers from registry metadata
-// Result: Assigns moderate risk (not zero, not maximum) for unverifiable ownership
+// Result: LOW risk — 0.3 alone is below MEDIUM threshold; evidence documents the gap
 func TestPublisherControl_ZeroMaintainers(t *testing.T) {
 	analyzer := NewAnalyzer()
 
@@ -750,9 +751,11 @@ func TestPublisherControl_ZeroMaintainers(t *testing.T) {
 		t.Error("Expected SingleMaintainer to be false for 0 maintainers")
 	}
 
-	// 0 maintainers should score as MEDIUM risk (not LOW - ownership is unverifiable)
-	if analysis.RiskPoints == 0 {
-		t.Errorf("Expected non-zero risk points for 0 maintainers, got %d", analysis.RiskPoints)
+	// 0 maintainers with only the unknown-data signal (0.3) → LOW risk
+	// The system no longer double-penalises for data loss
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk for zero maintainers (data loss), got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
 	}
 
 	// Should have evidence indicating unknown ownership
@@ -1547,15 +1550,16 @@ func TestMFAUnchecked_PersonalAccount_NeutralImpact(t *testing.T) {
 //   but different from confirmed single-maintainer risk.
 // Source: OSSF Scorecard - maintainer identity is required for assessment
 // Methodology: Set MaintainerCount=0, SingleMaintainer=false, verify +0.5 risk contribution
-// Result: 0.5 (no maintainer data) + 0.5 (no signing) = 1.0 → MEDIUM (1 point)
-// Test: Zero maintainers on ecosystem with maintainer list = MEDIUM risk
-// Justification: Ecosystem-aware scoring distinguishes "data unavailable" from
-//                "zero maintainers confirmed". When the ecosystem exposes maintainer
-//                data (npm, PyPI) but returns 0, this is an unverifiable ownership signal.
-// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Test: Zero maintainers on ecosystem with maintainer list = LOW risk (data loss, not confirmed)
+// Justification: When the ecosystem exposes maintainer data (npm, PyPI) but returns 0,
+//   this indicates data retrieval failure (API error, scraping fallback), not confirmed
+//   absence of maintainers. Penalising at 0.6 creates a double penalty: data loss already
+//   harms accuracy, and the higher weight inflates the risk score. Uniform 0.3 avoids this.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — absence of evidence
+//   is not evidence of absence for maintainer risk assessment
 // Methodology: Call calculateRiskScore with 0 maintainers on npm ecosystem
-// Result: MEDIUM risk (0.6 base score from unverifiable ownership)
-func TestZeroMaintainers_CalculateRiskScore_ModerateRisk(t *testing.T) {
+// Result: LOW risk (0.3 base score — same as ecosystems without maintainer lists)
+func TestZeroMaintainers_CalculateRiskScore_LowRisk(t *testing.T) {
 	analysis := &PublisherControlAnalysis{
 		MaintainerCount:  0,
 		SingleMaintainer: false,
@@ -1563,18 +1567,18 @@ func TestZeroMaintainers_CalculateRiskScore_ModerateRisk(t *testing.T) {
 	}
 	analysis.calculateRiskScore()
 
-	// 0.6 (no maintainer data, ecosystem exposes list) → MEDIUM
-	if analysis.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point (MEDIUM) for zero maintainers on npm, got %d (evidence: %s)",
+	// 0.3 (no maintainer data, treated as unknown) → LOW
+	if analysis.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points (LOW) for zero maintainers on npm, got %d (evidence: %s)",
 			analysis.RiskPoints, analysis.Evidence)
 	}
-	if analysis.RiskLevel != "MEDIUM" {
-		t.Errorf("Expected MEDIUM risk for zero maintainers, got %s", analysis.RiskLevel)
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk for zero maintainers (data loss), got %s", analysis.RiskLevel)
 	}
 
-	// Evidence should mention unverifiable
-	if !strings.Contains(analysis.Evidence, "unverifiable") {
-		t.Errorf("Expected 'unverifiable' in evidence, got: %q", analysis.Evidence)
+	// Evidence should mention the ecosystem can expose this data
+	if !strings.Contains(analysis.Evidence, "can expose") {
+		t.Errorf("Expected 'can expose' in evidence, got: %q", analysis.Evidence)
 	}
 }
 
@@ -1735,5 +1739,76 @@ func TestDifferentiation_AllNormalSignals_MultiMaintainer_NotHigh(t *testing.T) 
 	if analysis.RiskLevel == "HIGH" {
 		t.Errorf("5-maintainer package with all normal OSS signals should NOT be HIGH, got %s (evidence: %s)",
 			analysis.RiskLevel, analysis.Evidence)
+	}
+}
+
+// Test: Maven package with HasMaintainerList=true but zero maintainers (scraping data loss)
+// Justification: When Maven's POM-based developer extraction fails (e.g. scraping fallback
+//   loses developer data, POM has no <developers> section), the system should NOT apply a
+//   harsher penalty (0.6) than ecosystems that never expose maintainer data (0.3). The
+//   capability to expose data does not guarantee successful retrieval.
+// Source: Maven POM reference — <developers> section is optional, not required
+// Methodology: Set HasMaintainerList=true (Maven capability) with zero maintainers,
+//   verify scoring treats it as "unknown" (0.3) not "confirmed missing" (0.6)
+// Result: Same 0.3 risk as ecosystems without maintainer lists — no double penalty
+func TestPublisherControl_MavenEmptyMaintainers_NoDoublePenalty(t *testing.T) {
+	// Scenario: Maven package where scraping fallback lost developer data
+	mavenAnalysis := &PublisherControlAnalysis{
+		MaintainerCount:  0,
+		SingleMaintainer: false,
+		Ecosystem:        models.EcosystemMaven,
+	}
+	mavenAnalysis.calculateRiskScore()
+
+	// Scenario: Ecosystem that truly doesn't expose maintainer data (e.g. Maven without POM)
+	unknownAnalysis := &PublisherControlAnalysis{
+		MaintainerCount:  0,
+		SingleMaintainer: false,
+		Ecosystem:        "unknown-ecosystem",
+	}
+	unknownAnalysis.calculateRiskScore()
+
+	// Both should get the same risk points — no double penalty for Maven
+	if mavenAnalysis.RiskPoints != unknownAnalysis.RiskPoints {
+		t.Errorf("Maven with empty maintainers (%d points) should equal unknown ecosystem (%d points) — double penalty detected",
+			mavenAnalysis.RiskPoints, unknownAnalysis.RiskPoints)
+	}
+
+	// Verify the evidence message indicates data retrieval issue, not confirmed absence
+	if !strings.Contains(mavenAnalysis.Evidence, "not found") {
+		t.Errorf("Maven evidence should indicate data not found, got: %s", mavenAnalysis.Evidence)
+	}
+
+	// Both should be LOW risk (0.3 alone is below MEDIUM threshold of 0.6)
+	if mavenAnalysis.RiskLevel != "LOW" {
+		t.Errorf("Maven with only empty maintainers should be LOW risk, got %s (evidence: %s)",
+			mavenAnalysis.RiskLevel, mavenAnalysis.Evidence)
+	}
+}
+
+// Test: npm package with HasMaintainerList=true but zero maintainers gets same treatment
+// Justification: The fix applies uniformly — any ecosystem with HasMaintainerList=true but
+//   zero retrieved maintainers should be treated as unknown, not penalised for data loss.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — absence of evidence
+//   is not evidence of absence for maintainer risk assessment
+// Methodology: Set npm (HasMaintainerList=true) with zero maintainers, verify 0.3 not 0.6
+// Result: 0.3 risk — consistent with Maven and unknown ecosystems
+func TestPublisherControl_NpmEmptyMaintainers_NoDoublePenalty(t *testing.T) {
+	npmAnalysis := &PublisherControlAnalysis{
+		MaintainerCount:  0,
+		SingleMaintainer: false,
+		Ecosystem:        models.EcosystemNPM,
+	}
+	npmAnalysis.calculateRiskScore()
+
+	// npm has HasMaintainerList=true, but zero maintainers should still get 0.3
+	if npmAnalysis.RiskLevel != "LOW" {
+		t.Errorf("npm with zero maintainers (data loss) should be LOW risk, got %s (evidence: %s)",
+			npmAnalysis.RiskLevel, npmAnalysis.Evidence)
+	}
+
+	// Verify evidence mentions the ecosystem can expose this data
+	if !strings.Contains(npmAnalysis.Evidence, "can expose") {
+		t.Errorf("npm evidence should mention ecosystem capability, got: %s", npmAnalysis.Evidence)
 	}
 }
