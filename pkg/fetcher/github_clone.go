@@ -567,3 +567,65 @@ func (c *GitHubClient) getFileTreeFromClone(owner, repo string) (map[string]bool
 	return data.fileTree, true
 }
 
+// getSignedCommitsFromClone returns signed commit data from the bare clone.
+func (c *GitHubClient) getSignedCommitsFromClone(owner, repo string) (bool, int, bool) {
+	cacheKey := owner + "/" + repo
+	if c.cache == nil {
+		return false, 0, false
+	}
+	data, ok := c.cache.getCloneData(cacheKey)
+	if !ok || !data.ready || data.signedCommits == nil {
+		return false, 0, false
+	}
+	return data.signedCommits.hasSigning, data.signedCommits.verifiedCount, true
+}
+
+// getCommitAuthorsFromClone returns commit author stats from the bare clone.
+func (c *GitHubClient) getCommitAuthorsFromClone(owner, repo string) (*CommitAuthorStats, bool) {
+	cacheKey := owner + "/" + repo
+	if c.cache == nil {
+		return nil, false
+	}
+	data, ok := c.cache.getCloneData(cacheKey)
+	if !ok || !data.ready || data.commitAuthors == nil {
+		return nil, false
+	}
+	return data.commitAuthors, true
+}
+
+// getCommitStatsFromClone derives CommitStats from clone commit author data.
+func (c *GitHubClient) getCommitStatsFromClone(owner, repo string) (*CommitStats, bool) {
+	cacheKey := owner + "/" + repo
+	if c.cache == nil {
+		return nil, false
+	}
+	data, ok := c.cache.getCloneData(cacheKey)
+	if !ok || !data.ready || data.commitAuthors == nil {
+		return nil, false
+	}
+
+	authors := data.commitAuthors
+	totalCommits := authors.TotalCommits
+	if totalCommits == 0 {
+		return nil, false
+	}
+
+	busFactor := calculateBusFactor(authors.AuthorCommitCounts, totalCommits)
+
+	topContributorPct := 0.0
+	maxCommits := 0
+	for _, count := range authors.AuthorCommitCounts {
+		if count > maxCommits {
+			maxCommits = count
+		}
+	}
+	topContributorPct = float64(maxCommits) / float64(totalCommits) * 100
+
+	return &CommitStats{
+		TotalCommits:      totalCommits,
+		AuthorCommits:     authors.AuthorCommitCounts,
+		BusFactor:         busFactor,
+		TopContributorPct: topContributorPct,
+	}, true
+}
+
