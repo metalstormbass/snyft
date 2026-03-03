@@ -31,16 +31,28 @@ cd snyft
 make build
 ```
 
+## Quickstart
+
+Install and generate an HTML report in three commands:
+
+```bash
+go install github.com/metalstormbass/snyft@latest
+export PATH=${PATH}:`go env GOPATH`/bin
+snyft scan --format html -o report.html
+```
+
+Open `report.html` in your browser to see a visual breakdown of every dependency's supply chain risk score. The HTML report is the recommended way to review results — it includes interactive scoring details, evidence, and per-category findings that are easier to navigate than terminal output.
+
 ## Usage
 
 ```bash
-./snyft scan                              # Scan current directory
-./snyft scan /path/to/project             # Scan specific directory
-./snyft scan -v                           # Detailed output with findings
-./snyft scan --format json -o results.json  # JSON output to file
-./snyft scan --format markdown -o SECURITY.md
-./snyft scan --format html -o report.html
-./snyft scan --workers 20                 # Increase concurrency
+snyft scan                                # Scan current directory
+snyft scan /path/to/project               # Scan specific directory
+snyft scan -v                             # Detailed output with findings
+snyft scan --format html -o report.html   # HTML report (recommended)
+snyft scan --format json -o results.json  # JSON output to file
+snyft scan --format markdown -o SECURITY.md
+snyft scan --workers 20                   # Increase concurrency
 ```
 
 If you installed snyft via `go`, you can run commands without the `./` part. Running a scan of your current directory would be done via `snyft scan`.
