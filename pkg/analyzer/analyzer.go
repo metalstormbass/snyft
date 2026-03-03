@@ -45,6 +45,10 @@ type Analyzer struct {
 	// Clone pool for parallel git clone operations (not rate-limited)
 	clonePool *fetcher.ClonePool
 
+	// Scan-level shared org cache — shared across all GitHubClient instances
+	// so org-level checks (identity, verification, MFA) run once per org.
+	sharedOrgCache *fetcher.OrgCache
+
 	// Check filter (nil = run all checks)
 	checkFilter map[string]bool
 }
@@ -82,10 +86,15 @@ func (a *Analyzer) isCheckEnabled(name string) bool {
 	return a.checkFilter[name]
 }
 
-// NewAnalyzer creates a new Analyzer instance with optional configuration
+// NewAnalyzer creates a new Analyzer instance with optional configuration.
+// A shared OrgCache is created at the scan level and injected into the
+// GitHubClient so that org-level API calls (identity, verification, MFA)
+// are made at most once per org across all packages in the scan.
 func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
+	sharedOrgCache := fetcher.NewOrgCache()
+
 	a := &Analyzer{
-		githubClient:      fetcher.NewGitHubClient(),
+		githubClient:      fetcher.NewGitHubClient(fetcher.WithSharedOrgCache(sharedOrgCache)),
 		gitlabClient:      fetcher.NewGitLabClient(),
 		bitbucketClient:   fetcher.NewBitbucketClient(),
 		npmClient:         fetcher.NewNPMClient(),
@@ -94,6 +103,7 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 		ossfClient:        fetcher.NewOSSFClient(),
 		librariesIOClient: fetcher.NewLibrariesIOClient(),
 		clonePool:         fetcher.NewClonePool(fetcher.DefaultClonePoolSize),
+		sharedOrgCache:    sharedOrgCache,
 	}
 
 	// Apply options
@@ -131,7 +141,9 @@ func (a *Analyzer) IsScrapingOnly() bool {
 	return a.githubClient.IsScrapingOnly()
 }
 
-// getGitClient returns the appropriate git platform client for a given repository URL
+// getGitClient returns the appropriate git platform client for a given repository URL.
+// Fallback clients created via NewGitPlatformClient share the scan-level OrgCache
+// so that org-level checks are not duplicated across different client instances.
 func (a *Analyzer) getGitClient(repoURL string) fetcher.GitPlatformClient {
 	platform := fetcher.DetectPlatform(repoURL)
 
@@ -145,8 +157,9 @@ func (a *Analyzer) getGitClient(repoURL string) fetcher.GitPlatformClient {
 	default:
 		// For Apache, Eclipse, Sourcehut, Codeberg, generic git, etc.,
 		// use the platform-aware factory which returns a GenericGitClient.
-		// Only PlatformUnknown falls back to the GitHub client.
-		return fetcher.NewGitPlatformClient(repoURL)
+		// Only PlatformUnknown falls back to the GitHub client — pass the
+		// shared OrgCache so org data is reused across all GitHub clients.
+		return fetcher.NewGitPlatformClient(repoURL, fetcher.WithSharedOrgCache(a.sharedOrgCache))
 	}
 }
 
