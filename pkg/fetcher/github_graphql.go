@@ -95,7 +95,7 @@ func (c *GitHubClient) graphqlQuery(query string) (json.RawMessage, error) {
 }
 
 // batchRepoData holds the parsed result of a batched GraphQL query.
-// It aggregates data that would otherwise require 10+ REST API calls.
+// It aggregates data that would otherwise require 30+ REST API calls.
 type batchRepoData struct {
 	RepoInfo         *models.RepositoryInfo
 	Releases         []GitHubRelease
@@ -103,12 +103,16 @@ type batchRepoData struct {
 	GovernanceFiles  map[string]bool // path -> exists
 	BranchProtection *GitHubBranchProtection
 	BranchProtectionDenied bool
+	PRStats          *PRStats            // merged PR review stats
+	CommitAuthors    *CommitAuthorStats  // commit author distribution
+	SignedCommits    *cachedSignedCommits // commit signature verification
 }
 
 // buildBatchQuery constructs a GraphQL query that fetches repo metadata,
-// recent releases, governance file existence, and branch protection in one call.
+// recent releases, governance file existence, branch protection, merged PRs
+// with review status, and commit history with author/signature data in one call.
 //
-// This replaces 10+ REST API calls:
+// This replaces 30+ REST API calls:
 //   - GET /repos/{owner}/{repo}              (repo info)
 //   - GET /repos/{owner}/{repo}/releases     (releases)
 //   - HEAD /repos/{owner}/{repo}/contents/SECURITY.md (governance)
@@ -119,6 +123,10 @@ type batchRepoData struct {
 //   - HEAD /repos/{owner}/{repo}/contents/.github/CODEOWNERS
 //   - HEAD /repos/{owner}/{repo}/contents/CODE_OF_CONDUCT.md
 //   - GET  /repos/{owner}/{repo}/branches/{branch}/protection
+//   - GET  /repos/{owner}/{repo}/pulls?state=closed (PR list)
+//   - GET  /repos/{owner}/{repo}/pulls/{n}/reviews  (up to 20 per-PR review checks)
+//   - GET  /repos/{owner}/{repo}/commits (3 pages for commit authors)
+//   - GET  /repos/{owner}/{repo}/commits (1 page for signed commits)
 func buildBatchQuery(owner, repo string) string {
 	// GitHub GraphQL uses `object` queries to check file existence.
 	// A non-null result means the file exists in the default branch.
@@ -130,7 +138,25 @@ func buildBatchQuery(owner, repo string) string {
     forkCount
     watchers { totalCount }
     openIssues: issues(states: OPEN) { totalCount }
-    defaultBranchRef { name }
+    defaultBranchRef {
+      name
+      target {
+        ... on Commit {
+          history(first: 100) {
+            nodes {
+              author {
+                name
+                email
+                date
+              }
+              signature {
+                isValid
+              }
+            }
+          }
+        }
+      }
+    }
     isArchived
     createdAt
     updatedAt
@@ -156,6 +182,14 @@ func buildBatchQuery(owner, repo string) string {
             size
             downloadUrl
           }
+        }
+      }
+    }
+    pullRequests(last: 20, states: MERGED) {
+      totalCount
+      nodes {
+        reviews(first: 1) {
+          totalCount
         }
       }
     }
@@ -197,7 +231,8 @@ type graphqlRepository struct {
 	RepositoryTopics     graphqlTopicConnection  `json:"repositoryTopics"`
 	Owner                graphqlOwner            `json:"owner"`
 	URL                  string                  `json:"url"`
-	Releases             graphqlReleaseConnection `json:"releases"`
+	Releases             graphqlReleaseConnection     `json:"releases"`
+	PullRequests         graphqlPullRequestConnection `json:"pullRequests"`
 
 	// Governance file existence checks (non-null = file exists)
 	SecurityMd       *graphqlObject `json:"securityMd"`
@@ -217,7 +252,31 @@ type graphqlTotalCount struct {
 }
 
 type graphqlRef struct {
-	Name string `json:"name"`
+	Name   string             `json:"name"`
+	Target *graphqlCommitTarget `json:"target"`
+}
+
+type graphqlCommitTarget struct {
+	History *graphqlCommitHistory `json:"history"`
+}
+
+type graphqlCommitHistory struct {
+	Nodes []graphqlCommitNode `json:"nodes"`
+}
+
+type graphqlCommitNode struct {
+	Author    graphqlCommitAuthor    `json:"author"`
+	Signature *graphqlCommitSignature `json:"signature"`
+}
+
+type graphqlCommitAuthor struct {
+	Name  string    `json:"name"`
+	Email string    `json:"email"`
+	Date  time.Time `json:"date"`
+}
+
+type graphqlCommitSignature struct {
+	IsValid bool `json:"isValid"`
 }
 
 type graphqlLicense struct {
@@ -267,6 +326,19 @@ type graphqlReleaseAsset struct {
 	ContentType string `json:"contentType"`
 	Size        int64  `json:"size"`
 	DownloadURL string `json:"downloadUrl"`
+}
+
+type graphqlPullRequestConnection struct {
+	TotalCount int                  `json:"totalCount"`
+	Nodes      []graphqlPullRequest `json:"nodes"`
+}
+
+type graphqlPullRequest struct {
+	Reviews graphqlReviewConnection `json:"reviews"`
+}
+
+type graphqlReviewConnection struct {
+	TotalCount int `json:"totalCount"`
 }
 
 type graphqlBranchProtectionConnection struct {
@@ -384,6 +456,12 @@ func (c *GitHubClient) fetchBatchRepoData(owner, repo string) *batchRepoData {
 		}
 	}
 
+	// Build PR stats from merged PRs with review data
+	prStats := buildPRStatsFromGraphQL(r, branchProtection)
+
+	// Build commit author stats and signed commit data from commit history
+	commitAuthors, signedCommits := buildCommitDataFromGraphQL(r)
+
 	result := &batchRepoData{
 		RepoInfo:               repoInfo,
 		Releases:               releases,
@@ -391,6 +469,9 @@ func (c *GitHubClient) fetchBatchRepoData(owner, repo string) *batchRepoData {
 		GovernanceFiles:        govFiles,
 		BranchProtection:       branchProtection,
 		BranchProtectionDenied: false,
+		PRStats:                prStats,
+		CommitAuthors:          commitAuthors,
+		SignedCommits:          signedCommits,
 	}
 
 	// Populate caches so subsequent REST-path callers get cache hits.
@@ -424,4 +505,133 @@ func (c *GitHubClient) populateCachesFromBatch(owner, repo string, batch *batchR
 		fileCacheKey := owner + "/" + repo + "/" + path
 		c.cache.setFileExists(fileCacheKey, exists)
 	}
+
+	// Cache PR stats
+	if batch.PRStats != nil {
+		c.cache.setPRStats(cacheKey, batch.PRStats)
+	}
+
+	// Cache commit author stats
+	if batch.CommitAuthors != nil {
+		c.cache.setCommitAuthors(cacheKey, batch.CommitAuthors)
+	}
+
+	// Cache signed commit data
+	if batch.SignedCommits != nil {
+		c.cache.setSignedCommits(cacheKey, batch.SignedCommits)
+	}
+}
+
+// buildPRStatsFromGraphQL constructs PRStats from the GraphQL pullRequests
+// and branchProtectionRules data. This replaces up to 21 REST API calls:
+// 1 for the PR list + up to 20 per-PR review checks.
+func buildPRStatsFromGraphQL(r *graphqlRepository, branchProtection *GitHubBranchProtection) *PRStats {
+	stats := &PRStats{}
+
+	prs := r.PullRequests.Nodes
+	stats.TotalPRs = r.PullRequests.TotalCount
+	stats.MergedPRs = r.PullRequests.TotalCount
+
+	// Count PRs with at least one review
+	for _, pr := range prs {
+		if pr.Reviews.TotalCount > 0 {
+			stats.PRsWithReviews++
+		}
+	}
+
+	// Calculate code review rate based on the sampled PRs
+	sampledPRs := len(prs)
+	if sampledPRs > 0 {
+		stats.CodeReviewRate = float64(stats.PRsWithReviews) / float64(sampledPRs) * 100
+	}
+
+	// Branch protection data (already parsed from the same batch query)
+	stats.HasBranchProtection = branchProtection != nil
+	if branchProtection != nil && branchProtection.RequiredReviews != nil {
+		stats.RequiredReviewers = branchProtection.RequiredReviews.RequiredApprovingReviewCount
+	}
+
+	return stats
+}
+
+// buildCommitDataFromGraphQL constructs CommitAuthorStats and cachedSignedCommits
+// from the GraphQL defaultBranchRef commit history. This replaces 3 pages of
+// commit REST calls for author stats plus 1 page for signature verification.
+func buildCommitDataFromGraphQL(r *graphqlRepository) (*CommitAuthorStats, *cachedSignedCommits) {
+	if r.DefaultBranchRef == nil || r.DefaultBranchRef.Target == nil || r.DefaultBranchRef.Target.History == nil {
+		return nil, nil
+	}
+
+	commits := r.DefaultBranchRef.Target.History.Nodes
+	if len(commits) == 0 {
+		return nil, nil
+	}
+
+	// Build commit author stats
+	stats := &CommitAuthorStats{
+		AuthorCommitCounts: make(map[string]int),
+		AuthorFirstCommit:  make(map[string]time.Time),
+		AuthorLastCommit:   make(map[string]time.Time),
+		RecentAuthors:      []string{},
+		HistoricalAuthors:  []string{},
+	}
+
+	verifiedCount := 0
+
+	for _, commit := range commits {
+		authorName := commit.Author.Name
+		authorEmail := commit.Author.Email
+		commitDate := commit.Author.Date
+
+		// Use email as unique identifier (more reliable than name)
+		authorID := authorEmail
+		if authorID == "" {
+			authorID = authorName
+		}
+		if authorID == "" {
+			continue
+		}
+
+		stats.TotalCommits++
+		stats.AuthorCommitCounts[authorID]++
+
+		if firstCommit, exists := stats.AuthorFirstCommit[authorID]; !exists || commitDate.Before(firstCommit) {
+			stats.AuthorFirstCommit[authorID] = commitDate
+		}
+		if lastCommit, exists := stats.AuthorLastCommit[authorID]; !exists || commitDate.After(lastCommit) {
+			stats.AuthorLastCommit[authorID] = commitDate
+		}
+
+		// Count verified signatures
+		if commit.Signature != nil && commit.Signature.IsValid {
+			verifiedCount++
+		}
+	}
+
+	// Build unique authors list and categorize recent vs historical
+	seen := make(map[string]bool)
+	ninetyDaysAgo := time.Now().AddDate(0, 0, -90)
+
+	for authorID, lastCommit := range stats.AuthorLastCommit {
+		if !seen[authorID] {
+			stats.UniqueAuthors = append(stats.UniqueAuthors, authorID)
+			seen[authorID] = true
+
+			if lastCommit.After(ninetyDaysAgo) {
+				stats.RecentAuthors = append(stats.RecentAuthors, authorID)
+			} else {
+				stats.HistoricalAuthors = append(stats.HistoricalAuthors, authorID)
+			}
+		}
+	}
+
+	// Consider "signed commits enabled" if >50% of recent commits are signed
+	hasSigning := float64(verifiedCount)/float64(len(commits)) > 0.5
+
+	signedCommitsData := &cachedSignedCommits{
+		hasSigning:    hasSigning,
+		verifiedCount: verifiedCount,
+	}
+
+	return stats, signedCommitsData
 }
