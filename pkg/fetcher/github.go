@@ -1,11 +1,13 @@
 package fetcher
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -922,13 +924,78 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 // few hundred entries; 3 pages strikes a good balance between coverage and cost.
 const maxTagSearchPages = 3
 
+// fetchTagNamesViaGitLsRemote retrieves ALL tag names from a GitHub repository
+// using `git ls-remote --tags`. This uses the git smart HTTP protocol which is
+// NOT subject to GitHub API rate limits. A single HTTPS round-trip returns all
+// tags regardless of count, solving the pagination limit problem for repos with
+// 1000+ tags (e.g. FasterXML/jackson-*).
+// Results are cached per owner/repo for subsequent calls.
+func (c *GitHubClient) fetchTagNamesViaGitLsRemote(owner, repo string) ([]string, error) {
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getTagNames(cacheKey); ok {
+			return cached, nil
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--tags", "--refs", repoURL)
+	// Suppress git credential prompts — if the repo doesn't exist or is
+	// private, we want a fast failure rather than a blocking prompt.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-remote failed: %w", err)
+	}
+
+	tagNames := parseGitLsRemoteOutput(output)
+
+	if c.cache != nil {
+		c.cache.setTagNames(cacheKey, tagNames)
+	}
+
+	return tagNames, nil
+}
+
+// parseGitLsRemoteOutput parses the output of `git ls-remote --tags --refs`
+// and returns a list of tag names (without the refs/tags/ prefix).
+// Each line has the format: "<sha>\trefs/tags/<tagname>"
+func parseGitLsRemoteOutput(output []byte) []string {
+	var tagNames []string
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ref := parts[1]
+		if !strings.HasPrefix(ref, "refs/tags/") {
+			continue
+		}
+		tagName := strings.TrimPrefix(ref, "refs/tags/")
+		if tagName != "" {
+			tagNames = append(tagNames, tagName)
+		}
+	}
+	return tagNames
+}
+
 // searchTagsPaginated searches through GitHub tags for any tag ending with the
 // target version string. This handles repos with non-standard tag naming where
 // the version appears as a suffix (e.g. "module-name-2.15.3").
-// When no token is set, tags are scraped from the web frontend to avoid API
-// rate limits. With a token, the API is used with scraping as fallback.
+// Tries methods in order of preference:
+//  1. git ls-remote --tags (single HTTPS call, ALL tags, 0 API quota)
+//  2. Web scraping the tags page (no API quota, but limited by pagination)
+//  3. GitHub Tags API (uses API quota, limited by pagination)
+//
 // Results are cached per owner/repo so that multiple dependencies from the same
-// repository resolve instantly without repeating pagination.
+// repository resolve instantly without repeating network calls.
 func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, string) {
 	// Build version suffixes to match against — a tag like "foo-2.15.3" or "foo-v2.15.3"
 	versionSuffixes := []string{
@@ -948,6 +1015,18 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 		if cached, ok := c.cache.getTagNames(cacheKey); ok {
 			return matchTagVersion(cached, versionSuffixes, owner, repo)
 		}
+	}
+
+	// git ls-remote path: single HTTPS call returns ALL tags using the git
+	// smart HTTP protocol. Not subject to GitHub API rate limits and has no
+	// pagination limits, so it handles repos with 1000+ tags (e.g. FasterXML).
+	// Only used for real GitHub — test servers use custom base URLs.
+	if c.baseURL == "https://api.github.com" {
+		if tags, err := c.fetchTagNamesViaGitLsRemote(owner, repo); err == nil && len(tags) > 0 {
+			return matchTagVersion(tags, versionSuffixes, owner, repo)
+		}
+		// git ls-remote failed (git not installed, network error, etc.) —
+		// fall through to scraping/API.
 	}
 
 	// Scraping-first path: scrape the tags page to avoid API rate limits.
