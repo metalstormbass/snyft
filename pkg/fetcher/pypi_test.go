@@ -312,6 +312,79 @@ func TestExtractPyPIRepoURL(t *testing.T) {
 			info: PyPIInfo{},
 			expected: "",
 		},
+		{
+			name: "GitHub key (e.g. packages using 'GitHub' as project_urls key)",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"GitHub":        "https://github.com/example/repo",
+					"Documentation": "https://docs.example.com",
+				},
+			},
+			expected: "https://github.com/example/repo",
+		},
+		{
+			name: "catch-all: repo URL extracted from Issue Tracker (sqlalchemy pattern)",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Documentation": "https://docs.sqlalchemy.org",
+					"Homepage":      "https://www.sqlalchemy.org",
+					"Issue Tracker": "https://github.com/sqlalchemy/sqlalchemy/",
+				},
+				HomePage: "https://www.sqlalchemy.org",
+			},
+			expected: "https://github.com/sqlalchemy/sqlalchemy",
+		},
+		{
+			name: "catch-all: strips /issues suffix from bug tracker URL",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Bug Tracker": "https://github.com/example/repo/issues",
+				},
+			},
+			expected: "https://github.com/example/repo",
+		},
+		{
+			name: "heptapod URL in home_page field",
+			info: PyPIInfo{
+				HomePage: "https://foss.heptapod.net/python-libs/passlib",
+			},
+			expected: "https://foss.heptapod.net/python-libs/passlib",
+		},
+		{
+			name: "heptapod URL in project_urls Homepage",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Homepage": "https://foss.heptapod.net/python-libs/passlib",
+				},
+			},
+			expected: "https://foss.heptapod.net/python-libs/passlib",
+		},
+		{
+			name: "Codeberg URL in Repository key",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Repository": "https://codeberg.org/example/repo",
+				},
+			},
+			expected: "https://codeberg.org/example/repo",
+		},
+		{
+			name: "priority keys preferred over catch-all",
+			info: PyPIInfo{
+				ProjectURLs: map[string]string{
+					"Source":        "https://github.com/example/correct",
+					"Issue Tracker": "https://github.com/example/issues-url/issues",
+				},
+			},
+			expected: "https://github.com/example/correct",
+		},
+		{
+			name: "home_page non-source domain (rejected)",
+			info: PyPIInfo{
+				HomePage: "https://example.readthedocs.io",
+			},
+			expected: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -319,6 +392,40 @@ func TestExtractPyPIRepoURL(t *testing.T) {
 			result := extractPyPIRepoURL(tt.info)
 			if result != tt.expected {
 				t.Errorf("extractPyPIRepoURL() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test: stripRepoSubpageSuffix normalizes issue tracker / wiki URLs to base repo URLs
+// Justification: When extracting repo URLs from non-standard project_urls keys
+//                (e.g. "Issue Tracker"), subpage suffixes must be stripped so the
+//                URL can be used for source code analysis
+// Source: PyPI JSON API — project_urls values may point to subpages
+// Methodology: Test various repo URL formats with and without subpage suffixes
+// Result: Base repository URL is returned
+func TestStripRepoSubpageSuffix(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"clean URL unchanged", "https://github.com/org/repo", "https://github.com/org/repo"},
+		{"strips /issues", "https://github.com/org/repo/issues", "https://github.com/org/repo"},
+		{"strips /wiki", "https://github.com/org/repo/wiki", "https://github.com/org/repo"},
+		{"strips /pulls", "https://github.com/org/repo/pulls", "https://github.com/org/repo"},
+		{"strips /actions", "https://github.com/org/repo/actions", "https://github.com/org/repo"},
+		{"strips /releases", "https://github.com/org/repo/releases", "https://github.com/org/repo"},
+		{"strips trailing slash", "https://github.com/org/repo/", "https://github.com/org/repo"},
+		{"trailing slash + /issues", "https://github.com/org/repo/issues/", "https://github.com/org/repo"},
+		{"GitLab issues", "https://gitlab.com/org/repo/issues", "https://gitlab.com/org/repo"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := stripRepoSubpageSuffix(tt.input)
+			if result != tt.expected {
+				t.Errorf("stripRepoSubpageSuffix(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
 	}
