@@ -51,6 +51,12 @@ type Analyzer struct {
 
 	// Check filter (nil = run all checks)
 	checkFilter map[string]bool
+
+	// Repo-level analysis cache: when multiple packages share the same source
+	// repository, repo-level checks (governance, CI, health, clone) run once
+	// and results are shared. This turns a 7,749-package scan into ~400 repo
+	// analyses when many packages come from the same repo (e.g. AWS SDK).
+	repoCache *repoAnalysisCache
 }
 
 // AnalyzerOption is a functional option for configuring an Analyzer
@@ -104,6 +110,7 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 		librariesIOClient: fetcher.NewLibrariesIOClient(),
 		clonePool:         fetcher.NewClonePool(fetcher.DefaultClonePoolSize),
 		sharedOrgCache:    sharedOrgCache,
+		repoCache:         newRepoAnalysisCache(),
 	}
 
 	// Apply options
@@ -139,6 +146,39 @@ func (a *Analyzer) SetScrapingOnlyMode(enabled bool) {
 // IsScrapingOnly returns true when the GitHub client is in scraping-only mode.
 func (a *Analyzer) IsScrapingOnly() bool {
 	return a.githubClient.IsScrapingOnly()
+}
+
+// ResolveRepoURL performs a lightweight registry lookup to determine the source
+// repository URL for a dependency. This is used during the pre-scan repo
+// resolution phase to group packages by repository before analysis begins.
+// Returns an empty string if the repo URL cannot be determined.
+func (a *Analyzer) ResolveRepoURL(dep models.Dependency) string {
+	switch dep.Ecosystem {
+	case models.EcosystemNPM:
+		pkg, err := a.npmClient.GetPackageInfo(dep.Name)
+		if err != nil {
+			return ""
+		}
+		return pkg.RepositoryURL
+	case models.EcosystemPyPI:
+		pkg, err := a.pypiClient.GetPackageInfo(dep.Name)
+		if err != nil {
+			return ""
+		}
+		return pkg.RepositoryURL
+	case models.EcosystemMaven:
+		pkg, err := a.mavenClient.GetPackageInfo(dep.Name)
+		if err != nil {
+			return ""
+		}
+		return pkg.RepositoryURL
+	}
+	return ""
+}
+
+// RepoCacheLen returns the number of unique repos in the repo analysis cache.
+func (a *Analyzer) RepoCacheLen() int {
+	return a.repoCache.Len()
 }
 
 // getGitClient returns the appropriate git platform client for a given repository URL.
@@ -313,120 +353,117 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	result.ScorecardURL = ossfScorecardURL(repoURL)
 	result.Metadata = metadata
 
-	// Trigger bare git clone early for GitHub repos via the dedicated clone pool.
-	// The clone pool runs independently of the API/scraping worker pool and is NOT
-	// gated by the GitHub rate limiter — git clones use the git protocol, not the API.
-	// Clones start as soon as their URLs are resolved and run concurrently (up to
-	// pool size) with all other data collection. The clone populates caches for
-	// commit authors, signed commits, commit activity, file tree, and file content.
-	var cloneDone <-chan struct{}
-	if repoURL != "" && fetcher.DetectPlatform(repoURL) == fetcher.PlatformGitHub {
-		ghClient := a.githubClient
-		cloneDone = a.clonePool.Submit(func() {
-			_ = ghClient.CloneAndAnalyze(repoURL)
-		})
+	// Check the repo-level analysis cache. When multiple packages share the same
+	// source repository (e.g. 100+ AWS SDK artifacts from github.com/aws/aws-sdk-java),
+	// repo-level checks (clone, CI, health, governance, OSSF) run once and results
+	// are shared across all packages from that repo.
+	cacheKey := fetcher.NormalizeRepoURL(repoURL)
+	usedRepoCache := false
+
+	if repoURL != "" && cacheKey != "" {
+		if cached, ok := a.repoCache.getOrWait(cacheKey); ok && cached != nil {
+			// Cache hit: apply cached repo-level data
+			applyRepoData(&result, cached)
+			usedRepoCache = true
+		}
 	}
 
-	// Run data collection steps concurrently. Each method writes to non-overlapping
-	// metadata fields on result. Methods that also append to result.Findings or
-	// result.RiskFactors use the shared mutex for thread-safe access.
+	// Per-package analysis + repo-level analysis (if not cached)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	// --- Independent steps (no inter-dependencies) ---
+	// --- Per-package steps (always run) ---
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Enrich with Libraries.io data (if API key is available)
 		a.enrichWithLibrariesIO(&result)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// PRIMARY CHECK: Verify source code availability for the EXACT version
 		a.verifySourceCode(&result, dep, repoURL, &mu)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Analyze dependency sprawl from lock files
 		a.analyzeDependencySprawl(&result, dep)
 	}()
 
-	// Analyze repository if URL is available
-	if repoURL != "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			a.analyzeRepository(&result, repoURL, &mu)
-		}()
-	} else {
-		addFindingSafe(&mu, &result, models.Finding{
-			Severity:    "HIGH",
-			Category:    "Missing Source Code",
-			Description: "No repository URL found in package metadata",
-			Check:       "Repository Availability Check",
-			SourceURL:   registryURL(dep),
-		})
-		result.SourceCodeAvailable = false
-		addRiskFactorSafe(&mu, &result, "No public source code repository")
-	}
+	// --- Repo-level steps (only if not served from cache) ---
 
-	// analyzeBuildInfrastructure + analyzeHealthMetrics form a dependency chain:
-	// analyzeHealthMetrics reads CISystems populated by analyzeBuildInfrastructure.
-	// Run them sequentially in a single goroutine, parallel with other steps.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		a.analyzeBuildInfrastructure(&result, repoURL, &mu)
+	var cloneDone <-chan struct{}
+	if !usedRepoCache {
+		// Trigger bare git clone early for GitHub repos via the dedicated clone pool.
+		// The clone pool runs independently of the API/scraping worker pool and is NOT
+		// gated by the GitHub rate limiter — git clones use the git protocol, not the API.
+		if repoURL != "" && fetcher.DetectPlatform(repoURL) == fetcher.PlatformGitHub {
+			ghClient := a.githubClient
+			cloneDone = a.clonePool.Submit(func() {
+				_ = ghClient.CloneAndAnalyze(repoURL)
+			})
+		}
+
 		if repoURL != "" {
-			a.analyzeHealthMetrics(&result, repoURL)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				a.analyzeRepository(&result, repoURL, &mu)
+			}()
+		} else {
+			addFindingSafe(&mu, &result, models.Finding{
+				Severity:    "HIGH",
+				Category:    "Missing Source Code",
+				Description: "No repository URL found in package metadata",
+				Check:       "Repository Availability Check",
+				SourceURL:   registryURL(dep),
+			})
+			result.SourceCodeAvailable = false
+			addRiskFactorSafe(&mu, &result, "No public source code repository")
 		}
-	}()
-
-	if repoURL != "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// Analyze release documentation (CONTRIBUTING.md, RELEASING.md, etc.)
-			a.analyzeReleaseDocumentation(&result, repoURL)
-		}()
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Get OSSF Scorecard (if available)
-			a.analyzeOSSFScorecard(&result, repoURL, &mu)
+			a.analyzeBuildInfrastructure(&result, repoURL, &mu)
+			if repoURL != "" {
+				a.analyzeHealthMetrics(&result, repoURL)
+			}
 		}()
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// Analyze provenance (if available)
-			a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
-		}()
-	} else if dep.Ecosystem == models.EcosystemMaven {
-		// Maven GPG signature data was already set during metadata extraction;
-		// no additional API calls needed. ProvenanceDetails can note this.
-		if result.Metadata.HasMavenGPGSignature {
-			result.Metadata.ProvenanceDetails = "Maven Central GPG signature verified (no source repository available)"
+		if repoURL != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				a.analyzeReleaseDocumentation(&result, repoURL)
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				a.analyzeOSSFScorecard(&result, repoURL, &mu)
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
+			}()
+		} else if dep.Ecosystem == models.EcosystemMaven {
+			if result.Metadata.HasMavenGPGSignature {
+				result.Metadata.ProvenanceDetails = "Maven Central GPG signature verified (no source repository available)"
+			}
 		}
 	}
 
-	// Wait for all data collection steps to complete before scoring
 	wg.Wait()
 
-	// Clean up the bare clone temp directory now that all data has been extracted.
-	// Wait for clone to finish first if it hasn't already.
+	// Clone cleanup and npm script file analysis
 	if cloneDone != nil {
 		<-cloneDone
 
-		// Analyze actual script files referenced by npm install hooks.
-		// Uses the bare clone (no API calls) to read files like scripts/postinstall.js
-		// that are pointed to by package.json hook commands.
 		if dep.Ecosystem == models.EcosystemNPM && result.Metadata.HasInstallScripts && len(result.Metadata.InstallScripts) > 0 {
 			gitClient := a.getGitClient(repoURL)
 			readFile := func(path string) (string, error) {
@@ -449,7 +486,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					)
 				}
 				result.Metadata.InstallScriptAnalysis.HasDangerousPatterns = true
-				// Recalculate risk level after merging file-level findings
 				highCount := 0
 				for _, p := range result.Metadata.InstallScriptAnalysis.DangerousPatterns {
 					if p.Severity == "HIGH" {
@@ -465,6 +501,11 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		}
 
 		a.githubClient.CleanupClone(repoURL)
+	}
+
+	// Cache repo-level data for subsequent packages from the same repo
+	if !usedRepoCache && repoURL != "" && cacheKey != "" {
+		a.repoCache.set(cacheKey, extractRepoData(&result))
 	}
 
 	// Calculate supply chain score (0-20 point rubric, 10 categories)

@@ -18,6 +18,11 @@ type Dependency struct {
 	Ecosystem    Ecosystem `json:"ecosystem"`
 	Source       string    `json:"source"`        // The manifest file it came from
 	IsTransitive bool     `json:"is_transitive"` // True if this is a transitive (indirect) dependency
+
+	// ResolvedRepoURL is populated during the pre-scan repo resolution phase.
+	// When set, the analyzer skips redundant repo URL extraction from registry
+	// metadata and uses this URL directly for repo-level analysis caching.
+	ResolvedRepoURL string `json:"-"`
 }
 
 // IsVersionUnknown returns true when the dependency's version could not be
