@@ -38,8 +38,8 @@ func TestScoreReleaseSecurity_LowRisk_ComprehensiveControls(t *testing.T) {
 		t.Errorf("Expected 0 risk points for comprehensive controls, got %d", score.RiskPoints)
 	}
 
-	if score.Score < 4 {
-		t.Errorf("Expected score >= 4 for comprehensive controls, got %d", score.Score)
+	if score.Score != 2 {
+		t.Errorf("Expected score = 2 (maximum) for comprehensive controls, got %d", score.Score)
 	}
 
 	if !score.Verified {
@@ -273,8 +273,8 @@ func TestScoreReleaseSecurity_ModerateRisk_AllControlsExceptSigning(t *testing.T
 		t.Errorf("Expected 0 risk points for 3 controls present, got %d", score.RiskPoints)
 	}
 
-	if score.Score < 3 || score.Score > 4 {
-		t.Errorf("Expected score 3-4, got %d", score.Score)
+	if score.Score != 2 {
+		t.Errorf("Expected score = 2 (maximum) for 3 controls present, got %d", score.Score)
 	}
 
 	if !score.Verified {
@@ -683,8 +683,8 @@ func TestScoreReleaseSecurity_RealWorldProfile_EnterpriseJavaLibrary(t *testing.
 		t.Errorf("Expected 0 risk points for enterprise Java library, got %d", score.RiskPoints)
 	}
 
-	if score.Score < 4 {
-		t.Errorf("Expected high score for enterprise library, got %d", score.Score)
+	if score.Score != 2 {
+		t.Errorf("Expected score = 2 (maximum) for enterprise library, got %d", score.Score)
 	}
 
 	if !score.Verified {
@@ -1310,8 +1310,8 @@ func TestScoreReleaseSecurity_AllOSSFFallbacks_ComprehensiveScorecard(t *testing
 		t.Errorf("Expected 0 risk points with comprehensive OSSF scores, got %d", score.RiskPoints)
 	}
 
-	if score.Score < 4 {
-		t.Errorf("Expected score >= 4 with all OSSF fallbacks, got %d", score.Score)
+	if score.Score != 2 {
+		t.Errorf("Expected score = 2 (maximum) with all OSSF fallbacks, got %d", score.Score)
 	}
 }
 
