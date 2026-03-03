@@ -1331,3 +1331,74 @@ func TestHTMLReportUsesGradientColors(t *testing.T) {
 		t.Error("Score 16 and score 3 should have different gradient colors")
 	}
 }
+
+// Test: Category score cards in HTML report include tooltip descriptions
+// Justification: Users need to understand what each supply chain risk category
+//
+//	assesses to interpret scores correctly and prioritize remediation
+//
+// Source: SLSA specification (https://slsa.dev/spec/v1.0/),
+//
+//	OSSF Scorecard methodology (https://github.com/ossf/scorecard)
+//
+// Methodology: Generate HTML report with category scores and verify each
+//
+//	category card includes a data-tooltip attribute with descriptive text
+//
+// Result: All 10 category cards have tooltips explaining their supply chain risk relevance
+func TestHTMLCategoryTooltips(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{
+				Name:      "test-pkg",
+				Version:   "1.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "MEDIUM",
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 8,
+				RiskLevel:  "MEDIUM",
+				CategoryScores: models.CategoryScores{
+					PublisherControl: models.CategoryScore{Score: 2, RiskPoints: 2, Verified: true},
+					OwnershipChanges: models.CategoryScore{Score: 0, RiskPoints: 0, Verified: true},
+					ReleaseAnomalies: models.CategoryScore{Score: 1, RiskPoints: 1, Verified: true},
+					InstallExecution: models.CategoryScore{Score: 0, RiskPoints: 0, Verified: true},
+					DependencySprawl: models.CategoryScore{Score: 1, RiskPoints: 1, Verified: true},
+					Provenance:       models.CategoryScore{Score: 2, RiskPoints: 2, Verified: true},
+					Health:           models.CategoryScore{Score: 0, RiskPoints: 0, Verified: true},
+					Governance:       models.CategoryScore{Score: 1, RiskPoints: 1, Verified: true},
+					ReleaseSecurity:  models.CategoryScore{Score: 1, RiskPoints: 1, Verified: true},
+					PackageMaturity:  models.CategoryScore{Score: 0, RiskPoints: 0, Verified: true},
+				},
+			},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format: FormatHTML,
+		Writer: buf,
+	})
+	reporter.stats.StartTime = time.Now().Add(-1 * time.Second)
+	reporter.stats.EndTime = time.Now()
+	reporter.AddResults(results)
+
+	err := reporter.Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// Every category should have a data-tooltip attribute with its description
+	for name, tooltip := range categoryTooltips {
+		if !strings.Contains(output, fmt.Sprintf("data-tooltip=\"%s\"", tooltip)) {
+			t.Errorf("HTML output missing tooltip for category %q", name)
+		}
+	}
+
+	// Verify tooltip CSS is present
+	if !strings.Contains(output, "attr(data-tooltip)") {
+		t.Error("HTML output missing tooltip CSS (attr(data-tooltip) rule)")
+	}
+}
