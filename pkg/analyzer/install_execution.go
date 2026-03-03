@@ -54,6 +54,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Description: "No install-time scripts found (checked preinstall, install, postinstall hooks). No code executes during package installation.",
 			Evidence:    "No install scripts detected in package",
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: methodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Install-time script hooks", Status: "PASS", Detail: "No preinstall, install, or postinstall hooks found"},
@@ -85,6 +86,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Description: fmt.Sprintf("Install scripts contain dangerous patterns: %s. These operations execute during package installation and are a direct vector for supply chain compromise — malicious packages commonly use install hooks to exfiltrate credentials or download payloads.", strings.Join(patternNames, ", ")),
 			Evidence:    fmt.Sprintf("Risk level: %s, Patterns: %s", result.Metadata.InstallScriptAnalysis.RiskLevel, strings.Join(patterns, ", ")),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: methodology,
 			ChecksPerformed: checks,
 		}
@@ -110,6 +112,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Description: fmt.Sprintf("%d install-time hooks found (%s), but no dangerous patterns detected in their content. Install scripts run during package installation and could be modified to execute malicious code if the package is compromised.", len(foundScripts), strings.Join(foundScripts, ", ")),
 			Evidence:    fmt.Sprintf("Scripts: %s (content analyzed, no dangerous patterns found)", strings.Join(foundScripts, ", ")),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: methodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Install-time script hooks", Status: "WARN", Detail: fmt.Sprintf("%d install hooks found: %s", len(foundScripts), strings.Join(foundScripts, ", "))},
@@ -126,6 +129,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 			Description: fmt.Sprintf("Install-time hook '%s' found, but no dangerous patterns detected in its content. Install scripts are a potential attack surface if the package is compromised.", foundScripts[0]),
 			Evidence:    fmt.Sprintf("Script: %s (no dangerous patterns found)", foundScripts[0]),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: methodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Install-time script hooks", Status: "FAIL", Detail: fmt.Sprintf("Install hook found: %s", foundScripts[0])},
@@ -140,8 +144,9 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 		RiskPoints:  0,
 		Description: "Package has scripts but none are install-time hooks (checked preinstall, install, postinstall, setup.py, pom.xml). No code executes during installation.",
 		Evidence:    "Package has scripts but no install hooks (checked: preinstall, install, postinstall, setup.py, pom.xml)",
-		Verified:    true,
-		Methodology: methodology,
+		Verified:      true,
+		DataAvailable: true,
+		Methodology:   methodology,
 		ChecksPerformed: []models.CheckResult{
 			{Name: "Install-time script hooks", Status: "PASS", Detail: "Scripts present but none are install-time hooks"},
 		},
