@@ -1544,8 +1544,8 @@ func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 		return false, 0, err
 	}
 
-	// Get recent commits (last 30)
-	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=30", c.baseURL, owner, repo)
+	// Get recent commits (last 100)
+	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=100", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return false, 0, err
@@ -1861,11 +1861,11 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 
 	stats := &PRStats{}
 
-	// Fetch recent closed PRs. We request 30 to get a sufficient pool of merged PRs
-	// while keeping API usage low. We only check reviews on up to 20 merged PRs –
-	// enough to estimate the project's code review rate without making 100+ API calls.
+	// Fetch recent closed PRs. We request 100 (one API call) to get a sufficient pool
+	// of merged PRs. We only check reviews on up to 20 merged PRs – enough to estimate
+	// the project's code review rate without making 100+ API calls.
 	const maxReviewChecks = 20
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=closed&per_page=30", c.baseURL, owner, repo)
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=closed&per_page=100", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -2196,8 +2196,8 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 		return 0, err
 	}
 
-	// Fetch recent closed issues (limit to last 30 for performance)
-	url := fmt.Sprintf("%s/repos/%s/%s/issues?state=closed&per_page=30&sort=updated&direction=desc", c.baseURL, owner, repo)
+	// Fetch recent closed issues (one API call with per_page=100 for max data)
+	url := fmt.Sprintf("%s/repos/%s/%s/issues?state=closed&per_page=100&sort=updated&direction=desc", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return 0, err
