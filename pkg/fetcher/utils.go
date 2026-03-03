@@ -134,6 +134,7 @@ func isSourceRepoHost(url string) bool {
 		"sourceforge.net",
 		"gitbox.apache.org",
 		"git.eclipse.org",
+		"heptapod.net",
 	} {
 		if strings.Contains(lower, host) {
 			return true
