@@ -124,12 +124,10 @@ func (a *Analyzer) getGitClient(repoURL string) fetcher.GitPlatformClient {
 // Analyze performs a comprehensive supply chain security analysis on a dependency
 func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	result := models.AnalysisResult{
-		Dependency: dep,
-		Timestamp:  time.Now(),
-		RiskLevel:  "UNKNOWN",
-		RiskScore:  0,
+		Dependency:  dep,
+		Timestamp:   time.Now(),
 		RiskFactors: []string{},
-		Findings:   []models.Finding{},
+		Findings:    []models.Finding{},
 	}
 
 	// Fetch package metadata from registry
@@ -149,8 +147,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Check:       "Package Registry Validation",
 					SourceURL:   npmURL,
 				})
-				result.RiskLevel = "HIGH"
-				result.RiskScore = 100
 			} else {
 				result.Findings = append(result.Findings, models.Finding{
 					Severity:    "MEDIUM",
@@ -160,8 +156,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
 					SourceURL:   npmURL,
 				})
-				result.RiskLevel = "UNKNOWN"
-				result.RiskScore = 0
 			}
 			return result
 		}
@@ -190,8 +184,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Check:       "Package Registry Validation",
 					SourceURL:   pypiURL,
 				})
-				result.RiskLevel = "HIGH"
-				result.RiskScore = 100
 			} else {
 				result.Findings = append(result.Findings, models.Finding{
 					Severity:    "MEDIUM",
@@ -201,8 +193,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
 					SourceURL:   pypiURL,
 				})
-				result.RiskLevel = "UNKNOWN"
-				result.RiskScore = 0
 			}
 			return result
 		}
@@ -232,8 +222,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Check:       "Package Registry Validation",
 					SourceURL:   mavenURL,
 				})
-				result.RiskLevel = "HIGH"
-				result.RiskScore = 100
 			} else {
 				result.Findings = append(result.Findings, models.Finding{
 					Severity:    "MEDIUM",
@@ -243,8 +231,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 					Evidence:    "API failure does not confirm package is compromised; further investigation recommended",
 					SourceURL:   mavenURL,
 				})
-				result.RiskLevel = "UNKNOWN"
-				result.RiskScore = 0
 			}
 			return result
 		}
@@ -329,12 +315,6 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 
 	// Calculate supply chain score (0-20 point rubric, 10 categories)
 	a.calculateSupplyChainScore(&result)
-
-	// Derive legacy RiskLevel/RiskScore from SupplyChainScore
-	if result.SupplyChainScore != nil {
-		result.RiskLevel = result.SupplyChainScore.RiskLevel
-		result.RiskScore = result.SupplyChainScore.TotalScore * 100 / 20 // Map 0-20 to 0-100
-	}
 
 	// Populate Findings from CategoryScores for backward compatibility
 	populateFindingsFromScores(&result)
@@ -522,49 +502,6 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 				cat.Evidence = pkgID + ": " + cat.Evidence
 			}
 		}
-	}
-
-	// Count active (non-skipped) checks and calculate total score
-	activeChecks := 0
-	allCategories := []*models.CategoryScore{
-		&score.CategoryScores.PublisherControl,
-		&score.CategoryScores.OwnershipChanges,
-		&score.CategoryScores.ReleaseAnomalies,
-		&score.CategoryScores.InstallExecution,
-		&score.CategoryScores.DependencySprawl,
-		&score.CategoryScores.Provenance,
-		&score.CategoryScores.Health,
-		&score.CategoryScores.Governance,
-		&score.CategoryScores.ReleaseSecurity,
-		&score.CategoryScores.PackageMaturity,
-	}
-	for _, cat := range allCategories {
-		if !cat.Skipped {
-			score.TotalScore += cat.RiskPoints
-			activeChecks++
-		}
-	}
-	score.ActiveChecks = activeChecks
-	score.MaxScore = activeChecks * 2
-
-	// Determine risk level based on total score.
-	// When all 10 categories are active (default): LOW 0-8, MEDIUM 9-12, HIGH 13+
-	// When --check filters are active, thresholds scale proportionally so that
-	// the same percentage of max score triggers each risk level.
-	highThreshold := 13
-	mediumThreshold := 9
-	if activeChecks < 10 && activeChecks > 0 {
-		// Scale proportionally: ceil(threshold * activeChecks / 10)
-		highThreshold = (13*activeChecks + 9) / 10
-		mediumThreshold = (9*activeChecks + 9) / 10
-	}
-
-	if score.TotalScore >= highThreshold {
-		score.RiskLevel = "HIGH"
-	} else if score.TotalScore >= mediumThreshold {
-		score.RiskLevel = "MEDIUM"
-	} else {
-		score.RiskLevel = "LOW"
 	}
 
 	result.SupplyChainScore = score

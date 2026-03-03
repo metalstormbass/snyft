@@ -69,9 +69,6 @@ type ScanStats struct {
 	StartTime      time.Time
 	EndTime        time.Time
 	TotalPackages  int
-	HighRisk       int
-	MediumRisk     int
-	LowRisk        int
 	ManifestFiles  int
 	ScannedPath    string
 	DirectDeps     int // Number of direct dependencies found (before filtering)
@@ -115,17 +112,6 @@ func (r *Reporter) AddResults(results []models.AnalysisResult) {
 	r.results = results
 	r.stats.TotalPackages = len(results)
 	r.stats.EndTime = time.Now()
-
-	for _, result := range results {
-		switch result.RiskLevel {
-		case "HIGH":
-			r.stats.HighRisk++
-		case "MEDIUM":
-			r.stats.MediumRisk++
-		case "LOW":
-			r.stats.LowRisk++
-		}
-	}
 }
 
 // Generate generates the report
@@ -202,7 +188,6 @@ type CriticalIssue struct {
 	PackageName    string
 	PackageVersion string
 	Ecosystem      string
-	RiskLevel      string
 	Description    string
 	Evidence       string
 	Severity       string
@@ -215,10 +200,10 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 	sorted := make([]models.AnalysisResult, len(r.results))
 	copy(sorted, r.results)
 
-	// Sort: HIGH > MEDIUM > LOW, then by critical finding count
+	// Sort by critical finding count descending
 	for i := 0; i < len(sorted); i++ {
 		for j := i + 1; j < len(sorted); j++ {
-			if shouldSwapRisk(sorted[i], sorted[j]) {
+			if countCriticalFindings(sorted[j]) > countCriticalFindings(sorted[i]) {
 				sorted[i], sorted[j] = sorted[j], sorted[i]
 			}
 		}
@@ -226,9 +211,6 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 
 	var issues []CriticalIssue
 	for _, result := range sorted {
-		if result.RiskLevel != "HIGH" && result.RiskLevel != "MEDIUM" {
-			continue
-		}
 		for _, finding := range result.Findings {
 			if finding.Severity == "LOW" {
 				continue
@@ -237,7 +219,6 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 				PackageName:    result.Dependency.Name,
 				PackageVersion: result.Dependency.DisplayVersion(),
 				Ecosystem:      string(result.Dependency.Ecosystem),
-				RiskLevel:      result.RiskLevel,
 				Description:    finding.Description,
 				Evidence:       finding.Evidence,
 				Severity:       finding.Severity,
@@ -253,32 +234,12 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 }
 
 // generateExecutiveNarrative builds a balanced, factual executive summary.
-// Returns 3-5 sentences covering: packages scanned, risk posture, key risk areas.
+// Returns 3-5 sentences covering: packages scanned and key risk areas.
 func (r *Reporter) generateExecutiveNarrative() string {
 	var sb strings.Builder
 
 	fmt.Fprintf(&sb, "Snyft scanned %d package%s for supply chain compromise risk.",
 		r.stats.TotalPackages, pluralize(r.stats.TotalPackages))
-
-	elevated := r.stats.HighRisk + r.stats.MediumRisk
-	if elevated > 0 {
-		fmt.Fprintf(&sb, " %d of %d", elevated, r.stats.TotalPackages)
-		if elevated == 1 {
-			sb.WriteString(" package shows")
-		} else {
-			sb.WriteString(" packages show")
-		}
-		sb.WriteString(" elevated supply chain risk")
-		if r.stats.HighRisk > 0 && r.stats.MediumRisk > 0 {
-			fmt.Fprintf(&sb, " (%d high, %d medium).", r.stats.HighRisk, r.stats.MediumRisk)
-		} else if r.stats.HighRisk > 0 {
-			fmt.Fprintf(&sb, " (%d high).", r.stats.HighRisk)
-		} else {
-			fmt.Fprintf(&sb, " (%d medium).", r.stats.MediumRisk)
-		}
-	} else {
-		sb.WriteString(" No packages show elevated supply chain risk.")
-	}
 
 	areas := r.generateRiskAreas()
 	if len(areas) > 0 {
@@ -292,25 +253,13 @@ func (r *Reporter) generateExecutiveNarrative() string {
 			sb.WriteString(strings.ToLower(area.Summary))
 		}
 		sb.WriteString(".")
+	} else {
+		sb.WriteString(" No critical supply chain risk factors identified.")
 	}
 
 	sb.WriteString(" This assessment evaluates the likelihood of compromise through supply chain attacks, not known CVEs or code vulnerabilities.")
 
 	return sb.String()
-}
-
-// shouldSwapRisk returns true if b should be sorted before a.
-func shouldSwapRisk(a, b models.AnalysisResult) bool {
-	if b.RiskLevel == "HIGH" && a.RiskLevel != "HIGH" {
-		return true
-	}
-	if b.RiskLevel == "MEDIUM" && a.RiskLevel == "LOW" {
-		return true
-	}
-	if a.RiskLevel == b.RiskLevel {
-		return countCriticalFindings(b) > countCriticalFindings(a)
-	}
-	return false
 }
 
 // countCriticalFindings counts HIGH and CRITICAL severity findings in a result
@@ -374,30 +323,11 @@ type riskArea struct {
 func (r *Reporter) generateRiskAreas() []riskArea {
 	var areas []riskArea
 
-	if r.stats.HighRisk > 0 {
-		var highPkgs []string
-		for _, result := range r.results {
-			if result.RiskLevel == "HIGH" {
-				if len(highPkgs) < 3 {
-					highPkgs = append(highPkgs, result.Dependency.Name)
-				}
-			}
-		}
-		areas = append(areas, riskArea{
-			Tag:     "HIGH RISK",
-			Summary: fmt.Sprintf("%d package%s with HIGH supply chain compromise risk", r.stats.HighRisk, pluralize(r.stats.HighRisk)),
-			Explanation: "Patterns matching known supply chain attack vectors, " +
-				"weak publisher controls or single points of compromise, " +
-				"missing build integrity verification.",
-			Examples: highPkgs,
-		})
-	}
-
 	// Missing source code
 	var missingSource int
 	var missingSourcePkgs []string
 	for _, result := range r.results {
-		if !result.SourceCodeAvailable && result.RiskLevel != "LOW" {
+		if !result.SourceCodeAvailable {
 			missingSource++
 			if len(missingSourcePkgs) < 3 {
 				missingSourcePkgs = append(missingSourcePkgs, result.Dependency.Name)
@@ -529,58 +459,6 @@ func joinExamples(names []string) string {
 	return strings.Join(names, ", ")
 }
 
-// gradientStop defines an RGB color at a specific score value for gradient interpolation.
-type gradientStop struct {
-	score    int
-	r, g, b int
-}
-
-// scoreGradientStops defines the color gradient from green (low risk) to red (high risk).
-// Colors are chosen to match the existing theme palette where possible.
-var scoreGradientStops = []gradientStop{
-	{0, 82, 183, 136},   // forest green #52b788 (matches theme)
-	{5, 132, 204, 22},   // lime/yellow-green
-	{10, 245, 158, 11},  // amber #f59e0b (matches theme)
-	{15, 249, 115, 22},  // orange #f97316
-	{20, 239, 68, 68},   // red #ef4444 (matches theme)
-}
-
-// scoreGradientRGB returns interpolated RGB values for a score in the 0-20 range.
-func scoreGradientRGB(score int) (int, int, int) {
-	if score <= 0 {
-		s := scoreGradientStops[0]
-		return s.r, s.g, s.b
-	}
-	last := scoreGradientStops[len(scoreGradientStops)-1]
-	if score >= last.score {
-		return last.r, last.g, last.b
-	}
-	for i := 1; i < len(scoreGradientStops); i++ {
-		if score <= scoreGradientStops[i].score {
-			lo := scoreGradientStops[i-1]
-			hi := scoreGradientStops[i]
-			t := float64(score-lo.score) / float64(hi.score-lo.score)
-			r := int(float64(lo.r) + t*float64(hi.r-lo.r))
-			g := int(float64(lo.g) + t*float64(hi.g-lo.g))
-			b := int(float64(lo.b) + t*float64(hi.b-lo.b))
-			return r, g, b
-		}
-	}
-	return last.r, last.g, last.b
-}
-
-// scoreColor returns a truecolor ANSI escape for the score's position on the gradient.
-func scoreColor(score int) string {
-	r, g, b := scoreGradientRGB(score)
-	return fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
-}
-
-// scoreColorCSS returns a CSS rgb() color string for the score's position on the gradient.
-func scoreColorCSS(score int) string {
-	r, g, b := scoreGradientRGB(score)
-	return fmt.Sprintf("rgb(%d,%d,%d)", r, g, b)
-}
-
 // severityOrdinal maps finding severity to a numeric value for sorting.
 func severityOrdinal(severity string) int {
 	switch severity {
@@ -597,27 +475,15 @@ func severityOrdinal(severity string) int {
 	}
 }
 
-// sortedResults returns a copy of results sorted by risk score descending.
-// Packages with higher supply chain risk scores appear first. When scores
-// are equal, packages are sorted by risk level (HIGH > MEDIUM > LOW).
-// Findings within each package are also sorted by severity descending.
+// sortedResults returns a copy of results sorted alphabetically by package name.
+// Findings within each package are sorted by severity descending.
 func (r *Reporter) sortedResults() []models.AnalysisResult {
 	sorted := make([]models.AnalysisResult, len(r.results))
 	copy(sorted, r.results)
 
-	// Sort packages by risk score descending
+	// Sort packages alphabetically by name
 	sort.SliceStable(sorted, func(i, j int) bool {
-		si, sj := 0, 0
-		if sorted[i].SupplyChainScore != nil {
-			si = sorted[i].SupplyChainScore.TotalScore
-		}
-		if sorted[j].SupplyChainScore != nil {
-			sj = sorted[j].SupplyChainScore.TotalScore
-		}
-		if si != sj {
-			return si > sj
-		}
-		return riskOrdinal(sorted[i].RiskLevel) > riskOrdinal(sorted[j].RiskLevel)
+		return sorted[i].Dependency.Name < sorted[j].Dependency.Name
 	})
 
 	// Sort findings within each result by severity descending
@@ -635,32 +501,6 @@ func (r *Reporter) sortedResults() []models.AnalysisResult {
 	return sorted
 }
 
-func riskColor(level string) string {
-	switch level {
-	case "HIGH":
-		return ColorRed
-	case "MEDIUM":
-		return ColorYellow
-	case "LOW":
-		return ColorGreen
-	default:
-		return ColorReset
-	}
-}
-
-func riskIcon(level string) string {
-	switch level {
-	case "HIGH":
-		return "🔴"
-	case "MEDIUM":
-		return "🟡"
-	case "LOW":
-		return "🟢"
-	default:
-		return "⚪"
-	}
-}
-
 func severityColor(severity string) string {
 	switch severity {
 	case "CRITICAL", "HIGH":
@@ -672,28 +512,5 @@ func severityColor(severity string) string {
 	default:
 		return ColorReset
 	}
-}
-
-func calculateOverallRisk(stats ScanStats) string {
-	if stats.TotalPackages == 0 {
-		return "UNKNOWN"
-	}
-	highPct := float64(stats.HighRisk) / float64(stats.TotalPackages)
-	mediumPct := float64(stats.MediumRisk) / float64(stats.TotalPackages)
-	if highPct > 0.3 {
-		return "HIGH"
-	}
-	if highPct > 0 || mediumPct > 0.5 {
-		return "MEDIUM"
-	}
-	return "LOW"
-}
-
-// maxScore returns the max score for a supply chain score, with backward compatibility.
-func maxScore(sc *models.SupplyChainScore) int {
-	if sc.MaxScore > 0 {
-		return sc.MaxScore
-	}
-	return 22
 }
 
