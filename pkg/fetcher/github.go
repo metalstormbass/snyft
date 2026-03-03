@@ -2501,18 +2501,24 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 		return stats, nil
 	}
 
-	// Analyze PRs – sample up to maxReviewChecks merged PRs for review status
+	// Collect merged PR numbers for batch review checking
+	var mergedPRNumbers []int
 	for _, pr := range prs {
 		if pr.MergedAt != nil {
 			stats.TotalPRs++
 			stats.MergedPRs++
-
-			if stats.MergedPRs <= maxReviewChecks {
-				// Check if PR has reviews
-				if c.prHasReviews(owner, repo, pr.Number) {
-					stats.PRsWithReviews++
-				}
+			if len(mergedPRNumbers) < maxReviewChecks {
+				mergedPRNumbers = append(mergedPRNumbers, pr.Number)
 			}
+		}
+	}
+
+	// Batch-fetch review status: 1 GraphQL call (with token) instead of up to
+	// 20 individual REST calls. Falls back to REST with rate limit awareness.
+	reviewMap := c.batchCheckPRReviews(owner, repo, mergedPRNumbers)
+	for _, prNum := range mergedPRNumbers {
+		if reviewMap[prNum] {
+			stats.PRsWithReviews++
 		}
 	}
 
@@ -2584,7 +2590,8 @@ func (c *GitHubClient) scrapePullRequestStats(owner, repo string) (*PRStats, err
 	return stats, nil
 }
 
-// prHasReviews checks if a PR has any reviews
+// prHasReviews checks if a PR has any reviews (single REST call).
+// Prefer batchCheckPRReviews for checking multiple PRs.
 func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/reviews", c.baseURL, owner, repo, prNumber)
 	req, err := http.NewRequest("GET", url, nil)
@@ -2612,6 +2619,35 @@ func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 	}
 
 	return len(reviews) > 0
+}
+
+// batchCheckPRReviews checks review status for multiple PRs efficiently.
+// Uses a single GraphQL query when a token is available (1 API call instead of N).
+// Falls back to individual REST calls with rate limit awareness when GraphQL is
+// unavailable.
+func (c *GitHubClient) batchCheckPRReviews(owner, repo string, prNumbers []int) map[int]bool {
+	if len(prNumbers) == 0 {
+		return make(map[int]bool)
+	}
+
+	// Try GraphQL batch first — requires a token but replaces N REST calls with 1
+	if c.token != "" {
+		if result := c.batchCheckPRReviewsGraphQL(owner, repo, prNumbers); result != nil {
+			return result
+		}
+		// GraphQL failed — fall through to individual REST calls
+	}
+
+	// Fallback: individual REST calls with rate limit awareness.
+	// Stop early when API quota drops to preserve calls for critical checks.
+	result := make(map[int]bool)
+	for _, prNum := range prNumbers {
+		if c.rateLimiter != nil && c.rateLimiter.ShouldPreferScraping() {
+			break
+		}
+		result[prNum] = c.prHasReviews(owner, repo, prNum)
+	}
+	return result
 }
 
 // getBranchProtection fetches branch protection rules for the default branch.
@@ -2911,6 +2947,13 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 	// scraping alternative. Return 0 with nil error so callers degrade
 	// gracefully rather than wasting precious API quota.
 	if c.shouldPreferScraping() {
+		return 0, nil
+	}
+
+	// Also skip when actual API quota is low — this covers enterprise/custom
+	// base URL setups where shouldPreferScraping() returns false but the rate
+	// limit is nearly exhausted.
+	if c.rateLimiter != nil && c.rateLimiter.ShouldPreferScraping() {
 		return 0, nil
 	}
 
