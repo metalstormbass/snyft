@@ -47,6 +47,17 @@ type SourceVerification struct {
 	Details            string   `json:"details"`               // Human-readable details
 }
 
+// DataMode indicates how data was collected for an analysis result.
+const (
+	// DataModeFull means all data sources (API + scraping) were available.
+	DataModeFull = ""
+	// DataModeScrapingOnly means the GitHub API rate limit was exhausted and
+	// only web scraping was used. Results have reduced fidelity — checks that
+	// require API access (signed commits, GraphQL batch queries, branch
+	// protection) will have missing or degraded data.
+	DataModeScrapingOnly = "scraping-only"
+)
+
 // AnalysisResult contains the supply chain security analysis for a dependency
 type AnalysisResult struct {
 	Dependency            Dependency             `json:"dependency"`
@@ -62,6 +73,7 @@ type AnalysisResult struct {
 	Findings              []Finding              `json:"findings"`
 	Metadata              PackageMetadata        `json:"metadata"`
 	SupplyChainScore      *SupplyChainScore      `json:"supply_chain_score,omitempty"`
+	DataMode              string                 `json:"data_mode,omitempty"` // "" (full) or "scraping-only"
 }
 
 // Finding represents a specific security finding

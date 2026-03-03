@@ -267,12 +267,13 @@ func (rc *repoCache) setWorkflowFiles(key string, files []string) {
 // By default, web scraping is the primary data-fetching method, with API calls
 // used to supplement when a GITHUB_TOKEN is available.
 type GitHubClient struct {
-	token       string
-	httpClient  *http.Client
-	baseURL     string
-	cache       *repoCache
-	preferAPI   bool // when true, always try API first (used by test helpers with mock servers)
-	rateLimiter *GitHubRateLimiter
+	token        string
+	httpClient   *http.Client
+	baseURL      string
+	cache        *repoCache
+	preferAPI    bool // when true, always try API first (used by test helpers with mock servers)
+	rateLimiter  *GitHubRateLimiter
+	scrapingOnly bool // when true, all API calls are skipped; only web scraping is used
 }
 
 // NewGitHubClient creates a new GitHub client. Web scraping is the primary
@@ -324,8 +325,23 @@ func (c *GitHubClient) ShouldStopForRateLimit(threshold int) bool {
 	return c.rateLimiter.ShouldStop(threshold)
 }
 
+// SetScrapingOnlyMode enables or disables scraping-only mode. When enabled,
+// all GitHub API calls are skipped and only web scraping is used for data
+// collection. This is activated when the rate limit gate triggers, allowing
+// remaining packages to be analyzed with reduced fidelity rather than being
+// skipped entirely.
+func (c *GitHubClient) SetScrapingOnlyMode(enabled bool) {
+	c.scrapingOnly = enabled
+}
+
+// IsScrapingOnly returns true when the client is in scraping-only mode.
+func (c *GitHubClient) IsScrapingOnly() bool {
+	return c.scrapingOnly
+}
+
 // shouldPreferScrapingForQuota returns true when web scraping should be
 // preferred to conserve API quota. This is true when:
+//   - Scraping-only mode is enabled (rate limit gate triggered), OR
 //   - No token is set (unauthenticated API is limited to 60 req/hour), OR
 //   - The rate limiter indicates quota is running low (authenticated < 300,
 //     unauthenticated < 15 remaining)
@@ -334,6 +350,9 @@ func (c *GitHubClient) ShouldStopForRateLimit(threshold int) bool {
 // preserving remaining API calls for checks that have no scraping alternative
 // (signed commits, GraphQL, branch protection).
 func (c *GitHubClient) shouldPreferScrapingForQuota() bool {
+	if c.scrapingOnly {
+		return true // scraping-only mode: never use API
+	}
 	if c.preferAPI {
 		return false // test servers always use API
 	}
@@ -347,14 +366,25 @@ func (c *GitHubClient) shouldPreferScrapingForQuota() bool {
 	return c.rateLimiter != nil && c.rateLimiter.ShouldPreferScraping()
 }
 
+// errScrapingOnly is returned by doRequest when the client is in scraping-only
+// mode, preventing any GitHub API calls from being made.
+var errScrapingOnly = fmt.Errorf("scraping-only mode: API calls disabled to preserve rate limit")
+
 // doRequest executes an HTTP request with proactive rate limiting for GitHub
 // API calls. It waits for the rate limiter to permit the request, executes it,
 // then updates the limiter based on GitHub's X-RateLimit-* response headers.
+//
+// When scraping-only mode is enabled, doRequest returns errScrapingOnly without
+// making any network call. Methods that call doRequest will then fall through
+// to their scraping fallbacks or return gracefully degraded results.
 //
 // Use this for all requests to c.baseURL (the GitHub API). Do NOT use for
 // requests to raw.githubusercontent.com or github.com web pages, as those
 // have separate (or no) rate limits.
 func (c *GitHubClient) doRequest(req *http.Request) (*http.Response, error) {
+	if c.scrapingOnly {
+		return nil, errScrapingOnly
+	}
 	if c.rateLimiter != nil {
 		c.rateLimiter.Wait()
 	}
