@@ -153,13 +153,15 @@ func DetectPlatform(repoURL string) PlatformType {
 	return PlatformUnknown
 }
 
-// NewGitPlatformClient creates the appropriate client based on the repository URL
-func NewGitPlatformClient(repoURL string) GitPlatformClient {
+// NewGitPlatformClient creates the appropriate client based on the repository URL.
+// An optional shared OrgCache can be provided to share org-level data across
+// all GitHubClient instances within a scan.
+func NewGitPlatformClient(repoURL string, opts ...GitHubClientOption) GitPlatformClient {
 	platform := DetectPlatform(repoURL)
 
 	switch platform {
 	case PlatformGitHub:
-		return NewGitHubClient()
+		return NewGitHubClient(opts...)
 	case PlatformGitLab:
 		return NewGitLabClient()
 	case PlatformBitbucket:
@@ -172,9 +174,9 @@ func NewGitPlatformClient(repoURL string) GitPlatformClient {
 		return NewGenericGitClient()
 	case PlatformUnknown:
 		// Unknown URLs: fall back to GitHub client for backward compatibility
-		return NewGitHubClient()
+		return NewGitHubClient(opts...)
 	default:
-		return NewGitHubClient()
+		return NewGitHubClient(opts...)
 	}
 }
 
