@@ -42,12 +42,25 @@ type Analyzer struct {
 	// Libraries.io client (optional)
 	librariesIOClient *fetcher.LibrariesIOClient
 
+	// Clone pool for parallel git clone operations (not rate-limited)
+	clonePool *fetcher.ClonePool
+
 	// Check filter (nil = run all checks)
 	checkFilter map[string]bool
 }
 
 // AnalyzerOption is a functional option for configuring an Analyzer
 type AnalyzerOption func(*Analyzer)
+
+// WithClonePoolSize configures the size of the parallel clone pool.
+// The clone pool runs git clone operations independently of the API worker pool
+// and is NOT gated by the GitHub rate limiter (git clones use the git protocol).
+// Default: fetcher.DefaultClonePoolSize (20).
+func WithClonePoolSize(size int) AnalyzerOption {
+	return func(a *Analyzer) {
+		a.clonePool = fetcher.NewClonePool(size)
+	}
+}
 
 // WithCheckFilter configures the analyzer to only run the specified checks.
 // Check names must be valid keys from ValidCheckNames (e.g., "provenance", "health").
@@ -80,6 +93,7 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 		mavenClient:       fetcher.NewMavenClient(),
 		ossfClient:        fetcher.NewOSSFClient(),
 		librariesIOClient: fetcher.NewLibrariesIOClient(),
+		clonePool:         fetcher.NewClonePool(fetcher.DefaultClonePoolSize),
 	}
 
 	// Apply options
@@ -286,18 +300,18 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	result.ScorecardURL = ossfScorecardURL(repoURL)
 	result.Metadata = metadata
 
-	// Trigger bare git clone early for GitHub repos. This runs concurrently with
-	// all other data collection. The clone populates caches for commit authors,
-	// signed commits, commit activity, file tree, and file content — eliminating
-	// API calls for that data. Git clone is not subject to API rate limits.
-	var cloneDone chan struct{}
+	// Trigger bare git clone early for GitHub repos via the dedicated clone pool.
+	// The clone pool runs independently of the API/scraping worker pool and is NOT
+	// gated by the GitHub rate limiter — git clones use the git protocol, not the API.
+	// Clones start as soon as their URLs are resolved and run concurrently (up to
+	// pool size) with all other data collection. The clone populates caches for
+	// commit authors, signed commits, commit activity, file tree, and file content.
+	var cloneDone <-chan struct{}
 	if repoURL != "" && fetcher.DetectPlatform(repoURL) == fetcher.PlatformGitHub {
-		cloneDone = make(chan struct{})
-		go func() {
-			defer close(cloneDone)
-			_ = a.githubClient.CloneAndAnalyze(repoURL)
-			// Clone cleanup is deferred to after analysis completes
-		}()
+		ghClient := a.githubClient
+		cloneDone = a.clonePool.Submit(func() {
+			_ = ghClient.CloneAndAnalyze(repoURL)
+		})
 	}
 
 	// Run data collection steps concurrently. Each method writes to non-overlapping
