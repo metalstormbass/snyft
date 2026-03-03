@@ -1661,12 +1661,14 @@ func TestScoreProvenance_HighRisk_NoProvenance(t *testing.T) {
 
 	score := analyzer.scoreProvenance(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for no provenance, got %d", score.RiskPoints)
+	// Nil SourceVerification means we couldn't check, not that it failed.
+	// This is unknown/moderate (1 risk point), not worst case (2).
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for nil source verification (unknown, not failed), got %d", score.RiskPoints)
 	}
 
-	if score.Score != 0 {
-		t.Errorf("Expected score 0, got %d", score.Score)
+	if score.Score != 1 {
+		t.Errorf("Expected score 1 for nil source verification, got %d", score.Score)
 	}
 
 	if !score.Verified {
