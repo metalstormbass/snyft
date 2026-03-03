@@ -34,8 +34,6 @@ func TestCheckpoint_RoundTrip(t *testing.T) {
 					Ecosystem: models.EcosystemNPM,
 					Source:    "package.json",
 				},
-				RiskLevel: "MEDIUM",
-				RiskScore: 35,
 			},
 			{
 				Dependency: models.Dependency{
@@ -44,8 +42,6 @@ func TestCheckpoint_RoundTrip(t *testing.T) {
 					Ecosystem: models.EcosystemNPM,
 					Source:    "package.json",
 				},
-				RiskLevel: "LOW",
-				RiskScore: 10,
 			},
 		},
 		CompletedKeys: []string{"npm|express", "npm|lodash"},
@@ -86,9 +82,6 @@ func TestCheckpoint_RoundTrip(t *testing.T) {
 	for i, r := range loaded.Results {
 		if r.Dependency.Name != original.Results[i].Dependency.Name {
 			t.Errorf("Results[%d].Name = %q, want %q", i, r.Dependency.Name, original.Results[i].Dependency.Name)
-		}
-		if r.RiskLevel != original.Results[i].RiskLevel {
-			t.Errorf("Results[%d].RiskLevel = %q, want %q", i, r.RiskLevel, original.Results[i].RiskLevel)
 		}
 	}
 	if len(loaded.CompletedKeys) != len(original.CompletedKeys) {

@@ -1,7 +1,6 @@
 package report
 
 import (
-	"fmt"
 	"io"
 	"time"
 
@@ -35,36 +34,9 @@ func (r *Reporter) generateMarkdown() error {
 	f(w, "| Scan Path | `%s` |\n", r.stats.ScannedPath)
 	p(w, "")
 
-	// Risk distribution
-	p(w, "### Risk Distribution")
-	p(w, "")
-	f(w, "| Level | Count | %% |\n")
-	f(w, "|-------|------:|---:|\n")
-
-	total := r.stats.TotalPackages
-	pctStr := func(n int) string {
-		if total == 0 {
-			return "0.0"
-		}
-		return fmt.Sprintf("%.1f", float64(n)/float64(total)*100)
-	}
-	f(w, "| %s HIGH | %d | %s%% |\n", riskIcon("HIGH"), r.stats.HighRisk, pctStr(r.stats.HighRisk))
-	f(w, "| %s MEDIUM | %d | %s%% |\n", riskIcon("MEDIUM"), r.stats.MediumRisk, pctStr(r.stats.MediumRisk))
-	f(w, "| %s LOW | %d | %s%% |\n", riskIcon("LOW"), r.stats.LowRisk, pctStr(r.stats.LowRisk))
-	p(w, "")
-
-	overall := calculateOverallRisk(r.stats)
 	duration := r.stats.EndTime.Sub(r.stats.StartTime)
-	f(w, "**Overall Risk:** %s · **Duration:** %s\n", overall, formatDuration(duration))
+	f(w, "**Duration:** %s\n", formatDuration(duration))
 	p(w, "")
-
-	// Alerts
-	if r.stats.HighRisk > 0 {
-		f(w, "> ⚠️ **%d HIGH risk** package%s — immediate review recommended.\n\n", r.stats.HighRisk, pluralize(r.stats.HighRisk))
-	}
-	if r.stats.MediumRisk > 0 {
-		f(w, "> ⚠️ **%d MEDIUM risk** package%s — monitoring recommended.\n\n", r.stats.MediumRisk, pluralize(r.stats.MediumRisk))
-	}
 
 	// Executive narrative
 	p(w, "### Risk Assessment")
@@ -103,21 +75,13 @@ func (r *Reporter) generateMarkdown() error {
 }
 
 func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResult) {
-	icon := riskIcon(result.RiskLevel)
 	transitive := ""
 	if result.Dependency.IsTransitive {
 		transitive = " *(transitive)*"
 	}
 
-	f(w, "### %s %s@%s (%s)%s\n", icon, result.Dependency.Name, result.Dependency.DisplayVersion(),
+	f(w, "### %s@%s (%s)%s\n", result.Dependency.Name, result.Dependency.DisplayVersion(),
 		result.Dependency.Ecosystem, transitive)
-	p(w, "")
-
-	f(w, "**Risk:** %s", result.RiskLevel)
-	if result.SupplyChainScore != nil {
-		ms := maxScore(result.SupplyChainScore)
-		f(w, " · **Score:** %d/%d", result.SupplyChainScore.TotalScore, ms)
-	}
 	p(w, "")
 
 	if result.RepositoryURL != "" {
