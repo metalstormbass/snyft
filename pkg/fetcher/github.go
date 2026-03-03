@@ -260,7 +260,19 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		// Scraping failed — fall through to try the API
 	}
 
-	// API path: primary when token is set, fallback when scraping fails.
+	// GraphQL batch path: when a token is set, fetch repo info + releases +
+	// governance files + branch protection in a single API call. This replaces
+	// 10+ REST calls with 1 GraphQL query. Results are cached so subsequent
+	// callers (getReleases, fileExists, getBranchProtection) get cache hits.
+	if c.token != "" && !c.preferAPI {
+		batch := c.fetchBatchRepoData(owner, repo)
+		if batch != nil && batch.RepoInfo != nil {
+			return batch.RepoInfo, nil
+		}
+		// GraphQL failed — fall through to REST API
+	}
+
+	// REST API path: primary when token is set without GraphQL, fallback when scraping or GraphQL fails.
 	url := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
