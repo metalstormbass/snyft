@@ -339,31 +339,23 @@ func (c *GitHubClient) IsScrapingOnly() bool {
 	return c.scrapingOnly
 }
 
-// shouldPreferScrapingForQuota returns true when web scraping should be
-// preferred to conserve API quota. This is true when:
-//   - Scraping-only mode is enabled (rate limit gate triggered), OR
-//   - No token is set (unauthenticated API is limited to 60 req/hour), OR
-//   - The rate limiter indicates quota is running low (authenticated < 300,
-//     unauthenticated < 15 remaining)
+// shouldPreferScraping returns true when web scraping should be the primary
+// data fetching method. Scraping is always preferred for real GitHub requests
+// to minimize API consumption. API calls are reserved as a fallback when
+// scraping fails, and for checks that genuinely cannot be scraped (signed
+// commits verification, attestations/provenance, branch protection).
 //
-// This proactively switches to scraping before the quota is fully exhausted,
-// preserving remaining API calls for checks that have no scraping alternative
-// (signed commits, GraphQL, branch protection).
-func (c *GitHubClient) shouldPreferScrapingForQuota() bool {
-	if c.scrapingOnly {
-		return true // scraping-only mode: never use API
-	}
+// Returns false only for:
+//   - Test servers (preferAPI flag set) — mock handlers must be exercised
+//   - Custom base URLs — scraping targets real github.com
+func (c *GitHubClient) shouldPreferScraping() bool {
 	if c.preferAPI {
 		return false // test servers always use API
 	}
 	if c.baseURL != "https://api.github.com" {
 		return false // custom base URLs use API (scraping targets real github.com)
 	}
-	if c.token == "" {
-		return true // no token = always prefer scraping
-	}
-	// Token set but quota is low — prefer scraping to conserve remaining calls
-	return c.rateLimiter != nil && c.rateLimiter.ShouldPreferScraping()
+	return true // always prefer scraping for real GitHub
 }
 
 // errScrapingOnly is returned by doRequest when the client is in scraping-only
@@ -399,9 +391,11 @@ func (c *GitHubClient) doRequest(req *http.Request) (*http.Response, error) {
 }
 
 // GetRepositoryInfo fetches repository information from GitHub.
-// When no GITHUB_TOKEN is set, web scraping is tried first to avoid consuming
-// the limited unauthenticated API quota. With a token, the API is used for
-// richer data (exact dates, issue counts, license, topics).
+// Web scraping is always tried first to minimize API consumption. The API is
+// used as a fallback when scraping fails, providing richer data (exact dates,
+// issue counts, license, topics). When a token is available and scraping
+// succeeds, the GraphQL batch is still triggered to populate caches for
+// API-only data (signed commits, branch protection).
 func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -417,23 +411,29 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		}
 	}
 
-	// Scraping-first path: when no token is set, scrape the GitHub web page
-	// to avoid burning limited unauthenticated API quota.
-	if c.shouldPreferScrapingForQuota() {
+	// Scraping-first path: always try web scraping first to minimize API usage.
+	// API calls are reserved for data that cannot be scraped (signed commits,
+	// branch protection, provenance).
+	if c.shouldPreferScraping() {
 		info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
 				c.cache.setRepoInfo(cacheKey, info)
+			}
+			// Trigger GraphQL batch to populate caches for API-only data
+			// (signed commits, branch protection) that scraping cannot provide.
+			// This uses 1 API call to pre-fill caches for later checks.
+			if c.token != "" && !c.preferAPI {
+				c.fetchBatchRepoData(owner, repo)
 			}
 			return info, nil
 		}
 		// Scraping failed — fall through to try the API
 	}
 
-	// GraphQL batch path: when a token is set, fetch repo info + releases +
-	// governance files + branch protection in a single API call. This replaces
-	// 10+ REST calls with 1 GraphQL query. Results are cached so subsequent
-	// callers (getReleases, fileExists, getBranchProtection) get cache hits.
+	// GraphQL batch path: fallback when scraping fails. Fetches repo info +
+	// releases + governance files + branch protection in a single API call.
+	// Results are cached so subsequent callers get cache hits.
 	if c.token != "" && !c.preferAPI {
 		batch := c.fetchBatchRepoData(owner, repo)
 		if batch != nil && batch.RepoInfo != nil {
@@ -442,7 +442,7 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		// GraphQL failed — fall through to REST API
 	}
 
-	// REST API path: primary when token is set without GraphQL, fallback when scraping or GraphQL fails.
+	// REST API path: fallback when both scraping and GraphQL fail.
 	url := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -457,7 +457,7 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// API unreachable — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() {
+		if !c.shouldPreferScraping() {
 			info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
 			if scrapeErr == nil && c.cache != nil {
 				c.cache.setRepoInfo(cacheKey, info)
@@ -471,7 +471,7 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		// Try scraping fallback on rate limit or auth errors (if we haven't already)
-		if !c.shouldPreferScrapingForQuota() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
 			if scrapeErr == nil && c.cache != nil {
 				c.cache.setRepoInfo(cacheKey, info)
@@ -510,7 +510,7 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 }
 
 // scrapeRepositoryInfo scrapes repository information from the GitHub web page.
-// This is the primary data source when no GITHUB_TOKEN is set.
+// This is the primary data source for all GitHub requests.
 func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*models.RepositoryInfo, error) {
 	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
 	doc, err := scrapeWithUserAgent(pageURL)
@@ -665,7 +665,7 @@ func (c *GitHubClient) detectCIViaFileExists(owner, repo string) []string {
 // When scraping is preferred (no token), this is skipped since the Git Trees
 // API requires authentication for useful results on large repos.
 func (c *GitHubClient) getRepoTree(owner, repo string) (map[string]bool, bool, bool) {
-	if c.shouldPreferScrapingForQuota() {
+	if c.shouldPreferScraping() {
 		return nil, false, false
 	}
 
@@ -839,7 +839,7 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 	// then try scraping the tags listing page for non-standard naming.
 	// HEAD requests to github.com are served by the web frontend, not the API,
 	// and are not subject to API rate limits.
-	if c.shouldPreferScrapingForQuota() {
+	if c.shouldPreferScraping() {
 		for _, tag := range tagVariants {
 			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 			if c.checkTagViaWeb(tagURL) {
@@ -855,7 +855,7 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 		// Scraping exhausted — fall through to API as last resort.
 	}
 
-	// API path: primary when token is set, fallback when scraping didn't find the tag.
+	// API path: fallback when scraping didn't find the tag.
 	rateLimited := false
 	for _, tag := range tagVariants {
 		url := fmt.Sprintf("%s/repos/%s/%s/git/ref/tags/%s", c.baseURL, owner, repo, tag)
@@ -887,7 +887,7 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 	}
 
 	// If the API was rate-limited and we haven't tried scraping yet, try now.
-	if rateLimited && !c.shouldPreferScrapingForQuota() {
+	if rateLimited && !c.shouldPreferScraping() {
 		for _, tag := range tagVariants {
 			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 			if c.checkTagViaWeb(tagURL) {
@@ -902,8 +902,8 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 
 	// Paginated fallback: when direct lookups fail (non-standard tag naming),
 	// search through the tags listing. searchTagsPaginated uses scraping when
-	// shouldPreferScrapingForQuota() and API otherwise, with scraping fallback on rate limit.
-	if !rateLimited && !c.shouldPreferScrapingForQuota() {
+	// shouldPreferScraping() and API otherwise, with scraping fallback on rate limit.
+	if !rateLimited && !c.shouldPreferScraping() {
 		if found, tagURL := c.searchTagsPaginated(owner, repo, version); found {
 			return true, tagURL, nil
 		}
@@ -951,18 +951,18 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 	}
 
 	// Scraping-first path: scrape the tags page to avoid API rate limits.
-	if c.shouldPreferScrapingForQuota() {
+	if c.shouldPreferScraping() {
 		if scraped, err := c.scrapeTagNames(owner, repo); err == nil {
 			return matchTagVersion(scraped, versionSuffixes, owner, repo)
 		}
 		// Scraping failed — fall through to try the API
 	}
 
-	// API path: primary when token is set, fallback when scraping fails.
+	// API path: fallback when scraping fails.
 	allTagNames := c.fetchTagNamesViaAPI(owner, repo)
 
 	// If API returned nothing (rate limited or error) and we haven't scraped yet, try scraping.
-	if len(allTagNames) == 0 && !c.shouldPreferScrapingForQuota() {
+	if len(allTagNames) == 0 && !c.shouldPreferScraping() {
 		if scraped, err := c.scrapeTagNames(owner, repo); err == nil && len(scraped) > 0 {
 			return matchTagVersion(scraped, versionSuffixes, owner, repo)
 		}
@@ -1153,9 +1153,9 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		}
 	}
 
-	// Raw-URL-first path: when no token is set, use raw.githubusercontent.com
-	// (CDN, not subject to API rate limits) as the primary check.
-	if c.shouldPreferScrapingForQuota() {
+	// Raw-URL-first path: always use raw.githubusercontent.com (CDN, not
+	// subject to API rate limits) as the primary check.
+	if c.shouldPreferScraping() {
 		exists := c.checkFileViaRawURL(owner, repo, path)
 		if c.cache != nil {
 			c.cache.setFileExists(cacheKey, exists)
@@ -1163,7 +1163,7 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		return exists
 	}
 
-	// API path: primary when token is set (more reliable, handles private repos).
+	// API path: fallback (more reliable, handles private repos).
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
@@ -1428,8 +1428,8 @@ func (c *GitHubClient) checkSignedReleases(owner, repo string) (signedCount, tot
 
 
 // getReleases fetches all releases for a repository.
-// When no token is set, the GitHub releases page is scraped first.
-// With a token, the API provides richer release data (assets, draft status).
+// Web scraping is always tried first. The API is used as a fallback when
+// scraping fails, providing richer release data (assets, draft status).
 func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) {
 	// Cache releases — called from provenance checks (checkSignedReleases).
 	// A cache hit eliminates redundant network calls.
@@ -1440,8 +1440,8 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		}
 	}
 
-	// Scraping-first path: when no token, scrape the releases page directly.
-	if c.shouldPreferScrapingForQuota() {
+	// Scraping-first path: always try scraping the releases page first.
+	if c.shouldPreferScraping() {
 		releases, scrapeErr := c.scrapeReleases(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -1452,7 +1452,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		// Scraping failed — fall through to try the API
 	}
 
-	// API path: primary when token is set, fallback when scraping fails.
+	// API path: fallback when scraping fails.
 	// Paginate through all pages (up to maxPaginationPages) to get full release
 	// history. This is critical for release anomaly detection — we need the complete
 	// version timeline to spot dormancy reactivation and cadence irregularities.
@@ -1475,7 +1475,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		resp, err := c.doRequest(req)
 		if err != nil {
 			// Network error — try scraping if we haven't already
-			if page == 0 && !c.shouldPreferScrapingForQuota() {
+			if page == 0 && !c.shouldPreferScraping() {
 				releases, scrapeErr := c.scrapeReleases(owner, repo)
 				if scrapeErr == nil && c.cache != nil {
 					c.cache.setCachedReleases(cacheKey, releases)
@@ -1488,7 +1488,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		if resp.StatusCode != http.StatusOK {
 			// Rate limit or auth errors — try scraping if we haven't already
 			_ = resp.Body.Close()
-			if page == 0 && !c.shouldPreferScrapingForQuota() && shouldFallbackToScraping(nil, resp.StatusCode) {
+			if page == 0 && !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 				releases, scrapeErr := c.scrapeReleases(owner, repo)
 				if scrapeErr == nil && c.cache != nil {
 					c.cache.setCachedReleases(cacheKey, releases)
@@ -1529,7 +1529,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 }
 
 // scrapeReleases scrapes release information from the GitHub releases page.
-// This is the primary release data source when no GITHUB_TOKEN is set.
+// This is the primary release data source for all GitHub requests.
 // Paginates through all release pages (up to maxPaginationPages) to get the
 // full release history needed for release anomaly detection.
 func (c *GitHubClient) scrapeReleases(owner, repo string) ([]GitHubRelease, error) {
@@ -1619,16 +1619,16 @@ func (c *GitHubClient) scrapeReleases(owner, repo string) ([]GitHubRelease, erro
 }
 
 // GetFileContent fetches the content of a file from a GitHub repository.
-// When no token is set, raw.githubusercontent.com (CDN) is tried first.
-// With a token, the API is used for reliability and private repo support.
+// raw.githubusercontent.com (CDN) is always tried first to avoid API usage.
+// The API is used as fallback for reliability and private repo support.
 func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return "", err
 	}
 
-	// Raw-URL-first path: when no token, use CDN (not subject to API rate limits).
-	if c.shouldPreferScrapingForQuota() {
+	// Raw-URL-first path: always use CDN (not subject to API rate limits).
+	if c.shouldPreferScraping() {
 		content, rawErr := c.getFileContentViaRawURL(owner, repo, filePath)
 		if rawErr == nil {
 			return content, nil
@@ -1636,7 +1636,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 		// Raw URL failed — fall through to try the API
 	}
 
-	// API path: primary when token is set, fallback when raw URL fails.
+	// API path: fallback when raw URL fails.
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, filePath)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -1651,7 +1651,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try raw URL if we haven't already
-		if !c.shouldPreferScrapingForQuota() {
+		if !c.shouldPreferScraping() {
 			return c.getFileContentViaRawURL(owner, repo, filePath)
 		}
 		return "", err
@@ -1660,7 +1660,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try raw URL if we haven't already
-		if !c.shouldPreferScrapingForQuota() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			return c.getFileContentViaRawURL(owner, repo, filePath)
 		}
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
@@ -1717,9 +1717,9 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		}
 	}
 
-	// Scraping-first path: when quota is low, scrape contributor data to
-	// conserve API calls for checks that have no scraping alternative.
-	if c.shouldPreferScrapingForQuota() {
+	// Scraping-first path: always try scraping contributor data first to
+	// minimize API usage.
+	if c.shouldPreferScraping() {
 		stats, scrapeErr := c.scrapeCommitAuthors(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -1758,7 +1758,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		if err != nil {
 			if page == 1 {
 				// Network error on first page — try scraping if we haven't already
-				if !c.shouldPreferScrapingForQuota() {
+				if !c.shouldPreferScraping() {
 					if scraped, scrapeErr := c.scrapeCommitAuthors(owner, repo); scrapeErr == nil {
 						if c.cache != nil {
 							c.cache.setCommitAuthors(cacheKey, scraped)
@@ -1775,7 +1775,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 			_ = resp.Body.Close()
 			if page == 1 {
 				// Rate limit on first page — try scraping fallback
-				if shouldFallbackToScraping(nil, resp.StatusCode) && !c.shouldPreferScrapingForQuota() {
+				if shouldFallbackToScraping(nil, resp.StatusCode) && !c.shouldPreferScraping() {
 					if scraped, scrapeErr := c.scrapeCommitAuthors(owner, repo); scrapeErr == nil {
 						if c.cache != nil {
 							c.cache.setCommitAuthors(cacheKey, scraped)
@@ -2096,8 +2096,8 @@ func calculateBusFactor(authorCommits map[string]int, totalCommits int) int {
 }
 
 // GetCommitStats fetches commit distribution to calculate bus factor.
-// When no token is set, the GitHub contributors page is scraped first.
-// With a token, the API provides per-commit author data for more accurate analysis.
+// Web scraping is always tried first. The API provides per-commit author data
+// for more accurate analysis and is used as a fallback when scraping fails.
 // Results are cached per owner/repo so multiple packages from the same repository
 // share a single set of API calls.
 func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
@@ -2113,8 +2113,8 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 		}
 	}
 
-	// Scraping-first path: when no token, scrape contributor data.
-	if c.shouldPreferScrapingForQuota() {
+	// Scraping-first path: always try scraping contributor data first.
+	if c.shouldPreferScraping() {
 		stats, scrapeErr := c.scrapeCommitStats(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -2125,7 +2125,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 		// Scraping failed — fall through to try the API
 	}
 
-	// API path: primary when token is set, fallback when scraping fails.
+	// API path: fallback when scraping fails.
 	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=100", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -2140,7 +2140,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() {
+		if !c.shouldPreferScraping() {
 			stats, scrapeErr := c.scrapeCommitStats(owner, repo)
 			if scrapeErr == nil && c.cache != nil {
 				c.cache.setCommitStats(cacheKey, stats)
@@ -2153,7 +2153,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			stats, scrapeErr := c.scrapeCommitStats(owner, repo)
 			if scrapeErr == nil && c.cache != nil {
 				c.cache.setCommitStats(cacheKey, stats)
@@ -2209,7 +2209,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 }
 
 // scrapeCommitStats scrapes contributor data from the GitHub repository page.
-// This is the primary contributor data source when no GITHUB_TOKEN is set.
+// This is the primary contributor data source for all GitHub requests.
 func (c *GitHubClient) scrapeCommitStats(owner, repo string) (*CommitStats, error) {
 	pageURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
 	doc, err := scrapeWithUserAgent(pageURL)
@@ -2291,9 +2291,8 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 		}
 	}
 
-	// Scraping-first path: when quota is low, scrape PR data to
-	// conserve API calls for checks that have no scraping alternative.
-	if c.shouldPreferScrapingForQuota() {
+	// Scraping-first path: always try scraping PR data first to minimize API usage.
+	if c.shouldPreferScraping() {
 		stats, scrapeErr := c.scrapePullRequestStats(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -2324,7 +2323,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() {
+		if !c.shouldPreferScraping() {
 			if scraped, scrapeErr := c.scrapePullRequestStats(owner, repo); scrapeErr == nil {
 				if c.cache != nil {
 					c.cache.setPRStats(cacheKey, scraped)
@@ -2338,7 +2337,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			if scraped, scrapeErr := c.scrapePullRequestStats(owner, repo); scrapeErr == nil {
 				if c.cache != nil {
 					c.cache.setPRStats(cacheKey, scraped)
@@ -2574,10 +2573,9 @@ func (c *GitHubClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 }
 
 // getWorkflowFiles lists workflow filenames in .github/workflows/.
-// Uses web scraping as the primary method when no token is set. Falls back
-// to the API when a token is available or scraping fails. Returns empty list
-// (not error) when all methods fail so CI detection degrades gracefully.
-// Results are cached per owner/repo to avoid redundant API calls.
+// Web scraping is always tried first. Falls back to the API when scraping
+// fails. Returns empty list (not error) when all methods fail so CI detection
+// degrades gracefully. Results are cached per owner/repo to avoid redundant calls.
 func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	cacheKey := owner + "/" + repo
 	if c.cache != nil {
@@ -2586,8 +2584,8 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 		}
 	}
 
-	// Scraping-first path: scrape the GitHub tree page for the workflows directory.
-	if c.shouldPreferScrapingForQuota() {
+	// Scraping-first path: always try scraping the GitHub tree page first.
+	if c.shouldPreferScraping() {
 		workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -2598,7 +2596,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 		// Scraping failed — fall through to try the API
 	}
 
-	// API path: primary when token is set, fallback when scraping fails.
+	// API path: fallback when scraping fails.
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/.github/workflows", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -2613,7 +2611,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() {
+		if !c.shouldPreferScraping() {
 			workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 			if scrapeErr == nil {
 				if c.cache != nil {
@@ -2628,7 +2626,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 			if scrapeErr == nil {
 				if c.cache != nil {
@@ -2663,7 +2661,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 }
 
 // scrapeWorkflowFiles scrapes workflow filenames from the GitHub repository tree page.
-// This is the primary method when no token is set, avoiding API rate limits entirely.
+// This is the primary method for all GitHub requests, avoiding API rate limits.
 func (c *GitHubClient) scrapeWorkflowFiles(owner, repo string) ([]string, error) {
 	pageURL := fmt.Sprintf("https://github.com/%s/%s/tree/HEAD/.github/workflows", owner, repo)
 	doc, scrapeErr := scrapeWithUserAgent(pageURL)
@@ -2764,7 +2762,7 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 	// 31 API calls (1 for issue list + 10 for per-issue comments) and has no
 	// scraping alternative. Return 0 with nil error so callers degrade
 	// gracefully rather than wasting precious API quota.
-	if c.shouldPreferScrapingForQuota() {
+	if c.shouldPreferScraping() {
 		return 0, nil
 	}
 
@@ -2918,8 +2916,8 @@ func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
 }
 
 // fetchIdentity fetches and caches user/org identity information.
-// When no token is set, the profile page is scraped to avoid API rate limits.
-// With a token, the API provides richer data (exact creation date, type field).
+// Web scraping is always tried first. The API provides richer data (exact
+// creation date, type field) and is used as a fallback when scraping fails.
 // Called by CheckIfOrganization and GetUserAccountCreatedDate to avoid
 // duplicate network calls for the same owner within a scan.
 func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
@@ -2929,9 +2927,8 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 		}
 	}
 
-	// Scraping-first path: when no token, scrape the profile page to avoid
-	// burning the limited unauthenticated API quota.
-	if c.shouldPreferScrapingForQuota() {
+	// Scraping-first path: always try scraping the profile page first.
+	if c.shouldPreferScraping() {
 		if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
 			if c.cache != nil {
 				c.cache.setIdentity(owner, id)
@@ -2955,7 +2952,7 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() {
+		if !c.shouldPreferScraping() {
 			if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
 				if c.cache != nil {
 					c.cache.setIdentity(owner, id)
@@ -2969,7 +2966,7 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth error — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
 				if c.cache != nil {
 					c.cache.setIdentity(owner, id)
@@ -3056,9 +3053,9 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 		}
 	}
 
-	// Scraping-first path: when quota is low, scrape the org page to detect
+	// Scraping-first path: always try scraping the org page first to detect
 	// verified badge. MFA requirement cannot be determined via scraping.
-	if c.shouldPreferScrapingForQuota() {
+	if c.shouldPreferScraping() {
 		info := c.scrapeOrgInfo(owner)
 		if info != nil {
 			if c.cache != nil {
@@ -3083,7 +3080,7 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() {
+		if !c.shouldPreferScraping() {
 			if info := c.scrapeOrgInfo(owner); info != nil {
 				if c.cache != nil {
 					c.cache.setOrgInfo(owner, info)
@@ -3098,7 +3095,7 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 	// 404 = owner is a user, not an org; other non-200 = API unavailable
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit — try scraping if we haven't already
-		if !c.shouldPreferScrapingForQuota() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			if info := c.scrapeOrgInfo(owner); info != nil {
 				if c.cache != nil {
 					c.cache.setOrgInfo(owner, info)
