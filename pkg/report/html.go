@@ -1,6 +1,7 @@
 package report
 
 import (
+	"bufio"
 	"fmt"
 	"html"
 	"io"
@@ -11,7 +12,8 @@ import (
 )
 
 func (r *Reporter) generateHTML() error {
-	w := r.config.Writer
+	bw := bufio.NewWriterSize(r.config.Writer, 256*1024)
+	w := io.Writer(bw)
 
 	// Sort results by risk score descending, findings by severity descending
 	sorted := r.sortedResults()
@@ -58,7 +60,7 @@ func (r *Reporter) generateHTML() error {
 	f(w, "</div>\n")
 	r.printHTMLScript(w)
 	f(w, "</body>\n</html>\n")
-	return nil
+	return bw.Flush()
 }
 
 func riskOrdinal(level string) int {
@@ -388,6 +390,9 @@ func (r *Reporter) printHTMLRiskAreas(w io.Writer) {
 }
 
 func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, index int) {
+	var sb strings.Builder
+	sb.Grow(4096) // pre-allocate for typical package HTML
+
 	cls := "low"
 	switch result.RiskLevel {
 	case "HIGH":
@@ -403,65 +408,65 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 	}
 
 	slug := packageSlug(result.Dependency.Name)
-	f(w, "<div class=\"pkg-card %s%s\" id=\"pkg-%s\">\n", cls, openCls, slug)
+	f(&sb, "<div class=\"pkg-card %s%s\" id=\"pkg-%s\">\n", cls, openCls, slug)
 
 	// Clickable header
-	f(w, "<div class=\"pkg-header\" onclick=\"toggle('%s')\">\n", slug)
-	f(w, "<div class=\"pkg-left\">\n")
+	f(&sb, "<div class=\"pkg-header\" onclick=\"toggle('%s')\">\n", slug)
+	f(&sb, "<div class=\"pkg-left\">\n")
 	name := html.EscapeString(result.Dependency.Name) + "@" + html.EscapeString(result.Dependency.DisplayVersion())
-	f(w, "<span class=\"pkg-name\">%s</span>\n", name)
+	f(&sb, "<span class=\"pkg-name\">%s</span>\n", name)
 	if result.Dependency.IsTransitive {
-		f(w, "<span class=\"pkg-trans\">transitive</span>\n")
+		f(&sb, "<span class=\"pkg-trans\">transitive</span>\n")
 	}
 	if result.DataMode == models.DataModeScrapingOnly {
-		f(w, "<span class=\"pkg-trans\" style=\"color:#e9c46a\" title=\"Analyzed via web scraping only (GitHub API rate limit reached)\">scraping-only</span>\n")
+		f(&sb, "<span class=\"pkg-trans\" style=\"color:#e9c46a\" title=\"Analyzed via web scraping only (GitHub API rate limit reached)\">scraping-only</span>\n")
 	}
-	f(w, "</div>\n")
-	f(w, "<div class=\"pkg-right\">\n")
+	f(&sb, "</div>\n")
+	f(&sb, "<div class=\"pkg-right\">\n")
 	if result.SupplyChainScore != nil {
 		ms := maxScore(result.SupplyChainScore)
-		f(w, "<span class=\"pkg-score\" style=\"color:%s\">%d/%d</span>\n",
+		f(&sb, "<span class=\"pkg-score\" style=\"color:%s\">%d/%d</span>\n",
 			scoreColorCSS(result.SupplyChainScore.TotalScore),
 			result.SupplyChainScore.TotalScore, ms)
 	}
 	if result.SupplyChainScore != nil {
 		badgeColor := scoreColorCSS(result.SupplyChainScore.TotalScore)
-		f(w, "<span class=\"risk-badge %s\" style=\"color:%s\">%s</span>\n", cls, badgeColor, result.RiskLevel)
+		f(&sb, "<span class=\"risk-badge %s\" style=\"color:%s\">%s</span>\n", cls, badgeColor, result.RiskLevel)
 	} else {
-		f(w, "<span class=\"risk-badge %s\">%s</span>\n", cls, result.RiskLevel)
+		f(&sb, "<span class=\"risk-badge %s\">%s</span>\n", cls, result.RiskLevel)
 	}
-	f(w, "<svg class=\"chevron\" viewBox=\"0 0 20 20\" fill=\"currentColor\"><path fill-rule=\"evenodd\" d=\"M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z\" clip-rule=\"evenodd\"/></svg>\n")
-	f(w, "</div>\n")
-	f(w, "</div>\n")
+	f(&sb, "<svg class=\"chevron\" viewBox=\"0 0 20 20\" fill=\"currentColor\"><path fill-rule=\"evenodd\" d=\"M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z\" clip-rule=\"evenodd\"/></svg>\n")
+	f(&sb, "</div>\n")
+	f(&sb, "</div>\n")
 
 	// Expandable body
-	f(w, "<div class=\"pkg-body\">\n")
+	f(&sb, "<div class=\"pkg-body\">\n")
 
 	// Metadata
-	f(w, "<div class=\"pkg-meta\">\n")
-	f(w, "<span><span class=\"meta-label\">Ecosystem:</span> %s</span>\n", html.EscapeString(string(result.Dependency.Ecosystem)))
+	f(&sb, "<div class=\"pkg-meta\">\n")
+	f(&sb, "<span><span class=\"meta-label\">Ecosystem:</span> %s</span>\n", html.EscapeString(string(result.Dependency.Ecosystem)))
 	if result.RepositoryURL != "" {
-		f(w, "<span><span class=\"meta-label\">Repo:</span> <a href=\"%s\" target=\"_blank\" rel=\"noopener\">%s</a></span>\n",
+		f(&sb, "<span><span class=\"meta-label\">Repo:</span> <a href=\"%s\" target=\"_blank\" rel=\"noopener\">%s</a></span>\n",
 			html.EscapeString(result.RepositoryURL), html.EscapeString(result.RepositoryURL))
 	}
 	if result.ScorecardURL != "" {
-		f(w, "<span><span class=\"meta-label\">Scorecard:</span> <a href=\"%s\" target=\"_blank\" rel=\"noopener\">OpenSSF Scorecard</a></span>\n",
+		f(&sb, "<span><span class=\"meta-label\">Scorecard:</span> <a href=\"%s\" target=\"_blank\" rel=\"noopener\">OpenSSF Scorecard</a></span>\n",
 			html.EscapeString(result.ScorecardURL))
 	}
 	if result.SourceCodeAvailable {
-		f(w, "<span><span class=\"meta-label\">Source:</span> Available</span>\n")
+		f(&sb, "<span><span class=\"meta-label\">Source:</span> Available</span>\n")
 	} else {
-		f(w, "<span><span class=\"meta-label\">Source:</span> Unavailable</span>\n")
+		f(&sb, "<span><span class=\"meta-label\">Source:</span> Unavailable</span>\n")
 	}
-	f(w, "</div>\n")
+	f(&sb, "</div>\n")
 
 	// Category scores (verbose mode or always if supply chain score exists)
 	if result.SupplyChainScore != nil {
-		f(w, "<div class=\"cat-grid\">\n")
+		f(&sb, "<div class=\"cat-grid\">\n")
 		for _, cat := range categoryList(result.SupplyChainScore.CategoryScores) {
 			tooltip := html.EscapeString(categoryTooltips[cat.Name])
 			if cat.Score.Skipped {
-				f(w, "<div class=\"cat-item skipped\" data-tooltip=\"%s\"><span class=\"cat-dot dot-skip\"></span><span class=\"cat-name\">%s</span><span class=\"cat-score\">SKIP</span></div>\n",
+				f(&sb, "<div class=\"cat-item skipped\" data-tooltip=\"%s\"><span class=\"cat-dot dot-skip\"></span><span class=\"cat-name\">%s</span><span class=\"cat-score\">SKIP</span></div>\n",
 					tooltip, html.EscapeString(cat.Name))
 				continue
 			}
@@ -471,37 +476,39 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 			if !cat.Score.Verified {
 				verified = " <span class=\"cat-verified\">?</span>"
 			}
-			f(w, "<div class=\"cat-item %s\" data-tooltip=\"%s\"><span class=\"cat-dot %s\"></span><span class=\"cat-name\">%s</span><span class=\"cat-score\">%d/2%s</span></div>\n",
+			f(&sb, "<div class=\"cat-item %s\" data-tooltip=\"%s\"><span class=\"cat-dot %s\"></span><span class=\"cat-name\">%s</span><span class=\"cat-score\">%d/2%s</span></div>\n",
 				riskCls, tooltip, dotCls, html.EscapeString(cat.Name), cat.Score.Score, verified)
 		}
-		f(w, "</div>\n")
+		f(&sb, "</div>\n")
 	}
 
 	// Findings
 	if len(result.Findings) > 0 {
-		f(w, "<div class=\"findings-title\">Risk Findings</div>\n")
+		f(&sb, "<div class=\"findings-title\">Risk Findings</div>\n")
 		for _, finding := range result.Findings {
 			fc := "f-" + severityToClass(finding.Severity)
-			f(w, "<div class=\"finding-item %s\">\n", fc)
-			f(w, "<span class=\"sev-badge %s\">%s</span>\n",
+			f(&sb, "<div class=\"finding-item %s\">\n", fc)
+			f(&sb, "<span class=\"sev-badge %s\">%s</span>\n",
 				severityToClass(finding.Severity), html.EscapeString(finding.Severity))
-			f(w, "<div class=\"finding-desc\">%s</div>\n", html.EscapeString(finding.Description))
+			f(&sb, "<div class=\"finding-desc\">%s</div>\n", html.EscapeString(finding.Description))
 			if finding.SourceURL != "" {
-				f(w, "<div class=\"finding-extra\">Source: <a href=\"%s\" target=\"_blank\" rel=\"noopener\">%s</a></div>\n",
+				f(&sb, "<div class=\"finding-extra\">Source: <a href=\"%s\" target=\"_blank\" rel=\"noopener\">%s</a></div>\n",
 					html.EscapeString(finding.SourceURL), html.EscapeString(finding.SourceURL))
 			}
 			if finding.Evidence != "" && r.config.Verbose {
-				f(w, "<div class=\"finding-extra\">Evidence: %s</div>\n", html.EscapeString(finding.Evidence))
+				f(&sb, "<div class=\"finding-extra\">Evidence: %s</div>\n", html.EscapeString(finding.Evidence))
 			}
 			if finding.Methodology != "" && r.config.Verbose {
-				f(w, "<div class=\"finding-extra\">Method: %s</div>\n", html.EscapeString(finding.Methodology))
+				f(&sb, "<div class=\"finding-extra\">Method: %s</div>\n", html.EscapeString(finding.Methodology))
 			}
-			f(w, "</div>\n")
+			f(&sb, "</div>\n")
 		}
 	}
 
-	f(w, "</div>\n") // pkg-body
-	f(w, "</div>\n") // pkg-card
+	f(&sb, "</div>\n") // pkg-body
+	f(&sb, "</div>\n") // pkg-card
+
+	io.WriteString(w, sb.String())
 }
 
 func severityToClass(severity string) string {

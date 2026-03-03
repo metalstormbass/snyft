@@ -219,14 +219,12 @@ func (r *Reporter) extractCriticalIssues(maxIssues int) []CriticalIssue {
 	sorted := make([]models.AnalysisResult, len(r.results))
 	copy(sorted, r.results)
 
-	// Sort: HIGH > MEDIUM > LOW, then by critical finding count
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if shouldSwapRisk(sorted[i], sorted[j]) {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
-	}
+	// Sort: HIGH > MEDIUM > LOW, then by critical finding count.
+	// shouldSwapRisk(a, b) returns true when b should precede a,
+	// so swap the arguments for sort.Slice's less function.
+	sort.Slice(sorted, func(i, j int) bool {
+		return shouldSwapRisk(sorted[j], sorted[i])
+	})
 
 	var issues []CriticalIssue
 	for _, result := range sorted {
