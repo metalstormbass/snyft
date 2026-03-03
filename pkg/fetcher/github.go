@@ -21,11 +21,29 @@ import (
 // API calls supplement scraped data with richer metadata and higher rate limits
 // (5,000 req/hour vs 60 unauthenticated). Caching eliminates repeated
 // round-trips for the same repo across multiple checks.
+// cachedIdentity stores the result of a GET /users/{owner} call so that
+// CheckIfOrganization, GetUserAccountCreatedDate, etc. can share it.
+type cachedIdentity struct {
+	isOrg     bool
+	name      string // display name or login
+	createdAt time.Time
+}
+
+// cachedOrgInfo stores the result of a GET /orgs/{owner} call so that
+// CheckVerifiedOrganization and CheckOrgMFARequired share a single request.
+type cachedOrgInfo struct {
+	isVerified  bool
+	mfaRequired bool
+	found       bool // false when owner is not an org (404)
+}
+
 type repoCache struct {
 	mu         sync.RWMutex
 	repoInfo   map[string]*models.RepositoryInfo // key: "owner/repo"
 	releases   map[string][]GitHubRelease        // key: "owner/repo"
 	fileExists map[string]bool                   // key: "owner/repo/path"
+	identity   map[string]*cachedIdentity        // key: owner (user/org identity)
+	orgInfo    map[string]*cachedOrgInfo          // key: owner (org details)
 }
 
 func newRepoCache() *repoCache {
@@ -33,6 +51,8 @@ func newRepoCache() *repoCache {
 		repoInfo:   make(map[string]*models.RepositoryInfo),
 		releases:   make(map[string][]GitHubRelease),
 		fileExists: make(map[string]bool),
+		identity:   make(map[string]*cachedIdentity),
+		orgInfo:    make(map[string]*cachedOrgInfo),
 	}
 }
 
@@ -73,6 +93,32 @@ func (rc *repoCache) setFileExists(key string, exists bool) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.fileExists[key] = exists
+}
+
+func (rc *repoCache) getIdentity(key string) (*cachedIdentity, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.identity[key]
+	return v, ok
+}
+
+func (rc *repoCache) setIdentity(key string, id *cachedIdentity) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.identity[key] = id
+}
+
+func (rc *repoCache) getOrgInfo(key string) (*cachedOrgInfo, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.orgInfo[key]
+	return v, ok
+}
+
+func (rc *repoCache) setOrgInfo(key string, info *cachedOrgInfo) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.orgInfo[key] = info
 }
 
 // GitHubClient handles interactions with GitHub API and web scraping.
@@ -571,8 +617,12 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 // raw.githubusercontent.com, which is served by a CDN and is not subject to
 // the GitHub API rate limit. This is used as a fallback when the API returns
 // 403/429.
+//
+// When GetRepositoryInfo has already been called (which caches DefaultBranch),
+// we use the known branch name to avoid a redundant HEAD request.
 func (c *GitHubClient) checkFileViaRawURL(owner, repo, path string) bool {
-	for _, branch := range []string{"main", "master"} {
+	branches := c.defaultBranchCandidates(owner, repo)
+	for _, branch := range branches {
 		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, path)
 		req, err := http.NewRequest("HEAD", rawURL, nil)
 		if err != nil {
@@ -588,6 +638,20 @@ func (c *GitHubClient) checkFileViaRawURL(owner, repo, path string) bool {
 		}
 	}
 	return false
+}
+
+// defaultBranchCandidates returns the branch names to try for raw URL checks.
+// If we already have the default branch cached from GetRepositoryInfo, return
+// just that branch (saving a redundant HEAD request). Otherwise fall back to
+// trying both "main" and "master".
+func (c *GitHubClient) defaultBranchCandidates(owner, repo string) []string {
+	if c.cache != nil {
+		cacheKey := owner + "/" + repo
+		if info, ok := c.cache.getRepoInfo(cacheKey); ok && info.DefaultBranch != "" {
+			return []string{info.DefaultBranch}
+		}
+	}
+	return []string{"main", "master"}
 }
 
 // FileExistsInRepo checks if a file exists in a GitHub repository using a
@@ -1020,9 +1084,9 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 
 // getFileContentViaRawURL fetches file content from raw.githubusercontent.com,
 // which is served by a CDN and is not subject to the GitHub API rate limit.
-// Tries both main and master branches.
+// Uses the cached default branch when available, otherwise tries main and master.
 func (c *GitHubClient) getFileContentViaRawURL(owner, repo, path string) (string, error) {
-	for _, branch := range []string{"main", "master"} {
+	for _, branch := range c.defaultBranchCandidates(owner, repo) {
 		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, path)
 		req, err := http.NewRequest("GET", rawURL, nil)
 		if err != nil {
@@ -1938,10 +2002,27 @@ func (c *GitHubClient) GetPlatformName() string {
 //   ...
 // }
 func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
+	id := c.fetchIdentity(owner)
+	if id == nil {
+		return false, ""
+	}
+	return id.isOrg, id.name
+}
+
+// fetchIdentity fetches and caches the result of GET /users/{owner}.
+// Called by CheckIfOrganization and GetUserAccountCreatedDate to avoid
+// duplicate API calls for the same owner within a scan.
+func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
+	if c.cache != nil {
+		if cached, ok := c.cache.getIdentity(owner); ok {
+			return cached
+		}
+	}
+
 	url := fmt.Sprintf("%s/users/%s", c.baseURL, owner)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return false, ""
+		return nil
 	}
 
 	if c.token != "" {
@@ -1951,35 +2032,50 @@ func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
 
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return false, ""
+		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit — try scraping the profile page to detect org vs user
 		if shouldFallbackToScraping(nil, resp.StatusCode) {
-			return c.scrapeIsOrganization(owner)
+			isOrg, name := c.scrapeIsOrganization(owner)
+			if name != "" {
+				id := &cachedIdentity{isOrg: isOrg, name: name}
+				if c.cache != nil {
+					c.cache.setIdentity(owner, id)
+				}
+				return id
+			}
 		}
-		return false, ""
+		return nil
 	}
 
 	var user struct {
-		Login string `json:"login"`
-		Type  string `json:"type"` // "User" or "Organization"
-		Name  string `json:"name"`
+		Login     string    `json:"login"`
+		Type      string    `json:"type"` // "User" or "Organization"
+		Name      string    `json:"name"`
+		CreatedAt time.Time `json:"created_at"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return false, ""
+		return nil
 	}
 
-	isOrg := user.Type == "Organization"
-	orgName := user.Name
-	if orgName == "" {
-		orgName = user.Login
+	name := user.Name
+	if name == "" {
+		name = user.Login
 	}
 
-	return isOrg, orgName
+	id := &cachedIdentity{
+		isOrg:     user.Type == "Organization",
+		name:      name,
+		createdAt: user.CreatedAt,
+	}
+	if c.cache != nil {
+		c.cache.setIdentity(owner, id)
+	}
+	return id
 }
 
 // scrapeIsOrganization checks whether a GitHub owner is an organization by
@@ -2007,19 +2103,20 @@ func (c *GitHubClient) scrapeIsOrganization(owner string) (bool, string) {
 	return isOrg, name
 }
 
-// CheckVerifiedOrganization checks if a GitHub organization has verified status
-//
-// Methodology:
-// - Query GitHub API: GET /orgs/{org}
-// - Check for "is_verified" field (requires authentication)
-//
-// Note: GitHub's verified organization badge requires specific API permissions
-// If unavailable, this returns false (conservative approach)
-func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
-	url := fmt.Sprintf("%s/orgs/%s", c.baseURL, owner)
-	req, err := http.NewRequest("GET", url, nil)
+// fetchOrgInfo fetches and caches the result of GET /orgs/{owner}.
+// Both CheckVerifiedOrganization and CheckOrgMFARequired share this single
+// request, saving one API call per org per scan.
+func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
+	if c.cache != nil {
+		if cached, ok := c.cache.getOrgInfo(owner); ok {
+			return cached
+		}
+	}
+
+	apiURL := fmt.Sprintf("%s/orgs/%s", c.baseURL, owner)
+	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
-		return false
+		return nil
 	}
 
 	if c.token != "" {
@@ -2029,25 +2126,53 @@ func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
 
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return false
+		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// 404 = owner is a user, not an org; other non-200 = API unavailable
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit — return false (unknown, not negative signal).
-		// The caller should not treat this as "not verified" risk signal.
-		return false
+		info := &cachedOrgInfo{found: false}
+		if c.cache != nil {
+			c.cache.setOrgInfo(owner, info)
+		}
+		return info
 	}
 
 	var org struct {
-		IsVerified bool `json:"is_verified"`
+		IsVerified                  bool `json:"is_verified"`
+		TwoFactorRequirementEnabled bool `json:"two_factor_requirement_enabled"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&org); err != nil {
-		return false
+		return nil
 	}
 
-	return org.IsVerified
+	info := &cachedOrgInfo{
+		isVerified:  org.IsVerified,
+		mfaRequired: org.TwoFactorRequirementEnabled,
+		found:       true,
+	}
+	if c.cache != nil {
+		c.cache.setOrgInfo(owner, info)
+	}
+	return info
+}
+
+// CheckVerifiedOrganization checks if a GitHub organization has verified status
+//
+// Methodology:
+// - Query GitHub API: GET /orgs/{org} (cached, shared with CheckOrgMFARequired)
+// - Check for "is_verified" field (requires authentication)
+//
+// Note: GitHub's verified organization badge requires specific API permissions
+// If unavailable, this returns false (conservative approach)
+func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
+	info := c.fetchOrgInfo(owner)
+	if info == nil || !info.found {
+		return false
+	}
+	return info.isVerified
 }
 
 // CheckOrgMFARequired checks if a GitHub organization enforces mandatory MFA/2FA.
@@ -2059,86 +2184,29 @@ func (c *GitHubClient) CheckVerifiedOrganization(owner string) bool {
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 //         https://arxiv.org/abs/2005.09535
 // Methodology: Query GET /orgs/{owner} - two_factor_requirement_enabled field.
-//              This field is publicly visible for public organizations (no auth required).
+//              Cached: shared with CheckVerifiedOrganization (single API call).
 //              Returns (false, false) if the owner is a user (not an org) or API unavailable.
 // Result: (true, true) = MFA enforced; (false, true) = MFA not enforced; (false, false) = unknown
 func (c *GitHubClient) CheckOrgMFARequired(owner string) (required bool, available bool) {
-	apiURL := fmt.Sprintf("%s/orgs/%s", c.baseURL, owner)
-	req, err := http.NewRequest("GET", apiURL, nil)
-	if err != nil {
+	info := c.fetchOrgInfo(owner)
+	if info == nil || !info.found {
 		return false, false
 	}
-
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.doRequest(req)
-	if err != nil {
-		return false, false
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// 404 = owner is a user, not an org; other non-200 = API unavailable
-	if resp.StatusCode != http.StatusOK {
-		return false, false
-	}
-
-	var org struct {
-		TwoFactorRequirementEnabled bool `json:"two_factor_requirement_enabled"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&org); err != nil {
-		return false, false
-	}
-
-	return org.TwoFactorRequirementEnabled, true
+	return info.mfaRequired, true
 }
 
 // GetUserAccountCreatedDate fetches the account creation date for a GitHub user
 //
 // Methodology:
-// - Query GitHub API: GET /users/{username}
+// - Query GitHub API: GET /users/{username} (cached, shared with CheckIfOrganization)
 // - Extract "created_at" field
 //
 // Returns account creation timestamp
 // Used to detect new accounts (< 6 months = suspicious, < 1 month = red flag)
 func (c *GitHubClient) GetUserAccountCreatedDate(username string) (time.Time, error) {
-	url := fmt.Sprintf("%s/users/%s", c.baseURL, username)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return time.Time{}, err
+	id := c.fetchIdentity(username)
+	if id == nil {
+		return time.Time{}, fmt.Errorf("unable to fetch user info for %s", username)
 	}
-
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.doRequest(req)
-	if err != nil {
-		return time.Time{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		// Rate limit — return zero time so callers degrade gracefully
-		// rather than treating unavailable data as a risk signal
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
-			return time.Time{}, nil
-		}
-		return time.Time{}, fmt.Errorf("GitHub API returned %d for user %s", resp.StatusCode, username)
-	}
-
-	var user struct {
-		Login     string    `json:"login"`
-		CreatedAt time.Time `json:"created_at"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return time.Time{}, err
-	}
-
-	return user.CreatedAt, nil
+	return id.createdAt, nil
 }
