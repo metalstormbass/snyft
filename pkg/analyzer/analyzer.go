@@ -89,6 +89,19 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 	return a
 }
 
+// ShouldStopForRateLimit returns true when the GitHub API rate limit remaining
+// count is below the given threshold. The scan command uses this to decide
+// when to save progress and exit gracefully.
+func (a *Analyzer) ShouldStopForRateLimit(threshold int) bool {
+	return a.githubClient.ShouldStopForRateLimit(threshold)
+}
+
+// RateLimitRemaining returns the last observed GitHub API rate limit remaining count.
+// Returns -1 if no rate limit header has been received yet.
+func (a *Analyzer) RateLimitRemaining() int {
+	return a.githubClient.RateLimitRemaining()
+}
+
 // getGitClient returns the appropriate git platform client for a given repository URL
 func (a *Analyzer) getGitClient(repoURL string) fetcher.GitPlatformClient {
 	platform := fetcher.DetectPlatform(repoURL)

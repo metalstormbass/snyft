@@ -164,6 +164,24 @@ func NewGitHubClientWithBaseURL(baseURL string) *GitHubClient {
 	}
 }
 
+// RateLimitRemaining returns the last observed GitHub API rate limit remaining count.
+// Returns -1 if no rate limit header has been received yet.
+func (c *GitHubClient) RateLimitRemaining() int {
+	if c.rateLimiter == nil {
+		return -1
+	}
+	return c.rateLimiter.Remaining()
+}
+
+// ShouldStopForRateLimit returns true when the GitHub API quota is below the
+// given threshold, indicating the scan should save progress and stop.
+func (c *GitHubClient) ShouldStopForRateLimit(threshold int) bool {
+	if c.rateLimiter == nil {
+		return false
+	}
+	return c.rateLimiter.ShouldStop(threshold)
+}
+
 // shouldPreferScraping returns true when web scraping should be tried first.
 // Scraping is preferred when no API token is configured and we're using the
 // default GitHub API URL, since unauthenticated API calls are limited to

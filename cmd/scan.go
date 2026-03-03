@@ -18,6 +18,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// rateLimitStopThreshold is the minimum number of GitHub API calls that must
+// remain before the scan stops to preserve quota. When the rate limit drops
+// below this value, workers stop accepting new packages and the scan saves
+// a checkpoint file so it can be resumed later with --resume.
+const rateLimitStopThreshold = 50
+
 var (
 	scanPath    string
 	workers     int
@@ -33,6 +39,9 @@ var (
 
 	// All versions flag (skip deduplication)
 	allVersions bool
+
+	// Resume flag
+	resumeScan bool
 )
 
 var scanCmd = &cobra.Command{
@@ -62,6 +71,9 @@ func init() {
   publisher-control, ownership-changes, release-anomalies,
   install-execution, dependency-sprawl, provenance, health,
   governance, release-security, package-maturity`)
+
+	// Resume flag
+	scanCmd.Flags().BoolVar(&resumeScan, "resume", false, "Resume a previously interrupted scan from its checkpoint file")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
@@ -185,14 +197,87 @@ func runScan(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(statusOut, "📦 Found %d dependencies (%d direct, %d transitive)\n\n", len(dependencies), directCount, transitiveCount)
 	}
 
-	// Analyze dependencies in parallel
-	results := analyzeDependencies(dependencies, workers, reporter, selectedChecks, statusOut)
+	// Load checkpoint if resuming a previous scan
+	var previousResults []models.AnalysisResult
+	if resumeScan {
+		cp, err := loadCheckpoint(scanPath)
+		if err != nil {
+			return fmt.Errorf("failed to load checkpoint: %w", err)
+		}
+		if cp == nil {
+			_, _ = fmt.Fprintln(statusOut, "⚠️  No checkpoint file found, starting fresh scan")
+		} else {
+			// Build set of already-completed package keys
+			completedSet := make(map[string]bool, len(cp.CompletedKeys))
+			for _, key := range cp.CompletedKeys {
+				completedSet[key] = true
+			}
+
+			// Filter out already-completed dependencies
+			var remaining []models.Dependency
+			for _, dep := range dependencies {
+				if !completedSet[dependencyKey(dep)] {
+					remaining = append(remaining, dep)
+				}
+			}
+
+			previousResults = cp.Results
+			_, _ = fmt.Fprintf(statusOut, "📂 Resuming from checkpoint: %d packages already analyzed, %d remaining\n\n",
+				len(cp.Results), len(remaining))
+			dependencies = remaining
+
+			if len(dependencies) == 0 {
+				_, _ = fmt.Fprintln(statusOut, "✅ All packages already analyzed in previous scan")
+				reporter.ClearProgress()
+				reporter.AddResults(previousResults)
+				removeCheckpoint(scanPath)
+				return reporter.Generate()
+			}
+		}
+	}
+
+	// Analyze dependencies in parallel (with rate limit gate)
+	scanResult := analyzeDependenciesWithGate(dependencies, workers, reporter, selectedChecks, statusOut)
 
 	// Clear progress line
 	reporter.ClearProgress()
 
+	// Merge with any previously completed results from checkpoint
+	allResults := append(previousResults, scanResult.results...)
+
+	if scanResult.rateLimitStopped {
+		// Save checkpoint for later resumption
+		var completedKeys []string
+		for _, r := range allResults {
+			completedKeys = append(completedKeys, dependencyKey(r.Dependency))
+		}
+		totalDeps := len(previousResults) + len(dependencies)
+		cp := &ScanCheckpoint{
+			ScanPath:           scanPath,
+			CreatedAt:          time.Now(),
+			Reason:             "rate_limit_approaching",
+			RateLimitRemaining: scanResult.rateLimitRemaining,
+			Results:            allResults,
+			CompletedKeys:      completedKeys,
+		}
+		if err := saveCheckpoint(scanPath, cp); err != nil {
+			_, _ = fmt.Fprintf(statusOut, "⚠️  Failed to save checkpoint: %v\n", err)
+		} else {
+			_, _ = fmt.Fprintf(statusOut, "\n💾 Checkpoint saved: %d of %d packages analyzed\n", len(allResults), totalDeps)
+			_, _ = fmt.Fprintf(statusOut, "   GitHub API calls remaining: %d (threshold: %d)\n", scanResult.rateLimitRemaining, rateLimitStopThreshold)
+			_, _ = fmt.Fprintf(statusOut, "   Resume with: snyft scan --resume %s\n\n", scanPath)
+		}
+
+		// Still generate a partial report with what we have
+		reporter.AddResults(allResults)
+		return reporter.Generate()
+	}
+
+	// Full scan complete — remove any leftover checkpoint file
+	removeCheckpoint(scanPath)
+
 	// Generate report
-	reporter.AddResults(results)
+	reporter.AddResults(allResults)
 	return reporter.Generate()
 }
 
@@ -292,15 +377,24 @@ func findManifestFiles(dir string) ([]string, error) {
 	return manifestFiles, err
 }
 
-func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, selectedChecks []string, statusOut *os.File) []models.AnalysisResult {
+// analysisOutput holds the results from analyzeDependenciesWithGate.
+type analysisOutput struct {
+	results             []models.AnalysisResult
+	rateLimitStopped    bool
+	rateLimitRemaining  int
+}
+
+// analyzeDependenciesWithGate runs dependency analysis with a rate limit gate.
+// When the GitHub API rate limit drops below rateLimitStopThreshold, it stops
+// dispatching new jobs, lets in-flight workers finish, and returns partial
+// results along with a flag indicating the scan was interrupted.
+func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, reporter *report.Reporter, selectedChecks []string, statusOut *os.File) analysisOutput {
 	results := make([]models.AnalysisResult, len(deps))
+	completedFlags := make([]bool, len(deps)) // tracks which indices were actually analyzed
 	jobs := make(chan int, len(deps))
 	var wg sync.WaitGroup
 	var completed int
 	var mu sync.Mutex
-	// currentPkg tracks what the workers are currently analyzing so the
-	// heartbeat ticker can refresh the spinner even while a slow AI call
-	// is in progress.
 	var currentPkg string
 
 	startTime := time.Now()
@@ -314,8 +408,6 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 	a := analyzer.NewAnalyzer(opts...)
 
 	// Start a heartbeat ticker that refreshes the progress spinner every 500ms.
-	// Without this, the progress bar appears frozen during long network calls
-	// (registry APIs, git platform lookups, AI analysis) and looks like a hang.
 	done := make(chan struct{})
 	ticker := time.NewTicker(500 * time.Millisecond)
 	go func() {
@@ -349,30 +441,58 @@ func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *rep
 
 				results[idx] = a.Analyze(dep)
 
-				// Update progress
 				mu.Lock()
 				completed++
+				completedFlags[idx] = true
 				reporter.ShowProgress(completed, len(deps), pkgLabel)
 				mu.Unlock()
 			}
 		}()
 	}
 
-	// Queue jobs
+	// Queue jobs, checking rate limit before each dispatch.
+	// Once the gate triggers, stop sending new jobs so in-flight workers
+	// can finish naturally.
+	rateLimitStopped := false
 	for i := range deps {
+		if a.ShouldStopForRateLimit(rateLimitStopThreshold) {
+			rateLimitStopped = true
+			reporter.ClearProgress()
+			remaining := a.RateLimitRemaining()
+			_, _ = fmt.Fprintf(statusOut, "\n⚠️  Rate limit approaching: %d GitHub API calls remaining (threshold: %d)\n", remaining, rateLimitStopThreshold)
+			_, _ = fmt.Fprintln(statusOut, "   Stopping scan to preserve API quota. In-flight analyses will complete.")
+			break
+		}
 		jobs <- i
 	}
 	close(jobs)
 
-	// Wait for completion
+	// Wait for in-flight workers to finish
 	wg.Wait()
 	close(done)
 
+	// Collect only the completed results
+	var completedResults []models.AnalysisResult
+	for i, flag := range completedFlags {
+		if flag {
+			completedResults = append(completedResults, results[i])
+		}
+	}
+
 	duration := time.Since(startTime)
 	reporter.ClearProgress()
-	_, _ = fmt.Fprintf(statusOut, "✅ Analysis complete in %s\n\n", formatDuration(duration))
+	if rateLimitStopped {
+		_, _ = fmt.Fprintf(statusOut, "⏸️  Partial analysis complete in %s (%d of %d packages)\n\n",
+			formatDuration(duration), len(completedResults), len(deps))
+	} else {
+		_, _ = fmt.Fprintf(statusOut, "✅ Analysis complete in %s\n\n", formatDuration(duration))
+	}
 
-	return results
+	return analysisOutput{
+		results:            completedResults,
+		rateLimitStopped:   rateLimitStopped,
+		rateLimitRemaining: a.RateLimitRemaining(),
+	}
 }
 
 // formatDuration formats a duration for display
