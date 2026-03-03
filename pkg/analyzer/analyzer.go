@@ -103,6 +103,19 @@ func (a *Analyzer) RateLimitRemaining() int {
 	return a.githubClient.RateLimitRemaining()
 }
 
+// SetScrapingOnlyMode enables or disables scraping-only mode on the GitHub
+// client. When enabled, all GitHub API calls are skipped and only web scraping
+// is used. This is activated when the rate limit gate triggers during a scan,
+// allowing remaining packages to still be analyzed with reduced data fidelity.
+func (a *Analyzer) SetScrapingOnlyMode(enabled bool) {
+	a.githubClient.SetScrapingOnlyMode(enabled)
+}
+
+// IsScrapingOnly returns true when the GitHub client is in scraping-only mode.
+func (a *Analyzer) IsScrapingOnly() bool {
+	return a.githubClient.IsScrapingOnly()
+}
+
 // getGitClient returns the appropriate git platform client for a given repository URL
 func (a *Analyzer) getGitClient(repoURL string) fetcher.GitPlatformClient {
 	platform := fetcher.DetectPlatform(repoURL)
