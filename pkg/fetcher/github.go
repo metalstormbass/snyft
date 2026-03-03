@@ -76,6 +76,7 @@ type repoCache struct {
 	branchProtection  map[string]*cachedBranchProtection  // key: "owner/repo"
 	issueResponseTime map[string]*cachedIssueResponseTime // key: "owner/repo"
 	workflowFiles     map[string][]string                 // key: "owner/repo"
+	cloneData         map[string]*gitCloneData            // key: "owner/repo" — data from bare git clone
 }
 
 func newRepoCache() *repoCache {
@@ -93,6 +94,7 @@ func newRepoCache() *repoCache {
 		branchProtection:  make(map[string]*cachedBranchProtection),
 		issueResponseTime: make(map[string]*cachedIssueResponseTime),
 		workflowFiles:     make(map[string][]string),
+		cloneData:         make(map[string]*gitCloneData),
 	}
 }
 
@@ -564,23 +566,49 @@ func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*model
 
 
 // DetectCISystems checks for common CI/CD systems in the repository.
-// It first attempts a single Git Trees API call to fetch the full file listing,
-// then matches CI config paths against that tree. This reduces CI detection
-// from ~16+ API calls to 1. Falls back to individual fileExists checks if the
-// tree API call fails.
+// Uses bare git clone file tree when available (fastest, no network calls).
+// Falls back to Git Trees API call, then individual fileExists checks.
 func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
-	// Try the efficient tree-based approach first.
+	// Clone-first path: use cached clone file tree if available
+	if treePaths, ok := c.getFileTreeFromClone(owner, repo); ok {
+		return c.detectCIFromTree(treePaths), nil
+	}
+
+	// Try the efficient tree-based API approach.
 	if ciSystems, ok := c.detectCIViaTree(owner, repo); ok {
 		return ciSystems, nil
 	}
 
 	// Fallback: individual fileExists checks (original behavior).
 	return c.detectCIViaFileExists(owner, repo), nil
+}
+
+// detectCIFromTree detects CI systems from a file tree (either from clone or API).
+func (c *GitHubClient) detectCIFromTree(treePaths map[string]bool) []string {
+	var ciSystems []string
+	detected := make(map[string]bool)
+
+	for _, entry := range ExtendedCIConfigFiles() {
+		if detected[entry.Name] {
+			continue
+		}
+		if treePaths[entry.Path] {
+			detected[entry.Name] = true
+			ciSystems = append(ciSystems, entry.Name)
+			continue
+		}
+		if c.treeHasPrefix(treePaths, entry.Path) {
+			detected[entry.Name] = true
+			ciSystems = append(ciSystems, entry.Name)
+		}
+	}
+
+	return ciSystems
 }
 
 // detectCIViaTree fetches the repo's full file tree in a single API call and
@@ -667,6 +695,11 @@ func (c *GitHubClient) detectCIViaFileExists(owner, repo string) []string {
 // When scraping is preferred (no token), this is skipped since the Git Trees
 // API requires authentication for useful results on large repos.
 func (c *GitHubClient) getRepoTree(owner, repo string) (map[string]bool, bool, bool) {
+	// Clone-first path: use cached clone file tree if available (complete, never truncated)
+	if treePaths, ok := c.getFileTreeFromClone(owner, repo); ok {
+		return treePaths, false, true
+	}
+
 	if c.shouldPreferScraping() {
 		return nil, false, false
 	}
@@ -771,10 +804,16 @@ func (c *GitHubClient) GetReleaseHistory(repoURL string, limit int) ([]GitHubRel
 // GetCommitActivity fetches recent commit activity for a repository.
 // Returns empty list (not error) when rate-limited — commit history cannot be
 // meaningfully scraped, but callers handle empty results gracefully.
+// Uses bare git clone data when available, falling back to API.
 func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]GitHubCommit, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
+	}
+
+	// Clone-first path: use cached clone data if available (no API call needed)
+	if commits, ok := c.getCommitActivityFromClone(owner, repo, since); ok {
+		return commits, nil
 	}
 
 	url := fmt.Sprintf("%s/repos/%s/%s/commits?since=%s&per_page=100",
@@ -1230,6 +1269,14 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		if cached, ok := c.cache.getFileExists(cacheKey); ok {
 			return cached
 		}
+	}
+
+	// Clone-first path: use cached clone file tree if available (no network call)
+	if exists, ok := c.fileExistsInClone(owner, repo, path); ok {
+		if c.cache != nil {
+			c.cache.setFileExists(cacheKey, exists)
+		}
+		return exists
 	}
 
 	// Raw-URL-first path: always use raw.githubusercontent.com (CDN, not
@@ -1698,12 +1745,17 @@ func (c *GitHubClient) scrapeReleases(owner, repo string) ([]GitHubRelease, erro
 }
 
 // GetFileContent fetches the content of a file from a GitHub repository.
-// raw.githubusercontent.com (CDN) is always tried first to avoid API usage.
-// The API is used as fallback for reliability and private repo support.
+// Uses bare git clone data when available (fastest, no network call).
+// Falls back to raw.githubusercontent.com (CDN), then the API.
 func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return "", err
+	}
+
+	// Clone-first path: use cached clone data if available (no network call)
+	if content, cloneErr := c.GetCloneFileContent(owner, repo, filePath); cloneErr == nil {
+		return content, nil
 	}
 
 	// Raw-URL-first path: always use CDN (not subject to API rate limits).
