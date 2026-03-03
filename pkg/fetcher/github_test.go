@@ -918,16 +918,14 @@ func TestCheckGitTag_PaginatedFallback(t *testing.T) {
 					w.Header().Set("Content-Type", "application/json")
 
 					var tags []string
-					if page == "" || page == "1" {
+					switch page {
+					case "", "1":
 						tags = tt.page1Tags
 						if len(tt.page2Tags) > 0 {
-							// Add Link header pointing to page 2
-							nextURL := fmt.Sprintf("<%s%s?per_page=100&page=2>; rel=\"next\"", r.Host, r.URL.Path)
-							// Use the full URL with the server's base
-							nextURL = fmt.Sprintf("<%s/repos/owner/repo/tags?per_page=100&page=2>; rel=\"next\"", "http://"+r.Host)
+							nextURL := fmt.Sprintf("<%s/repos/owner/repo/tags?per_page=100&page=2>; rel=\"next\"", "http://"+r.Host)
 							w.Header().Set("Link", nextURL)
 						}
-					} else if page == "2" {
+					case "2":
 						tags = tt.page2Tags
 					}
 
