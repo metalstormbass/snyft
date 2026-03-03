@@ -1,6 +1,8 @@
 package analyzer
 
 import (
+	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -421,6 +423,237 @@ func isAntRunPluginDangerous(pluginBlock string) bool {
 
 	// Only standard Ant tasks (mkdir, copy, echo, etc.)
 	return false
+}
+
+// scriptFileExtensions lists file extensions considered as executable script files.
+var scriptFileExtensions = map[string]bool{
+	".js": true, ".mjs": true, ".cjs": true, ".ts": true,
+	".sh": true, ".bash": true,
+	".py": true, ".rb": true, ".pl": true, ".php": true,
+}
+
+// scriptInterpreters lists commands that execute script files.
+var scriptInterpreters = map[string]bool{
+	"node": true, "nodejs": true,
+	"python": true, "python3": true,
+	"sh": true, "bash": true, "zsh": true,
+	"ruby": true, "perl": true, "php": true,
+}
+
+// commandSeparatorRe splits chained shell commands.
+var commandSeparatorRe = regexp.MustCompile(`\s*(?:&&|\|\||;)\s*`)
+
+// resolveScriptFilePaths extracts file paths from npm hook commands.
+// Given "node scripts/postinstall.js", returns ["scripts/postinstall.js"].
+// Handles chained commands (&&, ||, ;) and skips inline code flags (-e, -c).
+func resolveScriptFilePaths(hookCommand string) []string {
+	segments := commandSeparatorRe.Split(hookCommand, -1)
+
+	var paths []string
+	seen := map[string]bool{}
+
+	for _, seg := range segments {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+
+		parts := strings.Fields(seg)
+		if len(parts) == 0 {
+			continue
+		}
+
+		// Direct script execution: ./scripts/install.sh or scripts/setup.sh
+		first := parts[0]
+		if strings.HasPrefix(first, "./") || (strings.Contains(first, "/") && scriptFileExtensions[filepath.Ext(first)]) {
+			path := strings.TrimPrefix(first, "./")
+			if scriptFileExtensions[filepath.Ext(path)] && !seen[path] {
+				paths = append(paths, path)
+				seen[path] = true
+			}
+			continue
+		}
+
+		// Interpreter + file: node scripts/postinstall.js
+		if !scriptInterpreters[first] {
+			continue
+		}
+
+		for i := 1; i < len(parts); i++ {
+			arg := parts[i]
+			// Skip flags like -e, --eval, -c, --require, etc.
+			if strings.HasPrefix(arg, "-") {
+				// Flags that take a value: skip the next arg too
+				if arg == "-e" || arg == "--eval" || arg == "-c" || arg == "--require" || arg == "-r" {
+					i++ // skip the flag's value
+				}
+				continue
+			}
+			// First non-flag arg is the script file
+			path := strings.TrimPrefix(arg, "./")
+			if scriptFileExtensions[filepath.Ext(path)] && !seen[path] {
+				paths = append(paths, path)
+				seen[path] = true
+			}
+			break
+		}
+	}
+
+	return paths
+}
+
+// analyzeNodeScript analyzes a Node.js script file for dangerous patterns.
+// Extends the generic AnalyzeScript with Node.js-specific supply chain attack patterns.
+func analyzeNodeScript(content string) ScriptAnalysis {
+	analysis := AnalyzeScript(content)
+
+	// Node.js-specific patterns documented in real-world npm supply chain attacks.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	//         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+	nodePatterns := []struct {
+		regex       *regexp.Regexp
+		description string
+		severity    string
+		pattern     string
+	}{
+		{
+			regex:       regexp.MustCompile(`(?i)require\s*\(\s*['"]child_process['"]\s*\)`),
+			description: "Loads child_process module — enables arbitrary command execution at install time",
+			severity:    "HIGH",
+			pattern:     "require(child_process)",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)require\s*\(\s*['"](http|https|net|dgram|dns)['"]\s*\)`),
+			description: "Loads network module at install time — used for data exfiltration and payload download",
+			severity:    "HIGH",
+			pattern:     "require(network module)",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)(?:fs\.writeFileSync|fs\.writeFile|fs\.appendFileSync|fs\.appendFile)\s*\(\s*['"](?:/usr|/etc|/tmp|/var|/bin|/sbin|/opt|~)`),
+			description: "Writes to system paths at install time — can modify system files or drop payloads",
+			severity:    "HIGH",
+			pattern:     "fs.write to system path",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)new\s+Function\s*\(`),
+			description: "Dynamically creates function from string — equivalent to eval() for code execution",
+			severity:    "HIGH",
+			pattern:     "new Function()",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)Buffer\.from\s*\([^)]*,\s*['"]base64['"]\s*\)`),
+			description: "Decodes base64 data — commonly used to hide malicious payloads in npm packages",
+			severity:    "MEDIUM",
+			pattern:     "Buffer.from(base64)",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)(?:execSync|exec|execFile|execFileSync|spawn|spawnSync|fork)\s*\(`),
+			description: "Executes external commands via child_process — direct code execution vector",
+			severity:    "HIGH",
+			pattern:     "child_process exec",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)(?:https?\.get|https?\.request|fetch)\s*\(`),
+			description: "Makes HTTP requests at install time — used for data exfiltration or payload download",
+			severity:    "HIGH",
+			pattern:     "HTTP request",
+		},
+		{
+			regex:       regexp.MustCompile(`(?i)(?:dns\.lookup|dns\.resolve)\s*\(`),
+			description: "Performs DNS lookups at install time — used for DNS-based data exfiltration",
+			severity:    "MEDIUM",
+			pattern:     "DNS lookup",
+		},
+	}
+
+	for _, p := range nodePatterns {
+		if matches := p.regex.FindAllString(content, -1); len(matches) > 0 {
+			for _, match := range matches {
+				analysis.DangerousPatterns = append(analysis.DangerousPatterns, DangerousPattern{
+					Pattern:     p.pattern,
+					Description: p.description,
+					Severity:    p.severity,
+					Match:       strings.TrimSpace(match),
+				})
+			}
+		}
+	}
+
+	// Recalculate risk level
+	analysis.HasDangerousPatterns = len(analysis.DangerousPatterns) > 0
+	if analysis.HasDangerousPatterns {
+		highCount := 0
+		for _, p := range analysis.DangerousPatterns {
+			if p.Severity == "HIGH" {
+				highCount++
+			}
+		}
+		if highCount > 0 {
+			analysis.RiskLevel = "HIGH"
+		} else {
+			analysis.RiskLevel = "MEDIUM"
+		}
+	} else {
+		analysis.RiskLevel = "LOW"
+	}
+
+	return analysis
+}
+
+// isNodeFile returns true if the file path has a Node.js extension.
+func isNodeFile(path string) bool {
+	ext := filepath.Ext(path)
+	return ext == ".js" || ext == ".mjs" || ext == ".cjs" || ext == ".ts"
+}
+
+// AnalyzeNPMScriptFiles reads the actual script files referenced by npm install
+// hooks and analyzes their content for dangerous patterns using the bare git clone.
+// The readFile function reads a file from the repository (via GetCloneFileContent or GetFileContent).
+// Returns dangerous patterns found, annotated with the source file and hook name.
+func AnalyzeNPMScriptFiles(scripts map[string]string, readFile func(path string) (string, error)) []DangerousPattern {
+	installHooks := []string{"preinstall", "install", "postinstall"}
+
+	var patterns []DangerousPattern
+	seen := map[string]bool{}
+
+	for _, hookName := range installHooks {
+		cmd, exists := scripts[hookName]
+		if !exists || cmd == "" {
+			continue
+		}
+
+		filePaths := resolveScriptFilePaths(cmd)
+		for _, path := range filePaths {
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+
+			content, err := readFile(path)
+			if err != nil || content == "" {
+				continue
+			}
+
+			// Use Node.js-aware analysis for JS/TS files, generic for shell scripts
+			var analysis ScriptAnalysis
+			if isNodeFile(path) {
+				analysis = analyzeNodeScript(content)
+			} else {
+				analysis = AnalyzeScript(content)
+			}
+
+			for _, p := range analysis.DangerousPatterns {
+				patterns = append(patterns, DangerousPattern{
+					Pattern:     p.Pattern,
+					Description: fmt.Sprintf("%s (in %s, referenced by %s hook)", p.Description, path, hookName),
+					Severity:    p.Severity,
+					Match:       fmt.Sprintf("%s: %s", path, p.Match),
+				})
+			}
+		}
+	}
+
+	return patterns
 }
 
 // AnalyzeJavaPOM analyzes Java pom.xml for dangerous plugin configurations.
