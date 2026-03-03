@@ -324,26 +324,15 @@ func (c *GitHubClient) ShouldStopForRateLimit(threshold int) bool {
 	return c.rateLimiter.ShouldStop(threshold)
 }
 
-// shouldPreferScraping returns true when web scraping should be tried first.
-// Scraping is preferred when no API token is configured and we're using the
-// default GitHub API URL, since unauthenticated API calls are limited to
-// 60 req/hour. With a token, the API provides richer data at 5,000 req/hour.
-// Custom base URLs (test servers) always use API-first since scraping
-// targets real github.com regardless of the base URL.
-func (c *GitHubClient) shouldPreferScraping() bool {
-	return c.token == "" && !c.preferAPI && c.baseURL == "https://api.github.com"
-}
-
 // shouldPreferScrapingForQuota returns true when web scraping should be
 // preferred to conserve API quota. This is true when:
-//   - No token is set (existing behavior via shouldPreferScraping), OR
+//   - No token is set (unauthenticated API is limited to 60 req/hour), OR
 //   - The rate limiter indicates quota is running low (authenticated < 300,
 //     unauthenticated < 15 remaining)
 //
-// Methods that have scraping alternatives should call this instead of
-// shouldPreferScraping() to proactively switch to scraping before the quota
-// is fully exhausted. This preserves remaining API calls for checks that
-// have no scraping alternative (signed commits, GraphQL, branch protection).
+// This proactively switches to scraping before the quota is fully exhausted,
+// preserving remaining API calls for checks that have no scraping alternative
+// (signed commits, GraphQL, branch protection).
 func (c *GitHubClient) shouldPreferScrapingForQuota() bool {
 	if c.preferAPI {
 		return false // test servers always use API
