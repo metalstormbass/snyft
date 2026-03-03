@@ -31,19 +31,53 @@ cd snyft
 make build
 ```
 
+## Quickstart
+
+Install snyft and generate an HTML report in three steps:
+
+```bash
+# 1. Install
+go install github.com/metalstormbass/snyft@latest
+export PATH=${PATH}:`go env GOPATH`/bin
+
+# 2. Scan your project and generate an HTML report
+snyft scan --format html -o report.html
+
+# 3. Open the report in your browser
+open report.html        # macOS
+# xdg-open report.html  # Linux
+```
+
+The HTML report is the recommended way to review results. It includes:
+
+- **Executive dashboard** with overall risk level, package counts, and risk distribution
+- **Key risk areas** highlighting cross-cutting supply chain patterns
+- **Interactive package cards** you can click to expand, showing per-category scores (0-2 points each across 10 categories), risk findings, and linked evidence
+
+For more detail in the report, add the `-v` flag to include evidence and methodology:
+
+```bash
+snyft scan --format html -v -o report.html
+```
+
+For projects with many dependencies, set a GitHub token to avoid rate limits:
+
+```bash
+export GITHUB_TOKEN="ghp_..."
+snyft scan --format html -o report.html
+```
+
 ## Usage
 
 ```bash
-./snyft scan                              # Scan current directory
-./snyft scan /path/to/project             # Scan specific directory
-./snyft scan -v                           # Detailed output with findings
-./snyft scan --format json -o results.json  # JSON output to file
-./snyft scan --format markdown -o SECURITY.md
-./snyft scan --format html -o report.html
-./snyft scan --workers 20                 # Increase concurrency
+snyft scan                                # Scan current directory
+snyft scan /path/to/project               # Scan specific directory
+snyft scan -v                             # Detailed output with findings
+snyft scan --format html -o report.html   # HTML report (recommended)
+snyft scan --format json -o results.json  # JSON output to file
+snyft scan --format markdown -o SECURITY.md
+snyft scan --workers 20                   # Increase concurrency
 ```
-
-If you installed snyft via `go`, you can run commands without the `./` part. Running a scan of your current directory would be done via `snyft scan`.
 
 > **Note:** Scanning projects with many dependencies may take several minutes. Running multiple scans concurrently may trigger GitHub rate limits (60 requests/hour unauthenticated, 5,000/hour with `GITHUB_TOKEN`).
 
