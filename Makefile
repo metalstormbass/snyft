@@ -4,10 +4,16 @@
 BINARY_NAME=snyft
 BUILD_DIR=.
 GO=go
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT  ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo "none")
+DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+LDFLAGS  = -X github.com/metalstormbass/snyft/cmd.Version=$(VERSION) \
+           -X github.com/metalstormbass/snyft/cmd.Commit=$(COMMIT) \
+           -X github.com/metalstormbass/snyft/cmd.Date=$(DATE)
 
 # Build the project
 build:
-	CGO_ENABLED=0 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) .
+	CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) .
 
 # Clean build artifacts
 clean:
@@ -29,7 +35,7 @@ deps:
 
 # Install the binary
 install:
-	$(GO) install .
+	$(GO) install -ldflags "$(LDFLAGS)" .
 
 # Format code
 fmt:
@@ -41,9 +47,9 @@ lint:
 
 # Build for multiple platforms
 build-all:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 .
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 .
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 .
 
 # Help
 help:
