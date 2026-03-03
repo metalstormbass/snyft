@@ -969,6 +969,15 @@ func (c *MavenClient) scrapeMavenPackageInfo(packageName string) (*MavenPackage,
 		_, _ = strconv.Atoi(numStr)
 	})
 
+	// Try to fetch POM to get developer/maintainer data, license, repo URL, and
+	// dependency count. Without this, scraping loses all developer information
+	// which causes a double penalty in Publisher Control scoring.
+	// This mirrors the enrichment done in getPackageInfoDirect() and
+	// getPackageInfoViaSearch().
+	if pkg.LatestVersion != "" {
+		_ = c.enrichFromPOM(pkg, groupID, artifactID, pkg.LatestVersion)
+	}
+
 	return pkg, nil
 }
 
