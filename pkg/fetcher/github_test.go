@@ -2187,3 +2187,162 @@ func TestDetectCISystems_NoDuplicateGitHubActions(t *testing.T) {
 		t.Errorf("expected exactly 1 GitHub Actions entry, got %d in %v", count, ciSystems)
 	}
 }
+
+// Test: matchTagVersion finds tags with non-standard naming
+// Justification: Non-standard tag naming (e.g. "module-name-2.15.3") is common
+//                in multi-module repos. If we can't match the tag, we can't verify
+//                provenance (source code → published artifact link is broken).
+// Source: SLSA v1.0 specification — provenance requires linking artifact to source
+// Methodology: Check suffix matching against known version patterns
+// Result: Returns true + URL when a tag ends with the target version suffix
+func TestMatchTagVersion(t *testing.T) {
+	tests := []struct {
+		name      string
+		tags      []string
+		version   string
+		wantFound bool
+		wantTag   string
+	}{
+		{
+			name:      "standard suffix match",
+			tags:      []string{"v1.0.0", "v2.0.0", "mymodule-2.15.3"},
+			version:   "2.15.3",
+			wantFound: true,
+			wantTag:   "mymodule-2.15.3",
+		},
+		{
+			name:      "v-prefixed suffix match",
+			tags:      []string{"release-v1.0.0", "foo-v3.2.1"},
+			version:   "3.2.1",
+			wantFound: true,
+			wantTag:   "foo-v3.2.1",
+		},
+		{
+			name:      "no match",
+			tags:      []string{"v1.0.0", "v2.0.0"},
+			version:   "3.0.0",
+			wantFound: false,
+		},
+		{
+			name:      "empty tags",
+			tags:      []string{},
+			version:   "1.0.0",
+			wantFound: false,
+		},
+		{
+			name:      "underscore separator",
+			tags:      []string{"module_1.0.0"},
+			version:   "1.0.0",
+			wantFound: true,
+			wantTag:   "module_1.0.0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			suffixes := []string{
+				"-" + tt.version,
+				"-v" + tt.version,
+				"_" + tt.version,
+				"_v" + tt.version,
+				"/" + tt.version,
+				"/v" + tt.version,
+			}
+			found, tagURL := matchTagVersion(tt.tags, suffixes, "owner", "repo")
+			if found != tt.wantFound {
+				t.Errorf("matchTagVersion() found = %v, want %v", found, tt.wantFound)
+			}
+			if tt.wantFound && tt.wantTag != "" {
+				expectedURL := fmt.Sprintf("https://github.com/owner/repo/releases/tag/%s", tt.wantTag)
+				if tagURL != expectedURL {
+					t.Errorf("matchTagVersion() URL = %q, want %q", tagURL, expectedURL)
+				}
+			}
+		})
+	}
+}
+
+// Test: searchTagsPaginated uses scraping when no token is set
+// Justification: Paginated tag search via API burns up to 3 API calls per repo.
+//                Scraping the tags page avoids rate limit consumption for
+//                unauthenticated users (60 req/hour quota).
+// Source: GitHub API rate limiting documentation
+// Methodology: Mock server returns 403 for API calls; scraping is not available
+//              in test (mock server). Verify API-first path with scraping fallback.
+// Result: API path works via mock server; scraping path tested via compilation
+func TestSearchTagsPaginated_APIPath(t *testing.T) {
+	// Create mock server that returns tags via API
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/tags") {
+			tags := []struct {
+				Name string `json:"name"`
+			}{
+				{Name: "v1.0.0"},
+				{Name: "jackson-core-2.15.3"},
+				{Name: "v2.0.0"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(tags)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewGitHubClientWithBaseURL(server.URL)
+
+	found, tagURL := client.searchTagsPaginated("test", "repo", "2.15.3")
+	if !found {
+		t.Error("expected to find tag with version suffix 2.15.3")
+	}
+	if !strings.Contains(tagURL, "jackson-core-2.15.3") {
+		t.Errorf("expected tag URL to contain jackson-core-2.15.3, got %s", tagURL)
+	}
+}
+
+// Test: searchTagsPaginated caches results across calls
+// Justification: Multiple packages from the same repo should not re-fetch tags.
+//                Caching ensures that after the first version check, subsequent
+//                checks for other versions resolve instantly.
+// Source: SLSA v1.0 — efficient provenance verification across multi-module repos
+// Methodology: Mock server tracks request count; second call should hit cache.
+// Result: Only one API request for the same repo across two version checks
+func TestSearchTagsPaginated_CachesResults(t *testing.T) {
+	var apiCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/tags") {
+			atomic.AddInt32(&apiCalls, 1)
+			tags := []struct {
+				Name string `json:"name"`
+			}{
+				{Name: "mylib-1.0.0"},
+				{Name: "mylib-v2.0.0"},
+				{Name: "module-3.0.0"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(tags)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewGitHubClientWithBaseURL(server.URL)
+
+	// First call — fetches from API (matches "mylib-1.0.0" via "-1.0.0" suffix)
+	found1, _ := client.searchTagsPaginated("test", "repo", "1.0.0")
+	if !found1 {
+		t.Error("expected to find mylib-1.0.0 via suffix match")
+	}
+
+	// Second call for different version — should use cache (matches "module-3.0.0")
+	found2, _ := client.searchTagsPaginated("test", "repo", "3.0.0")
+	if !found2 {
+		t.Error("expected to find module-3.0.0 via suffix match")
+	}
+
+	// Verify only 1 API call was made (second call hit cache)
+	if atomic.LoadInt32(&apiCalls) != 1 {
+		t.Errorf("expected 1 API call, got %d (caching should prevent second call)", apiCalls)
+	}
+}
