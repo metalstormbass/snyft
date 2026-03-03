@@ -1837,6 +1837,14 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		}
 	}
 
+	// Clone-first path: use cached clone data if available (no API call needed)
+	if authors, ok := c.getCommitAuthorsFromClone(owner, repo); ok {
+		if c.cache != nil {
+			c.cache.setCommitAuthors(cacheKey, authors)
+		}
+		return authors, nil
+	}
+
 	// Scraping-first path: always try scraping contributor data first to
 	// minimize API usage.
 	if c.shouldPreferScraping() {
@@ -2057,6 +2065,17 @@ func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 		}
 	}
 
+	// Clone-first path: use cached clone data if available (no API call needed)
+	if hasSigning, verifiedCount, ok := c.getSignedCommitsFromClone(owner, repo); ok {
+		if c.cache != nil {
+			c.cache.setSignedCommits(cacheKey, &cachedSignedCommits{
+				hasSigning:    hasSigning,
+				verifiedCount: verifiedCount,
+			})
+		}
+		return hasSigning, verifiedCount, nil
+	}
+
 	// Get recent commits (last 100)
 	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=100", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
@@ -2231,6 +2250,14 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 		if cached, ok := c.cache.getCommitStats(cacheKey); ok {
 			return cached, nil
 		}
+	}
+
+	// Clone-first path: derive CommitStats from clone commit author data (no API call needed)
+	if stats, ok := c.getCommitStatsFromClone(owner, repo); ok {
+		if c.cache != nil {
+			c.cache.setCommitStats(cacheKey, stats)
+		}
+		return stats, nil
 	}
 
 	// Scraping-first path: always try scraping contributor data first.
