@@ -101,7 +101,7 @@ jobs:
 		Metadata:      models.PackageMetadata{},
 	}
 
-	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL)
+	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL, nil)
 
 	// Verify CIWorkflowRisks is populated
 	if len(result.Metadata.CIWorkflowRisks) == 0 {
@@ -169,7 +169,7 @@ jobs:
 		Metadata:      models.PackageMetadata{},
 	}
 
-	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL)
+	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL, nil)
 
 	if len(result.Metadata.CIWorkflowRisks) == 0 {
 		t.Fatal("Expected CIWorkflowRisks to be populated")
@@ -246,7 +246,7 @@ jobs:
 		Metadata:      models.PackageMetadata{},
 	}
 
-	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL)
+	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL, nil)
 
 	// A secure workflow should produce no risks
 	if len(result.Metadata.CIWorkflowRisks) != 0 {
@@ -287,7 +287,7 @@ func TestAnalyzeBuildInfrastructure_NoConfigContent_GracefulDegradation(t *testi
 		Metadata:      models.PackageMetadata{},
 	}
 
-	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL)
+	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL, nil)
 
 	// CI system should be detected
 	if !result.Metadata.HasCI {
@@ -342,7 +342,7 @@ jobs:
 		Metadata:      models.PackageMetadata{},
 	}
 
-	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL)
+	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL, nil)
 
 	// Both workflows have risks, so both should appear
 	if len(result.Metadata.CIWorkflowRisks) < 2 {
@@ -387,7 +387,7 @@ deploy:
 		Metadata:      models.PackageMetadata{},
 	}
 
-	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL)
+	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL, nil)
 
 	// GitLab CI should be detected and parsed
 	if len(result.Metadata.CIWorkflowRisks) == 0 {
@@ -459,7 +459,7 @@ jobs:
 	}
 
 	// Step 1: Populate CIWorkflowRisks
-	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL)
+	analyzer.analyzeBuildInfrastructure(result, result.RepositoryURL, nil)
 
 	// Verify risks were populated
 	totalRiskCount := 0
@@ -494,7 +494,7 @@ func TestAnalyzeBuildInfrastructure_EmptyRepoURL_Skips(t *testing.T) {
 	}
 
 	// Should not panic
-	analyzer.analyzeBuildInfrastructure(result, "")
+	analyzer.analyzeBuildInfrastructure(result, "", nil)
 
 	if len(result.Metadata.CIWorkflowRisks) != 0 {
 		t.Errorf("Expected empty CIWorkflowRisks for empty repo URL, got %d", len(result.Metadata.CIWorkflowRisks))
