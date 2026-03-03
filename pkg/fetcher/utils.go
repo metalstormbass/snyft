@@ -121,6 +121,42 @@ func ParseRepoURL(rawURL string) (owner, repo string, err error) {
 	return owner, repo, nil
 }
 
+// NormalizeRepoURL converts a repository URL into a canonical form suitable for
+// use as a cache key. It strips protocol prefixes, .git suffixes, and normalizes
+// to lowercase "host/owner/repo". This allows grouping packages that point to the
+// same repository even if their URLs differ in protocol or suffix.
+func NormalizeRepoURL(repoURL string) string {
+	if repoURL == "" {
+		return ""
+	}
+
+	owner, repo, err := ParseRepoURL(repoURL)
+	if err != nil {
+		// Fallback: lowercase and strip .git
+		return strings.ToLower(strings.TrimSuffix(repoURL, ".git"))
+	}
+
+	// Determine host from the URL
+	lower := strings.ToLower(repoURL)
+	host := "github.com" // default
+	for _, h := range []string{
+		"gitlab.com",
+		"bitbucket.org",
+		"codeberg.org",
+		"sr.ht",
+		"sourceforge.net",
+		"gitbox.apache.org",
+		"git.eclipse.org",
+	} {
+		if strings.Contains(lower, h) {
+			host = h
+			break
+		}
+	}
+
+	return host + "/" + strings.ToLower(owner) + "/" + strings.ToLower(repo)
+}
+
 // isSourceRepoHost returns true if the URL contains a known source code hosting domain.
 // Used by PyPI URL extraction and Maven POM fallback to filter non-repo URLs.
 func isSourceRepoHost(url string) bool {
