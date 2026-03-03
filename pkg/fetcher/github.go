@@ -402,8 +402,10 @@ func (c *GitHubClient) DetectCISystems(repoURL string) ([]string, error) {
 // detectCIViaTree fetches the repo's full file tree in a single API call and
 // matches CI config paths against it. Returns (results, true) on success, or
 // (nil, false) if the tree API is unavailable (no token, API error, etc.).
+// When the tree is truncated (large repos), files not found in the partial tree
+// are verified via individual fileExists() calls to avoid false negatives.
 func (c *GitHubClient) detectCIViaTree(owner, repo string) ([]string, bool) {
-	treePaths, ok := c.getRepoTree(owner, repo)
+	treePaths, truncated, ok := c.getRepoTree(owner, repo)
 	if !ok {
 		return nil, false
 	}
@@ -425,6 +427,14 @@ func (c *GitHubClient) detectCIViaTree(owner, repo string) ([]string, bool) {
 		// that has it as a prefix (e.g. ".github/workflows" matches
 		// ".github/workflows/ci.yml" in the tree).
 		if c.treeHasPrefix(treePaths, entry.Path) {
+			detected[entry.Name] = true
+			ciSystems = append(ciSystems, entry.Name)
+			continue
+		}
+		// When the tree is truncated, files may be missing from the
+		// results. Fall back to individual fileExists() checks for any
+		// CI config not found in the partial tree.
+		if truncated && c.fileExists(owner, repo, entry.Path) {
 			detected[entry.Name] = true
 			ciSystems = append(ciSystems, entry.Name)
 		}
@@ -466,12 +476,15 @@ func (c *GitHubClient) detectCIViaFileExists(owner, repo string) []string {
 
 // getRepoTree fetches the full recursive file tree for a repository using the
 // Git Trees API (GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1).
-// Returns a set of file paths and true on success, or (nil, false) on failure.
+// Returns a set of file paths, whether the tree was truncated, and true on
+// success. Returns (nil, false, false) on failure. When the tree is truncated
+// (repos with 100k+ entries), the paths set may be incomplete — callers must
+// verify missing entries via individual API calls.
 // When scraping is preferred (no token), this is skipped since the Git Trees
 // API requires authentication for useful results on large repos.
-func (c *GitHubClient) getRepoTree(owner, repo string) (map[string]bool, bool) {
+func (c *GitHubClient) getRepoTree(owner, repo string) (map[string]bool, bool, bool) {
 	if c.shouldPreferScraping() {
-		return nil, false
+		return nil, false, false
 	}
 
 	branches := c.defaultBranchCandidates(owner, repo)
@@ -517,17 +530,21 @@ func (c *GitHubClient) getRepoTree(owner, repo string) (map[string]bool, bool) {
 		}
 
 		// Populate the fileExists cache so other callers benefit.
+		// When truncated, only cache files that were found (true). Files
+		// absent from a truncated tree may still exist — do not cache false.
 		if c.cache != nil {
 			for _, ciFile := range ExtendedCIConfigFiles() {
-				cacheKey := owner + "/" + repo + "/" + ciFile.Path
-				c.cache.setFileExists(cacheKey, paths[ciFile.Path])
+				if paths[ciFile.Path] || !treeResp.Truncated {
+					cacheKey := owner + "/" + repo + "/" + ciFile.Path
+					c.cache.setFileExists(cacheKey, paths[ciFile.Path])
+				}
 			}
 		}
 
-		return paths, true
+		return paths, treeResp.Truncated, true
 	}
 
-	return nil, false
+	return nil, false, false
 }
 
 // HasAutomatedReleases checks if the repository has automated releases.

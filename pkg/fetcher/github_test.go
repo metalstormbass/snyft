@@ -1965,6 +1965,87 @@ func TestDetectCISystems_UsesTreeAPI(t *testing.T) {
 	}
 }
 
+// Test: DetectCISystems falls back to fileExists for CI files missing from a truncated tree
+// Justification: The Git Trees API truncates results for repos with 100k+ entries. CI config
+//                files may be missing from the partial tree, causing false negatives in CI
+//                detection. A compromised package without detected CI appears to have weaker
+//                release pipeline integrity, inflating its risk score incorrectly.
+// Source: GitHub API docs - Git Trees "truncated" field; "Backstabber's Knife Collection"
+//         (Ohm et al., 2020) - CI pipeline as supply chain integrity signal
+// Methodology: Mock tree API returning truncated tree with only some CI files; verify that
+//              missing files are resolved via individual fileExists calls
+// Result: All CI systems detected despite truncated tree
+func TestDetectCISystems_TruncatedTreeFallback(t *testing.T) {
+	var treeRequests, fileExistsRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		// Tree API returns truncated result with only GitHub Actions files
+		if strings.Contains(path, "/git/trees/") {
+			treeRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"tree": [
+					{"path": ".github/workflows/ci.yml", "type": "blob"},
+					{"path": "README.md", "type": "blob"},
+					{"path": "src/main.go", "type": "blob"}
+				],
+				"truncated": true
+			}`))
+			return
+		}
+		// fileExists fallback: .travis.yml exists but wasn't in the truncated tree
+		if strings.HasSuffix(path, "/contents/.travis.yml") {
+			fileExistsRequests.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// All other fileExists checks return 404
+		if strings.Contains(path, "/contents/") {
+			fileExistsRequests.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	ciSystems, err := client.DetectCISystems("https://github.com/test/large-repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hasGHA := false
+	hasTravis := false
+	for _, ci := range ciSystems {
+		if ci == "GitHub Actions" {
+			hasGHA = true
+		}
+		if ci == "Travis CI" {
+			hasTravis = true
+		}
+	}
+	if !hasGHA {
+		t.Error("expected GitHub Actions to be detected from truncated tree")
+	}
+	if !hasTravis {
+		t.Error("expected Travis CI to be detected via fileExists fallback on truncated tree")
+	}
+
+	// Should have used tree API (1 request) + individual fileExists checks for missing files
+	if treeRequests.Load() != 1 {
+		t.Errorf("expected 1 tree API request, got %d", treeRequests.Load())
+	}
+	if fileExistsRequests.Load() == 0 {
+		t.Error("expected fileExists fallback requests for files missing from truncated tree")
+	}
+}
+
 // Test: DetectCISystems falls back to per-file checks when tree API fails
 // Justification: When the Git Trees API is unavailable (rate-limited, error, etc.),
 //                CI detection must still work via individual file existence checks.
