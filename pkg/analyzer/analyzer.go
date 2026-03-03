@@ -709,12 +709,15 @@ func (a *Analyzer) scorePublisherControl(result *models.AnalysisResult) models.C
 	description := buildPublisherControlDescription(analysis)
 
 	// Convert the detailed analysis to a CategoryScore
+	// DataAvailable is true only when we have meaningful data (not just "unknown" entries)
+	dataAvailable := analysis.MaintainerCount > 0 || analysis.IsOrganization || analysis.IsPersonalAccount || analysis.SigningChecked
 	return models.CategoryScore{
 		Score:       2 - analysis.RiskPoints,
 		RiskPoints:  analysis.RiskPoints,
 		Description: description,
 		Evidence:    analysis.Evidence,
 		Verified:    analysis.Verified,
+		DataAvailable: dataAvailable,
 		Methodology: "Checked maintainer count (bus factor), organization vs personal account type via GitHub API, maintainer account ages, email domain stability (personal vs organizational), package concentration per maintainer (npm), commit/release signing practices, and MFA enforcement (GitHub org-level).",
 		ChecksPerformed: analysis.buildPublisherControlChecks(),
 	}

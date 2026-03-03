@@ -124,6 +124,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Description: "No source repository URL found — unable to check for SECURITY.md, issue response times, or abandonment patterns. Governance quality is unknown.",
 			Evidence:    "No source repository URL found; further investigation recommended",
 			Verified:    false,
+			DataAvailable: false,
 			Methodology: "No repository URL available. Could not check for SECURITY.md, issue response times, or abandonment patterns.",
 			ChecksPerformed: []models.CheckResult{
 				{Name: "SECURITY.md", Status: "SKIPPED", Detail: "No repository URL to check"},
@@ -142,6 +143,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Description: "Repository is archived and no longer accepting contributions. Archived projects have no active governance, no vulnerability disclosure process, and no maintainers monitoring for compromises.",
 			Evidence:    "Repository is archived and no longer accepting contributions",
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: govMethodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Repository archived status", Status: "FAIL", Detail: "Repository is archived — no active governance possible"},
@@ -159,6 +161,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 				Description: fmt.Sprintf("No commits in %.0f days (last commit: %s). Abandoned projects have no active governance — maintainer accounts may be unmonitored and vulnerable to takeover.", daysSince, result.Metadata.RepoLastCommit.Format("2006-01-02")),
 				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince),
 				Verified:    true,
+				DataAvailable: true,
 				Methodology: govMethodology,
 				ChecksPerformed: []models.CheckResult{
 					{Name: "Abandonment detection", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (>180 day threshold)", daysSince)},
@@ -177,6 +180,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 			Description: "Could not fetch repository information to assess governance. Unable to check for SECURITY.md or issue response times.",
 			Evidence:    "Could not fetch repository information",
 			Verified:    false,
+			DataAvailable: false,
 			Methodology: govMethodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Repository access", Status: "UNAVAILABLE", Detail: "Could not fetch repository information via Git API"},
@@ -297,6 +301,7 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		Description:     description,
 		Evidence:        strings.Join(evidenceParts, "; "),
 		Verified:        true,
+		DataAvailable:   true,
 		Methodology:     govMethodology,
 		ChecksPerformed: govChecks,
 	}
