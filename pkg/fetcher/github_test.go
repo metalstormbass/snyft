@@ -2514,16 +2514,15 @@ func TestCrossPackageDeduplication(t *testing.T) {
 	}
 }
 
-// Test: shouldPreferScrapingForQuota returns true when rate limiter says quota is low
-// Justification: When the GitHub API quota drops below the scraping preference
-//                threshold (300 for authenticated), methods with scraping alternatives
-//                should proactively switch to scraping, preserving remaining API calls
-//                for checks that have no scraping alternative (signed commits, GraphQL).
-// Source: GitHub REST API rate limiting documentation; adaptive rate-limit strategy
-// Methodology: Create a GitHubClient with a token and rate limiter, simulate low
-//              quota via Update(), verify shouldPreferScrapingForQuota() returns true
-// Result: Returns true when quota is low, preserving API calls for API-only checks
-func TestShouldPreferScrapingForQuota_LowQuota(t *testing.T) {
+// Test: shouldPreferScraping returns true for real GitHub regardless of quota
+// Justification: Scraping is the primary data fetching method for all GitHub
+//                requests. API calls are reserved as fallback and for checks
+//                that cannot be scraped (signed commits, branch protection).
+// Source: Supply chain analysis design — minimize API dependency
+// Methodology: Create a GitHubClient targeting real github.com with a token,
+//              verify shouldPreferScraping() returns true regardless of quota
+// Result: Returns true (scraping always preferred for real GitHub)
+func TestShouldPreferScraping_AlwaysTrueForRealGitHub(t *testing.T) {
 	rl := NewGitHubRateLimiter(true)
 	resp := &http.Response{
 		Header: http.Header{
@@ -2541,18 +2540,18 @@ func TestShouldPreferScrapingForQuota_LowQuota(t *testing.T) {
 		rateLimiter: rl,
 	}
 
-	if !client.shouldPreferScrapingForQuota() {
-		t.Error("shouldPreferScrapingForQuota() = false when authenticated with 200 remaining, want true")
+	if !client.shouldPreferScraping() {
+		t.Error("shouldPreferScraping() = false for real github.com, want true")
 	}
 }
 
-// Test: shouldPreferScrapingForQuota returns false for test servers
+// Test: shouldPreferScraping returns false for test servers
 // Justification: Test servers (custom baseURL) don't support web scraping since
 //                scraping targets real github.com. Forcing API-first for test servers
 //                ensures mock server handlers are actually exercised.
 // Source: Test infrastructure design
 // Methodology: Create a GitHubClient with a custom baseURL and low quota, verify
-//              shouldPreferScrapingForQuota() returns false
+//              shouldPreferScraping() returns false
 // Result: Returns false (test servers always use API)
 func TestShouldPreferScrapingForQuota_TestServer(t *testing.T) {
 	rl := NewGitHubRateLimiter(true)
@@ -2572,20 +2571,20 @@ func TestShouldPreferScrapingForQuota_TestServer(t *testing.T) {
 		rateLimiter: rl,
 	}
 
-	if client.shouldPreferScrapingForQuota() {
-		t.Error("shouldPreferScrapingForQuota() = true for test server, want false")
+	if client.shouldPreferScraping() {
+		t.Error("shouldPreferScraping() = true for test server, want false")
 	}
 }
 
-// Test: shouldPreferScrapingForQuota returns false when quota is healthy
-// Justification: When the API quota has ample headroom, the API should be used
-//                for richer data quality. Only switch to scraping when quota is
-//                genuinely under pressure.
-// Source: GitHub REST API rate limiting documentation
-// Methodology: Create a GitHubClient with a token and rate limiter showing healthy
-//              quota (2000 remaining), verify shouldPreferScrapingForQuota() returns false
-// Result: Returns false (API preferred when quota is healthy)
-func TestShouldPreferScrapingForQuota_HealthyQuota(t *testing.T) {
+// Test: shouldPreferScraping returns true even when quota is healthy
+// Justification: Scraping is always the primary data fetching method for real
+//                GitHub, regardless of API quota level. This minimizes API
+//                consumption and reserves API calls for data that cannot be scraped.
+// Source: Supply chain analysis design — minimize API dependency
+// Methodology: Create a GitHubClient with a token and healthy quota (2000 remaining),
+//              verify shouldPreferScraping() still returns true
+// Result: Returns true (scraping always preferred, quota level irrelevant)
+func TestShouldPreferScraping_TrueEvenWithHealthyQuota(t *testing.T) {
 	rl := NewGitHubRateLimiter(true)
 	resp := &http.Response{
 		Header: http.Header{
@@ -2602,23 +2601,22 @@ func TestShouldPreferScrapingForQuota_HealthyQuota(t *testing.T) {
 		rateLimiter: rl,
 	}
 
-	if client.shouldPreferScrapingForQuota() {
-		t.Error("shouldPreferScrapingForQuota() = true with 2000 remaining, want false")
+	if !client.shouldPreferScraping() {
+		t.Error("shouldPreferScraping() = false with healthy quota, want true (scraping always preferred)")
 	}
 }
 
-// Test: GetCommitAuthors uses scraping when API quota is low
-// Justification: GetCommitAuthors was previously the only method that hard-failed
-//                with ErrRateLimited on 403/429. With the scraping fallback, it
-//                should now return approximate contributor data from scraping instead
-//                of failing, maintaining the ability to assess bus factor risk.
+// Test: GetCommitAuthors uses scraping as primary method, skipping API
+// Justification: Scraping is always the primary data fetching method. GetCommitAuthors
+//                should try scraping first and only fall back to API when scraping fails.
+//                This minimizes API consumption while still providing contributor data
+//                needed for bus factor assessment.
 // Source: "Small World with High Risks" (Zimmermann et al., 2019) — bus factor
 //         analysis of npm dependency networks
-// Methodology: Set up a GitHubClient with shouldPreferScrapingForQuota()=true,
-//              mock API server returns 403, verify that the method falls back to
-//              scraping and returns data rather than ErrRateLimited
-// Result: Returns CommitAuthorStats (from scraping) instead of ErrRateLimited
-func TestGetCommitAuthors_QuotaLow_SkipsAPI(t *testing.T) {
+// Methodology: Set up a GitHubClient targeting real github.com, verify that
+//              GetCommitAuthors takes the scraping path before attempting API calls
+// Result: Scraping path is taken first; API server is not contacted
+func TestGetCommitAuthors_ScrapingFirst_SkipsAPI(t *testing.T) {
 	var apiCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiCalls.Add(1)
@@ -2635,7 +2633,7 @@ func TestGetCommitAuthors_QuotaLow_SkipsAPI(t *testing.T) {
 	}
 	rl.Update(resp)
 
-	// Use real github.com baseURL so shouldPreferScrapingForQuota() is true,
+	// Use real github.com baseURL so shouldPreferScraping() is true,
 	// but the scraping-first path will trigger before any API call
 	client := &GitHubClient{
 		token:       "test-token",
@@ -2645,9 +2643,9 @@ func TestGetCommitAuthors_QuotaLow_SkipsAPI(t *testing.T) {
 		rateLimiter: rl,
 	}
 
-	// shouldPreferScrapingForQuota should be true
-	if !client.shouldPreferScrapingForQuota() {
-		t.Fatal("shouldPreferScrapingForQuota() should be true for this test setup")
+	// shouldPreferScraping should be true
+	if !client.shouldPreferScraping() {
+		t.Fatal("shouldPreferScraping() should be true for this test setup")
 	}
 
 	// The scraping-first path will be taken. The API should NOT be called.
@@ -2772,16 +2770,15 @@ func TestGitHubClient_DoRequest_BlockedInScrapingOnlyMode(t *testing.T) {
 	}
 }
 
-// Test: shouldPreferScrapingForQuota returns true in scraping-only mode
-// Justification: When scraping-only mode is enabled, all methods that check
-//                shouldPreferScrapingForQuota() must take the scraping path,
-//                even if the client has a token and the quota is healthy.
-//                This ensures consistent behavior when the rate limit gate fires.
-// Source: Graceful degradation for supply chain analysis
-// Methodology: Create an authenticated client with healthy quota, enable scraping-only
-//              mode, verify shouldPreferScrapingForQuota() returns true
-// Result: Returns true regardless of token/quota state
-func TestGitHubClient_ShouldPreferScraping_TrueInScrapingOnlyMode(t *testing.T) {
+// Test: shouldPreferScraping returns true for real GitHub in all modes
+// Justification: Scraping is always preferred for real GitHub requests. The
+//                function returns true whether quota is healthy, low, or in
+//                scraping-only mode. Only test servers (preferAPI) return false.
+// Source: Supply chain analysis design — minimize API dependency
+// Methodology: Create an authenticated client targeting real github.com, verify
+//              shouldPreferScraping() returns true in normal and scraping-only mode
+// Result: Returns true in all modes for real GitHub
+func TestGitHubClient_ShouldPreferScraping_AlwaysTrueForRealGitHub(t *testing.T) {
 	client := &GitHubClient{
 		token:       "test-token",
 		httpClient:  &http.Client{Timeout: 10 * time.Second},
@@ -2790,7 +2787,7 @@ func TestGitHubClient_ShouldPreferScraping_TrueInScrapingOnlyMode(t *testing.T) 
 		rateLimiter: NewGitHubRateLimiter(true),
 	}
 
-	// With healthy quota, scraping should NOT be preferred
+	// With healthy quota, scraping should still be preferred
 	resp := &http.Response{
 		Header: http.Header{
 			"X-Ratelimit-Remaining": []string{"4000"},
@@ -2798,13 +2795,13 @@ func TestGitHubClient_ShouldPreferScraping_TrueInScrapingOnlyMode(t *testing.T) 
 	}
 	client.rateLimiter.Update(resp)
 
-	if client.shouldPreferScrapingForQuota() {
-		t.Error("shouldPreferScrapingForQuota() = true with healthy quota, want false")
+	if !client.shouldPreferScraping() {
+		t.Error("shouldPreferScraping() = false with healthy quota, want true")
 	}
 
-	// Enable scraping-only mode — should now prefer scraping regardless
+	// Enable scraping-only mode — should still prefer scraping
 	client.SetScrapingOnlyMode(true)
-	if !client.shouldPreferScrapingForQuota() {
-		t.Error("shouldPreferScrapingForQuota() = false in scraping-only mode, want true")
+	if !client.shouldPreferScraping() {
+		t.Error("shouldPreferScraping() = false in scraping-only mode, want true")
 	}
 }
