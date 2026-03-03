@@ -621,6 +621,14 @@ func (c *NPMClient) scrapeNPMPackageInfo(packageName string) (*NPMPackage, error
 		}
 	})
 
+	// Detect Cloudflare challenge or empty page: if we got an HTML response
+	// but couldn't extract any meaningful data, the page was likely blocked
+	// by a challenge or has changed structure. Return an error so the caller
+	// doesn't silently use empty metadata (especially 0 maintainers).
+	if pkg.LatestVersion == "" && len(pkg.Maintainers) == 0 {
+		return nil, fmt.Errorf("npm scraping returned no data for %s (page may be blocked or structure changed)", packageName)
+	}
+
 	return pkg, nil
 }
 
