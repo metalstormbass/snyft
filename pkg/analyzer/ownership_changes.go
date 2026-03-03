@@ -283,6 +283,7 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 		Description:     description,
 		Evidence:        evidence,
 		Verified:        verified,
+		DataAvailable:   verified,
 		Methodology:     ownerMethodology,
 		ChecksPerformed: ownerChecks,
 	}

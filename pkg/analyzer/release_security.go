@@ -44,6 +44,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 			Description: "No source repository URL found — unable to check for CI/CD automation, branch protection, signed releases, or review requirements. Release security is unknown.",
 			Evidence:    "No repository URL available; further investigation recommended",
 			Verified:    false,
+			DataAvailable: false,
 			Methodology: "No repository URL available. Could not check any release security controls.",
 			ChecksPerformed: []models.CheckResult{
 				{Name: "CI/CD release process", Status: "SKIPPED", Detail: "No repository URL"},
@@ -292,6 +293,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		Description:     description,
 		Evidence:        strings.Join(evidence, "; "),
 		Verified:        verified,
+		DataAvailable:   true,
 		Methodology:     relSecMethodology,
 		ChecksPerformed: relSecChecks,
 	}

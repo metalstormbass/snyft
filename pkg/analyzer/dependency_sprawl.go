@@ -34,7 +34,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score: 2, RiskPoints: 0,
 				Description: fmt.Sprintf("%d total transitive dependencies found in lock file (%d direct). A small dependency tree limits the supply chain attack surface.", transitiveCount, metrics.DirectCount),
 				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
-				Verified: true, Methodology: methodology, ChecksPerformed: checks,
+				Verified: true, DataAvailable: true, Methodology: methodology, ChecksPerformed: checks,
 			}
 		} else if transitiveCount <= 50 {
 			checks = append(checks, models.CheckResult{Name: "Dependency count threshold", Status: "FAIL", Detail: fmt.Sprintf("%d transitive deps in 10-50 range (moderate)", transitiveCount)})
@@ -42,7 +42,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score: 1, RiskPoints: 1,
 				Description: fmt.Sprintf("%d total transitive dependencies in lock file (%d direct). Each dependency is an additional supply chain entry point — a compromise in any one can propagate to your project.", transitiveCount, metrics.DirectCount),
 				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
-				Verified: true, Methodology: methodology, ChecksPerformed: checks,
+				Verified: true, DataAvailable: true, Methodology: methodology, ChecksPerformed: checks,
 			}
 		} else {
 			checks = append(checks, models.CheckResult{Name: "Dependency count threshold", Status: "FAIL", Detail: fmt.Sprintf("%d transitive deps > 50 threshold (high sprawl)", transitiveCount)})
@@ -50,7 +50,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score: 0, RiskPoints: 2,
 				Description: fmt.Sprintf("%d total transitive dependencies in lock file (%d direct, max depth %d). Large dependency trees exponentially increase the supply chain attack surface — a compromise in any transitive dependency can propagate to your project.", transitiveCount, metrics.DirectCount, metrics.MaxDepth),
 				Evidence:    fmt.Sprintf("%d total dependencies (%d direct)", transitiveCount, metrics.DirectCount),
-				Verified: true, Methodology: methodology, ChecksPerformed: checks,
+				Verified: true, DataAvailable: true, Methodology: methodology, ChecksPerformed: checks,
 			}
 		}
 	}
@@ -116,7 +116,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score: 2, RiskPoints: 0,
 				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (no lock file available). A small dependency count limits the supply chain attack surface.%s", directCount, descSuffix),
 				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)%s", directCount, evidenceSuffix),
-				Verified: false, Methodology: methodology, ChecksPerformed: checks,
+				Verified: false, DataAvailable: true, Methodology: methodology, ChecksPerformed: checks,
 			}
 		} else if directCount <= modThreshold {
 			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "FAIL", Detail: fmt.Sprintf("%d direct deps in %d-%d range (moderate)", directCount, lowThreshold+1, modThreshold)})
@@ -124,7 +124,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score: 1, RiskPoints: 1,
 				Description: fmt.Sprintf("%d direct dependencies found in registry metadata. Each direct dependency carries its own transitive tree, expanding the attack surface multiplicatively.%s", directCount, descSuffix),
 				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)%s", directCount, evidenceSuffix),
-				Verified: false, Methodology: methodology, ChecksPerformed: checks,
+				Verified: false, DataAvailable: true, Methodology: methodology, ChecksPerformed: checks,
 			}
 		} else {
 			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "FAIL", Detail: fmt.Sprintf("%d direct deps > %d threshold (high sprawl)", directCount, modThreshold)})
@@ -132,7 +132,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Score: 0, RiskPoints: 2,
 				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (>%d threshold). A large number of direct dependencies significantly increases the supply chain attack surface.%s", directCount, modThreshold, descSuffix),
 				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)%s", directCount, evidenceSuffix),
-				Verified: false, Methodology: methodology, ChecksPerformed: checks,
+				Verified: false, DataAvailable: true, Methodology: methodology, ChecksPerformed: checks,
 			}
 		}
 	}
@@ -143,6 +143,7 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 		Description: "No lock file or registry dependency data available. Unable to assess dependency sprawl risk — the transitive dependency tree size is unknown.",
 		Evidence:    "No lock file or registry dependency data found",
 		Verified:    false,
+		DataAvailable: false,
 		Methodology: "Attempted to parse project lock file and query registry metadata for dependency count. Neither data source was available.",
 		ChecksPerformed: []models.CheckResult{
 			{Name: "Lock file analysis", Status: "UNAVAILABLE", Detail: "No lock file found in project"},
