@@ -21,10 +21,11 @@ import (
 // minutes. Adaptive throttling prevents 403 responses that degrade scan
 // quality by forcing fallback to less reliable scraping data.
 type GitHubRateLimiter struct {
-	limiter   *rate.Limiter
-	mu        sync.Mutex
-	hasToken  bool
-	throttled bool       // true once throttling has been engaged
+	limiter    *rate.Limiter
+	mu         sync.Mutex
+	hasToken   bool
+	throttled  bool       // true once throttling has been engaged
+	remaining  int        // last observed X-RateLimit-Remaining value; -1 = unknown
 	warnedOnce sync.Once
 }
 
@@ -39,8 +40,9 @@ type GitHubRateLimiter struct {
 func NewGitHubRateLimiter(hasToken bool) *GitHubRateLimiter {
 	return &GitHubRateLimiter{
 		// Start unlimited — throttle only when headers indicate quota pressure.
-		limiter: rate.NewLimiter(rate.Inf, 1),
-		hasToken: hasToken,
+		limiter:   rate.NewLimiter(rate.Inf, 1),
+		hasToken:  hasToken,
+		remaining: -1, // unknown until first API response
 	}
 }
 
@@ -77,6 +79,11 @@ func (rl *GitHubRateLimiter) Update(resp *http.Response) {
 	if err != nil {
 		return
 	}
+
+	// Track the last-seen remaining value for ShouldStop() queries.
+	rl.mu.Lock()
+	rl.remaining = remaining
+	rl.mu.Unlock()
 
 	// Threshold: engage throttling when remaining quota is low.
 	// Authenticated: 500 remaining out of 5000
@@ -131,4 +138,24 @@ func (rl *GitHubRateLimiter) Update(resp *http.Response) {
 			rl.mu.Unlock()
 		}
 	}
+}
+
+// Remaining returns the last observed X-RateLimit-Remaining value.
+// Returns -1 if no rate limit header has been seen yet (e.g. no API calls made).
+func (rl *GitHubRateLimiter) Remaining() int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return rl.remaining
+}
+
+// ShouldStop returns true when the remaining API quota is below the
+// stop threshold (50 calls). This gate allows callers to save progress
+// and exit before exhausting the rate limit entirely.
+//
+// Returns false when remaining is unknown (-1) — we only stop when we
+// have positive evidence that the quota is nearly exhausted.
+func (rl *GitHubRateLimiter) ShouldStop(threshold int) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return rl.remaining >= 0 && rl.remaining < threshold
 }
