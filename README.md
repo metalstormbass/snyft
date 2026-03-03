@@ -69,6 +69,7 @@ snyft scan --all-versions
 | `-o, --output` | Write results to file | stdout |
 | `--include-transitive` | Analyze transitive dependencies | `false` |
 | `--all-versions` | Scan all versions of duplicate dependencies (skip deduplication) | `false` |
+| `--resume` | Resume a previously interrupted scan from its checkpoint | `false` |
 | `--check` | Run only specific checks (comma-separated) | all checks |
 
 Valid check names: `publisher-control`, `ownership-changes`, `release-anomalies`, `install-execution`, `dependency-sprawl`, `provenance`, `health`, `governance`, `release-security`, `package-maturity`
