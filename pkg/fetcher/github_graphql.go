@@ -635,3 +635,58 @@ func buildCommitDataFromGraphQL(r *graphqlRepository) (*CommitAuthorStats, *cach
 
 	return stats, signedCommitsData
 }
+
+// batchCheckPRReviewsGraphQL fetches review status for multiple PRs in a single
+// GraphQL query. Returns a map of PR number -> hasReviews. Returns nil if the
+// query fails (caller should fall back to individual REST calls).
+//
+// This replaces up to 20 individual GET /repos/{owner}/{repo}/pulls/{n}/reviews
+// REST calls with a single GraphQL request.
+func (c *GitHubClient) batchCheckPRReviewsGraphQL(owner, repo string, prNumbers []int) map[int]bool {
+	if len(prNumbers) == 0 {
+		return make(map[int]bool)
+	}
+
+	// Build aliased fields: pr1: pullRequest(number: 1) { reviews(first: 1) { totalCount } }
+	var fields []string
+	for _, num := range prNumbers {
+		fields = append(fields, fmt.Sprintf("pr%d: pullRequest(number: %d) { reviews(first: 1) { totalCount } }", num, num))
+	}
+
+	query := fmt.Sprintf("{ repository(owner: %q, name: %q) { %s } }", owner, repo, strings.Join(fields, " "))
+
+	data, err := c.graphqlQuery(query)
+	if err != nil {
+		return nil
+	}
+
+	// Parse: { "repository": { "pr1": { "reviews": { "totalCount": N } }, ... } }
+	var wrapper struct {
+		Repository json.RawMessage `json:"repository"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil
+	}
+
+	var prMap map[string]json.RawMessage
+	if err := json.Unmarshal(wrapper.Repository, &prMap); err != nil {
+		return nil
+	}
+
+	result := make(map[int]bool)
+	for _, num := range prNumbers {
+		key := fmt.Sprintf("pr%d", num)
+		if raw, ok := prMap[key]; ok {
+			var pr struct {
+				Reviews struct {
+					TotalCount int `json:"totalCount"`
+				} `json:"reviews"`
+			}
+			if err := json.Unmarshal(raw, &pr); err == nil {
+				result[num] = pr.Reviews.TotalCount > 0
+			}
+		}
+	}
+
+	return result
+}
