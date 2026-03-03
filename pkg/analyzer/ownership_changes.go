@@ -110,6 +110,7 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 	ownerChecks := []models.CheckResult{}
 	verified := false
 	riskPoints := 1 // Default to medium risk when unable to verify
+	confirmedTransfer := false // Set when a hard transfer signal is detected (npm/PyPI transfer, repo-date mismatch)
 	ownerMethodology := "Multi-source analysis: (1) Git commit author change patterns (recent vs historical committers, 90-day window), (2) npm/PyPI registry ownership history, (3) repository creation date vs package first-published date (transfer signal), (4) fallback: repository age + maintainer count heuristic."
 
 	// 1. Check Git platform commit author changes (if repository available)
@@ -150,6 +151,7 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 		ageDiff := result.Metadata.RepoCreatedAt.Sub(result.Metadata.PublishedAt)
 		if ageDiff > 90*24*time.Hour {
 			riskPoints = 2
+			confirmedTransfer = true
 			verified = true
 			evidenceParts = append(evidenceParts,
 				fmt.Sprintf("Repository created %d days after package first published (possible repo transfer)",
@@ -168,6 +170,7 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 
 			if npmHistory.RecentTransfer {
 				riskPoints = 2
+				confirmedTransfer = true
 				evidenceParts = append(evidenceParts,
 					fmt.Sprintf("npm: Recent ownership transfer detected (%s)",
 						npmHistory.TransferDate.Format("2006-01-02")))
@@ -205,6 +208,7 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 
 			if pypiHistory.RecentTransfer {
 				riskPoints = 2
+				confirmedTransfer = true
 				evidenceParts = append(evidenceParts,
 					fmt.Sprintf("PyPI: Recent ownership transfer detected (%s)",
 						pypiHistory.TransferDate.Format("2006-01-02")))
@@ -266,11 +270,27 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 		evidence = strings.Join(evidenceParts, "; ")
 	}
 
-	// Build description from actual evidence, explaining what was found and why it matters
+	// Build description from actual evidence, explaining what was found and why it matters.
+	// Differentiate between confirmed transfer signals (npm/PyPI transfer, repo-date mismatch)
+	// and commit-based team changes, which may be normal for organization-owned projects.
 	description := ""
 	switch riskPoints {
 	case 2:
-		description = evidence + ". Ownership transfers and near-complete team replacement are primary signals of malicious package acquisition."
+		if confirmedTransfer {
+			description = evidence + ". Ownership transfers and near-complete team replacement are primary signals of malicious package acquisition."
+		} else {
+			// Risk driven by commit-based team replacement; check if org-owned
+			isOrgOwned := false
+			if result.RepositoryURL != "" && result.Metadata.RepoOwner != "" {
+				gitClient := a.getGitClient(result.RepositoryURL)
+				isOrgOwned, _ = gitClient.CheckIfOrganization(result.Metadata.RepoOwner)
+			}
+			if isOrgOwned {
+				description = evidence + ". Significant team turnover detected. Organization-backed projects may see normal team rotation, but large-scale author replacement still warrants review as it can mask a hostile takeover."
+			} else {
+				description = evidence + ". Near-complete team replacement is a primary signal of malicious package acquisition — new authors replacing all prior contributors may indicate an account or project takeover."
+			}
+		}
 	case 1:
 		description = evidence + ". Partial team changes or limited history reduce confidence in ownership continuity."
 	default:

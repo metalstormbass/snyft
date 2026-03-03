@@ -759,7 +759,14 @@ func buildPublisherControlDescription(analysis *PublisherControlAnalysis) string
 		if analysis.HasNewMaintainers {
 			parts = append(parts, fmt.Sprintf("%d new account(s) < 6 months old", analysis.NewMaintainerCount))
 		}
-		return strings.Join(parts, "; ") + ". Moderate publisher control risk — fewer maintainers or weaker authentication increases susceptibility to account compromise."
+		// Tiered language based on maintainer count to differentiate risk levels
+		suffix := ". Moderate publisher control risk — fewer maintainers or weaker authentication increases susceptibility to account compromise."
+		if analysis.MaintainerCount >= 4 {
+			suffix = ". Minor publisher control gap — the maintainer team provides reasonable redundancy, but missing security controls (signing, MFA) leave room for improvement."
+		} else if analysis.MaintainerCount >= 2 {
+			suffix = ". Small maintainer team — while not a single point of failure, a team of 2-3 still has limited redundancy if an account is compromised."
+		}
+		return strings.Join(parts, "; ") + suffix
 
 	default:
 		parts := []string{}
