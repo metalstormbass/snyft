@@ -132,18 +132,23 @@ type PyPIInfo struct {
 }
 
 // extractPyPIRepoURL extracts the best available source-code repository URL from
-// PyPI package metadata. It checks project_urls keys in priority order and then
-// falls back to project_url and home_page fields, filtering the latter two for
-// known source-hosting domains so that marketing homepages are skipped.
+// PyPI package metadata. It checks project_urls keys in priority order, then scans
+// all project_urls values for known source-hosting domains, and finally falls back
+// to project_url and home_page fields.
 //
 // Priority order for project_urls keys (case-insensitive):
 //  1. "Source Code"
 //  2. "Source"
 //  3. "Repository"
 //  4. "Code"
-//  5. "Homepage" — only if the URL contains a known source-hosting domain
+//  5. "GitHub" / "Git" / "VCS" / "Version Control"
+//  6. "Homepage" — only if the URL contains a known source-hosting domain
 //
-// Final fallbacks (domain-filtered): project_url, home_page
+// Catch-all: scan ALL project_urls values for known source-hosting domains.
+// This catches packages like sqlalchemy where the only repo URL is under
+// "Issue Tracker" or other non-standard keys.
+//
+// Final fallbacks (domain-filtered): home_page, project_url
 func extractPyPIRepoURL(info PyPIInfo) string {
 	// Build a lowercase key → original URL map for case-insensitive lookup.
 	// PyPI project_urls keys have no enforced casing convention; packages use
@@ -153,7 +158,7 @@ func extractPyPIRepoURL(info PyPIInfo) string {
 		lowerURLs[strings.ToLower(k)] = v
 	}
 
-	priority := []string{"source code", "source", "repository", "code"}
+	priority := []string{"source code", "source", "repository", "code", "github", "git", "vcs", "version control"}
 	for _, key := range priority {
 		if url, ok := lowerURLs[key]; ok && url != "" {
 			return url
@@ -167,15 +172,38 @@ func extractPyPIRepoURL(info PyPIInfo) string {
 		}
 	}
 
-	// Final fallbacks — also filtered for source-hosting domains
-	if info.ProjectURL != "" && isSourceRepoHost(info.ProjectURL) {
-		return info.ProjectURL
+	// Catch-all: scan ALL project_urls values for source-hosting domains.
+	// Packages sometimes store the repo URL under non-standard keys like
+	// "Issue Tracker", "Tracker", or "Bug Tracker". Strip subpage suffixes
+	// (e.g. /issues) to recover the base repository URL.
+	for _, url := range info.ProjectURLs {
+		if url != "" && isSourceRepoHost(url) {
+			return stripRepoSubpageSuffix(url)
+		}
 	}
+
+	// Final fallbacks — also filtered for source-hosting domains
 	if info.HomePage != "" && isSourceRepoHost(info.HomePage) {
 		return info.HomePage
 	}
+	if info.ProjectURL != "" && isSourceRepoHost(info.ProjectURL) {
+		return info.ProjectURL
+	}
 
 	return ""
+}
+
+// stripRepoSubpageSuffix removes common repository subpage suffixes from a URL
+// so that an issue tracker or wiki link is normalized to the base repository URL.
+// For example, "https://github.com/org/repo/issues" → "https://github.com/org/repo".
+func stripRepoSubpageSuffix(url string) string {
+	url = strings.TrimRight(url, "/")
+	for _, suffix := range []string{"/issues", "/wiki", "/pulls", "/actions", "/releases"} {
+		if strings.HasSuffix(url, suffix) {
+			return strings.TrimSuffix(url, suffix)
+		}
+	}
+	return url
 }
 
 // extractPyPIMaintainers extracts maintainer names from all available PyPI info fields.
@@ -454,10 +482,10 @@ func (c *PyPIClient) scrapePyPIPackageInfo(packageName string) (*PyPIPackage, er
 		pkg.License = strings.TrimSpace(pkg.License)
 	})
 
-	// Extract repository URL from project links
-	doc.Find("a.vertical-tabs__tab[href*='github.com']").Each(func(i int, s *goquery.Selection) {
-		if href, exists := s.Attr("href"); exists {
-			pkg.RepositoryURL = href
+	// Extract repository URL from project links — check all known source hosts
+	doc.Find("a.vertical-tabs__tab").Each(func(i int, s *goquery.Selection) {
+		if href, exists := s.Attr("href"); exists && isSourceRepoHost(href) {
+			pkg.RepositoryURL = stripRepoSubpageSuffix(href)
 		}
 	})
 
