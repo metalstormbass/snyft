@@ -173,15 +173,34 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		}
 	}
 
-	// Build description from actual evidence
+	// Build description from actual evidence, tailored to the specific risk driver
 	var description string
+	evidenceJoined := strings.Join(evidenceParts, "; ")
 	switch riskPoints {
 	case 0:
-		description = strings.Join(evidenceParts, "; ") + ". Established packages with recent activity and consistent release cadence have been community-vetted over time."
+		description = evidenceJoined + ". Established packages with recent activity and consistent release cadence have been community-vetted over time."
 	case 1:
-		description = strings.Join(evidenceParts, "; ") + ". Moderate maturity — either the package is relatively new (limited community vetting) or showing signs of reduced maintenance."
+		switch {
+		case cadenceRisk >= 1 && ageRisk == 0 && stalenessRisk == 0:
+			description = evidenceJoined + ". Irregular release cadence may indicate inconsistent maintenance or sudden bursts of activity worth monitoring."
+		case stalenessRisk >= 1 && ageRisk == 0:
+			description = evidenceJoined + ". Package shows signs of reduced maintenance — stale projects may be at higher risk of account takeover."
+		case ageRisk >= 1 && stalenessRisk == 0:
+			description = evidenceJoined + ". Relatively new package with limited community vetting history."
+		default:
+			description = evidenceJoined + ". Moderate maturity concerns — the package is either relatively new, showing signs of reduced maintenance, or has irregular release cadence."
+		}
 	default:
-		description = strings.Join(evidenceParts, "; ") + ". Very new packages lack community vetting and may be subject to dependency confusion attacks. Very stale packages may be abandoned and vulnerable to takeover."
+		switch {
+		case cadenceRisk >= 2 && ageRisk == 0 && stalenessRisk == 0:
+			description = evidenceJoined + ". Highly irregular release cadence can indicate sudden reactivation of a dormant package — a common supply chain attack pattern."
+		case stalenessRisk >= 2 && ageRisk == 0:
+			description = evidenceJoined + ". Very stale packages may be abandoned and vulnerable to account takeover."
+		case ageRisk >= 2 && stalenessRisk == 0:
+			description = evidenceJoined + ". Very new packages lack community vetting and may be subject to dependency confusion attacks."
+		default:
+			description = evidenceJoined + ". Multiple maturity concerns detected — new or stale packages with irregular release patterns are at elevated risk of supply chain compromise."
+		}
 	}
 
 	return models.CategoryScore{

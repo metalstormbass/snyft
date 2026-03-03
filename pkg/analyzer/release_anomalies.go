@@ -324,10 +324,17 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 		if isMaturedProject && recentCount >= 50 {
 			return nil
 		}
+		// Tailor language: 100+ recent commits is a major reactivation, not "near-dormant"
+		var spikeDesc string
+		if recentCount >= 100 {
+			spikeDesc = fmt.Sprintf("%d commits in the last year vs only %d in the previous year. A previously inactive project with a massive surge in activity warrants investigation — while this may reflect legitimate new investment, it can also indicate compromised maintainer accounts pushing changes rapidly.", recentCount, previousYearCount)
+		} else {
+			spikeDesc = fmt.Sprintf("%d commits in the last year vs only %d in the previous year. A previously low-activity project with a sudden burst of commits is characteristic of account takeover, where adversaries push multiple changes rapidly.", recentCount, previousYearCount)
+		}
 		return &models.CategoryScore{
 			Score:       0,
 			RiskPoints:  2,
-			Description: fmt.Sprintf("%d commits in the last year vs only %d in the previous year. A near-dormant project with a sudden burst of activity is characteristic of account takeover, where adversaries push multiple changes rapidly.", recentCount, previousYearCount),
+			Description: spikeDesc,
 			Evidence: fmt.Sprintf("%d commits in last year vs %d in previous year (sudden spike)",
 				recentCount, previousYearCount),
 			Verified:    true,
