@@ -61,7 +61,18 @@ func (r *Reporter) generateHTML() error {
 	return nil
 }
 
-
+func riskOrdinal(level string) int {
+	switch level {
+	case "HIGH":
+		return 3
+	case "MEDIUM":
+		return 2
+	case "LOW":
+		return 1
+	default:
+		return 0
+	}
+}
 
 // packageSlug generates an HTML-safe ID from a package name.
 // Non-alphanumeric characters are replaced with hyphens and leading/trailing
@@ -257,14 +268,55 @@ body{background:#fff;color:#1e293b}
 }
 
 func (r *Reporter) printHTMLExecutiveSummary(w io.Writer) error {
+	overall := calculateOverallRisk(r.stats)
 	duration := r.stats.EndTime.Sub(r.stats.StartTime)
 
+	overallCls := "low"
+	switch overall {
+	case "HIGH":
+		overallCls = "high"
+	case "MEDIUM":
+		overallCls = "medium"
+	}
+
 	f(w, "<div class=\"dashboard\">\n")
+
+	// Overall risk card
+	riskCardClass := "risk-high"
+	switch overall {
+	case "MEDIUM":
+		riskCardClass = "risk-med"
+	case "LOW":
+		riskCardClass = "risk-low"
+	}
+	f(w, "<div class=\"stat-card %s\">\n", riskCardClass)
+	f(w, "<div class=\"stat-label\">Overall Risk</div>\n")
+	f(w, "<div class=\"stat-value %s\">%s</div>\n", overallCls, overall)
+	f(w, "</div>\n")
 
 	// Packages card
 	f(w, "<div class=\"stat-card risk-info\">\n")
 	f(w, "<div class=\"stat-label\">Packages Analyzed</div>\n")
 	f(w, "<div class=\"stat-value\">%d</div>\n", r.stats.TotalPackages)
+	if r.stats.TotalPackages > 0 {
+		f(w, "<div class=\"stat-breakdown\"><span class=\"high\">%d high</span><span class=\"med\">%d med</span><span class=\"low\">%d low</span></div>\n",
+			r.stats.HighRisk, r.stats.MediumRisk, r.stats.LowRisk)
+		// Risk meter bar
+		total := float64(r.stats.TotalPackages)
+		if total > 0 {
+			f(w, "<div class=\"risk-meter\">")
+			if r.stats.HighRisk > 0 {
+				f(w, "<span class=\"seg-high\" style=\"width:%.1f%%\"></span>", float64(r.stats.HighRisk)/total*100)
+			}
+			if r.stats.MediumRisk > 0 {
+				f(w, "<span class=\"seg-med\" style=\"width:%.1f%%\"></span>", float64(r.stats.MediumRisk)/total*100)
+			}
+			if r.stats.LowRisk > 0 {
+				f(w, "<span class=\"seg-low\" style=\"width:%.1f%%\"></span>", float64(r.stats.LowRisk)/total*100)
+			}
+			f(w, "</div>\n")
+		}
+	}
 	f(w, "</div>\n")
 
 	// Dependencies card
@@ -335,8 +387,22 @@ func (r *Reporter) printHTMLRiskAreas(w io.Writer) {
 }
 
 func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, index int) {
+	cls := "low"
+	switch result.RiskLevel {
+	case "HIGH":
+		cls = "high"
+	case "MEDIUM":
+		cls = "medium"
+	}
+
+	// First 3 HIGH risk packages start expanded
+	openCls := ""
+	if result.RiskLevel == "HIGH" && index < 3 {
+		openCls = " open"
+	}
+
 	slug := packageSlug(result.Dependency.Name)
-	f(w, "<div class=\"pkg-card\" id=\"pkg-%s\">\n", slug)
+	f(w, "<div class=\"pkg-card %s%s\" id=\"pkg-%s\">\n", cls, openCls, slug)
 
 	// Clickable header
 	f(w, "<div class=\"pkg-header\" onclick=\"toggle('%s')\">\n", slug)
@@ -348,6 +414,18 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 	}
 	f(w, "</div>\n")
 	f(w, "<div class=\"pkg-right\">\n")
+	if result.SupplyChainScore != nil {
+		ms := maxScore(result.SupplyChainScore)
+		f(w, "<span class=\"pkg-score\" style=\"color:%s\">%d/%d</span>\n",
+			scoreColorCSS(result.SupplyChainScore.TotalScore),
+			result.SupplyChainScore.TotalScore, ms)
+	}
+	if result.SupplyChainScore != nil {
+		badgeColor := scoreColorCSS(result.SupplyChainScore.TotalScore)
+		f(w, "<span class=\"risk-badge %s\" style=\"color:%s\">%s</span>\n", cls, badgeColor, result.RiskLevel)
+	} else {
+		f(w, "<span class=\"risk-badge %s\">%s</span>\n", cls, result.RiskLevel)
+	}
 	f(w, "<svg class=\"chevron\" viewBox=\"0 0 20 20\" fill=\"currentColor\"><path fill-rule=\"evenodd\" d=\"M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z\" clip-rule=\"evenodd\"/></svg>\n")
 	f(w, "</div>\n")
 	f(w, "</div>\n")
