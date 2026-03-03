@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,9 +48,6 @@ type gitCloneData struct {
 
 // cloneTimeout is the maximum time allowed for a bare clone to complete.
 const cloneTimeout = 60 * time.Second
-
-// cloneSizeWarnMB is the threshold at which we flag a clone as large.
-const cloneSizeWarnMB = 50.0
 
 // CloneAndAnalyze performs a bare git clone and extracts commit data, file tree,
 // and signature information. Results are cached in repoCache so downstream methods
@@ -563,22 +559,3 @@ func (c *GitHubClient) getFileTreeFromClone(owner, repo string) (map[string]bool
 	return data.fileTree, true
 }
 
-// gitAvailable checks if git is available on the system.
-func gitAvailable() bool {
-	_, err := exec.LookPath("git")
-	return err == nil
-}
-
-// parseShortlogCount parses a line from git shortlog -sn output: "  42\tAuthor Name"
-func parseShortlogCount(line string) (count int, name string, ok bool) {
-	line = strings.TrimSpace(line)
-	parts := strings.SplitN(line, "\t", 2)
-	if len(parts) != 2 {
-		return 0, "", false
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil {
-		return 0, "", false
-	}
-	return n, strings.TrimSpace(parts[1]), true
-}
