@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -277,7 +278,7 @@ type GitHubClient struct {
 	cache        *repoCache
 	preferAPI    bool // when true, always try API first (used by test helpers with mock servers)
 	rateLimiter  *GitHubRateLimiter
-	scrapingOnly bool // when true, all API calls are skipped; only web scraping is used
+	scrapingOnly atomic.Bool // when true, all API calls are skipped; only web scraping is used
 }
 
 // NewGitHubClient creates a new GitHub client. Web scraping is the primary
@@ -336,12 +337,12 @@ func (c *GitHubClient) ShouldFallbackToScraping(threshold int) bool {
 // remaining packages to be analyzed with reduced fidelity rather than being
 // skipped entirely.
 func (c *GitHubClient) SetScrapingOnlyMode(enabled bool) {
-	c.scrapingOnly = enabled
+	c.scrapingOnly.Store(enabled)
 }
 
 // IsScrapingOnly returns true when the client is in scraping-only mode.
 func (c *GitHubClient) IsScrapingOnly() bool {
-	return c.scrapingOnly
+	return c.scrapingOnly.Load()
 }
 
 // shouldPreferScraping returns true when web scraping should be the primary
@@ -379,7 +380,7 @@ var errScrapingOnly = fmt.Errorf("scraping-only mode: API calls disabled to pres
 // requests to raw.githubusercontent.com or github.com web pages, as those
 // have separate (or no) rate limits.
 func (c *GitHubClient) doRequest(req *http.Request) (*http.Response, error) {
-	if c.scrapingOnly {
+	if c.scrapingOnly.Load() {
 		return nil, errScrapingOnly
 	}
 	if c.rateLimiter != nil {
