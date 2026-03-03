@@ -56,15 +56,37 @@ func (r *Reporter) printHeader(w io.Writer) {
 func (r *Reporter) printSummaryLine(w io.Writer) {
 	duration := r.stats.EndTime.Sub(r.stats.StartTime)
 
-	f(w, "\n  %s%d%s package%s scanned  %s%s%s\n\n",
-		ColorBold, r.stats.TotalPackages, ColorReset, pluralize(r.stats.TotalPackages),
-		ColorDim, formatDuration(duration), ColorReset)
+	f(w, "\n  %s%d%s package%s scanned",
+		ColorBold, r.stats.TotalPackages, ColorReset, pluralize(r.stats.TotalPackages))
+
+	if r.stats.HighRisk > 0 {
+		f(w, "  %s●%s %d high", ColorRed, ColorReset, r.stats.HighRisk)
+	}
+	if r.stats.MediumRisk > 0 {
+		f(w, "  %s●%s %d medium", ColorYellow, ColorReset, r.stats.MediumRisk)
+	}
+	if r.stats.LowRisk > 0 {
+		f(w, "  %s●%s %d low", ColorGreen, ColorReset, r.stats.LowRisk)
+	}
+
+	f(w, "  %s%s%s\n\n", ColorDim, formatDuration(duration), ColorReset)
 }
 
 func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult) {
+	rc := riskColor(result.RiskLevel)
+	icon := riskIcon(result.RiskLevel)
+
 	// Package name@version
 	nameVer := fmt.Sprintf("%s@%s", result.Dependency.Name, result.Dependency.DisplayVersion())
 	eco := string(result.Dependency.Ecosystem)
+
+	// Score with color based on numeric value
+	scoreStr := ""
+	if result.SupplyChainScore != nil {
+		ms := maxScore(result.SupplyChainScore)
+		sc := scoreColor(result.SupplyChainScore.TotalScore)
+		scoreStr = fmt.Sprintf("%s%2d%s/%d", sc+ColorBold, result.SupplyChainScore.TotalScore, ColorReset, ms)
+	}
 
 	// Transitive label
 	transitive := ""
@@ -72,9 +94,10 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		transitive = fmt.Sprintf(" %s(transitive)%s", ColorDim, ColorReset)
 	}
 
-	// Package header line: name@version  ecosystem
-	f(w, "  %s%-35s%s  %-5s%s\n",
-		ColorBold, nameVer, ColorReset, eco, transitive)
+	// Package header line: icon name@version  ecosystem  score  RISK
+	f(w, "  %s %s%-35s%s  %-5s  %s  %s%s%s%s\n",
+		icon, ColorBold, nameVer, ColorReset, eco,
+		scoreStr, rc+ColorBold, result.RiskLevel, ColorReset, transitive)
 
 	// OpenSSF Scorecard link (dimmed/gray)
 	if result.ScorecardURL != "" {

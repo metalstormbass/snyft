@@ -18,7 +18,7 @@ func main() {
 				Version:   "4.17.1",
 				Ecosystem: models.EcosystemNPM,
 			},
-	
+			RiskLevel:           "HIGH",
 			SourceCodeAvailable: true,
 			RepositoryURL:       "https://github.com/expressjs/express",
 			Findings: []models.Finding{
@@ -38,6 +38,8 @@ func main() {
 				},
 			},
 			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 9,
+				RiskLevel:  "HIGH",
 				CategoryScores: models.CategoryScores{
 					PublisherControl: models.CategoryScore{
 						Score:       2,
@@ -57,7 +59,7 @@ func main() {
 				Version:   "4.17.21",
 				Ecosystem: models.EcosystemNPM,
 			},
-	
+			RiskLevel:           "MEDIUM",
 			SourceCodeAvailable: true,
 			RepositoryURL:       "https://github.com/lodash/lodash",
 			Findings: []models.Finding{
@@ -69,7 +71,10 @@ func main() {
 					Check:       "provenance",
 				},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 6,
+				RiskLevel:  "MEDIUM",
+			},
 		},
 		{
 			Dependency: models.Dependency{
@@ -77,7 +82,7 @@ func main() {
 				Version:   "2.88.2",
 				Ecosystem: models.EcosystemNPM,
 			},
-	
+			RiskLevel:           "HIGH",
 			SourceCodeAvailable: true,
 			RepositoryURL:       "https://github.com/request/request",
 			Findings: []models.Finding{
@@ -89,7 +94,10 @@ func main() {
 					Check:       "release_anomalies",
 				},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 10,
+				RiskLevel:  "HIGH",
+			},
 		},
 		{
 			Dependency: models.Dependency{
@@ -97,7 +105,7 @@ func main() {
 				Version:   "18.2.0",
 				Ecosystem: models.EcosystemNPM,
 			},
-	
+			RiskLevel:           "LOW",
 			SourceCodeAvailable: true,
 			RepositoryURL:       "https://github.com/facebook/react",
 			Findings: []models.Finding{
@@ -109,7 +117,10 @@ func main() {
 					Check:       "health",
 				},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 2,
+				RiskLevel:  "LOW",
+			},
 		},
 	}
 
