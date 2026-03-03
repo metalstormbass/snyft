@@ -177,12 +177,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .risk-area-examples a:hover{text-decoration:underline;color:#52b788}
 
 /* Package cards */
-.pkg-card{border:1px solid #1b4332;border-radius:10px;margin-bottom:12px;overflow:hidden;background:#1a1a1a;transition:box-shadow 0.15s}
+.pkg-card{border:1px solid #1b4332;border-radius:10px;margin-bottom:12px;background:#1a1a1a;transition:box-shadow 0.15s}
 .pkg-card:hover{box-shadow:0 2px 8px rgba(0,0,0,0.3)}
 .pkg-card.high{border-left:4px solid #ef4444}
 .pkg-card.medium{border-left:4px solid #f59e0b}
 .pkg-card.low{border-left:4px solid #52b788}
-.pkg-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;cursor:pointer;user-select:none;-webkit-user-select:none;gap:12px}
+.pkg-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;cursor:pointer;user-select:none;-webkit-user-select:none;gap:12px;border-radius:9px}
+.pkg-card.open .pkg-header{border-radius:9px 9px 0 0}
 .pkg-header:hover{background:#252525}
 .pkg-left{display:flex;align-items:center;gap:12px;min-width:0;flex:1}
 .pkg-name{font-size:15px;font-weight:600;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -222,7 +223,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 
 /* Category tooltips */
 .cat-item{position:relative;cursor:default}
-.cat-item[data-tooltip]:hover::after{content:attr(data-tooltip);position:absolute;bottom:calc(100%% + 6px);left:0;background:#2a2a2a;color:#d0d0d0;font-size:12px;font-weight:400;line-height:1.4;padding:8px 12px;border-radius:6px;border:1px solid #3a3a3a;white-space:normal;width:320px;max-width:90vw;z-index:10;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
+.cat-item[data-tooltip]:hover::after{content:attr(data-tooltip);position:absolute;bottom:calc(100%% + 6px);left:0;background:#2a2a2a;color:#d0d0d0;font-size:12px;font-weight:400;line-height:1.4;padding:8px 12px;border-radius:6px;border:1px solid #3a3a3a;white-space:normal;width:max-content;max-width:min(320px,90vw);z-index:10;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
 .cat-item[data-tooltip]:hover::before{content:'';position:absolute;bottom:calc(100%% + 2px);left:16px;border:5px solid transparent;border-top-color:#3a3a3a;z-index:11;pointer-events:none}
 
 /* Findings */
