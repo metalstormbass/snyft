@@ -18,11 +18,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// rateLimitStopThreshold is the minimum number of GitHub API calls that must
-// remain before the scan stops to preserve quota. When the rate limit drops
-// below this value, workers stop accepting new packages and the scan saves
-// a checkpoint file so it can be resumed later with --resume.
-const rateLimitStopThreshold = 50
+// rateLimitScrapingThreshold is the minimum number of GitHub API calls that must
+// remain before the scan switches to scraping-only mode. When the rate limit
+// drops below this value, remaining packages are analyzed using web scraping
+// instead of the GitHub API. The scan NEVER stops — all packages get results.
+// A checkpoint file is saved so users can optionally re-run with full API
+// access later via --resume.
+const rateLimitScrapingThreshold = 50
 
 var (
 	scanPath    string
@@ -252,7 +254,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Merge with any previously completed results from checkpoint
 	allResults := append(previousResults, scanResult.results...)
 
-	if scanResult.rateLimitStopped {
+	if scanResult.rateLimitFallback {
 		// Save checkpoint so the user can optionally re-run with full API
 		// access later. The scraping-only packages in the checkpoint are
 		// identified by their DataMode field in the saved results.
@@ -383,16 +385,16 @@ func findManifestFiles(dir string) ([]string, error) {
 // analysisOutput holds the results from analyzeDependenciesWithGate.
 type analysisOutput struct {
 	results             []models.AnalysisResult
-	rateLimitStopped    bool
+	rateLimitFallback   bool // true when scraping-only mode was activated due to rate limit
 	rateLimitRemaining  int
 	scrapingOnlyCount   int // number of packages analyzed in scraping-only mode
 }
 
 // analyzeDependenciesWithGate runs dependency analysis with a rate limit gate.
-// When the GitHub API rate limit drops below rateLimitStopThreshold, it switches
-// to scraping-only mode for remaining packages instead of stopping. This ensures
-// ALL packages get results, though packages analyzed after the rate limit gate
-// triggers will have reduced data fidelity (marked with DataMode "scraping-only").
+// When the GitHub API rate limit drops below rateLimitScrapingThreshold, it
+// switches to scraping-only mode for remaining packages. The scan NEVER stops —
+// ALL packages get results. Packages analyzed after the rate limit gate triggers
+// will have reduced data fidelity (marked with DataMode "scraping-only").
 func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, reporter *report.Reporter, selectedChecks []string, statusOut *os.File) analysisOutput {
 	results := make([]models.AnalysisResult, len(deps))
 	completedFlags := make([]bool, len(deps)) // tracks which indices were actually analyzed
@@ -467,7 +469,7 @@ func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, repor
 	// processing remaining packages instead of stopping.
 	rateLimitTriggered := false
 	for i := range deps {
-		if !rateLimitTriggered && a.ShouldStopForRateLimit(rateLimitStopThreshold) {
+		if !rateLimitTriggered && a.ShouldFallbackToScraping(rateLimitScrapingThreshold) {
 			rateLimitTriggered = true
 			remaining := a.RateLimitRemaining()
 
@@ -476,7 +478,7 @@ func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, repor
 			a.SetScrapingOnlyMode(true)
 
 			reporter.ClearProgress()
-			_, _ = fmt.Fprintf(statusOut, "\n⚠️  Rate limit approaching: %d GitHub API calls remaining (threshold: %d)\n", remaining, rateLimitStopThreshold)
+			_, _ = fmt.Fprintf(statusOut, "\n⚠️  Rate limit approaching: %d GitHub API calls remaining (threshold: %d)\n", remaining, rateLimitScrapingThreshold)
 			_, _ = fmt.Fprintf(statusOut, "   Switching to scraping-only mode for remaining %d packages (reduced data fidelity)\n", len(deps)-i)
 		}
 		jobs <- i
@@ -510,7 +512,7 @@ func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, repor
 
 	return analysisOutput{
 		results:            completedResults,
-		rateLimitStopped:   rateLimitTriggered,
+		rateLimitFallback:  rateLimitTriggered,
 		rateLimitRemaining: a.RateLimitRemaining(),
 		scrapingOnlyCount:  scrapingOnlyCount,
 	}
