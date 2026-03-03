@@ -31,18 +31,6 @@ cd snyft
 make build
 ```
 
-## Quickstart
-
-Install and generate an HTML report in three commands:
-
-```bash
-go install github.com/metalstormbass/snyft@latest
-export PATH=${PATH}:`go env GOPATH`/bin
-snyft scan --format html -o report.html
-```
-
-Open `report.html` in your browser to see a visual breakdown of every dependency's supply chain risk score. The HTML report is the recommended way to review results — it includes interactive scoring details, evidence, and per-category findings that are easier to navigate than terminal output.
-
 ## Usage
 
 ```bash
@@ -56,6 +44,8 @@ snyft scan --workers 20                   # Increase concurrency
 ```
 
 If you installed snyft via `go`, you can run commands without the `./` part. Running a scan of your current directory would be done via `snyft scan`.
+
+> **Suggested:** For the best experience, use the HTML report: `snyft scan --format html -o report.html`. It includes interactive scoring details, evidence, and per-category findings that are easier to navigate than terminal output.
 
 > **Note:** Scanning projects with many dependencies may take several minutes. Running multiple scans concurrently may trigger GitHub rate limits (60 requests/hour unauthenticated, 5,000/hour with `GITHUB_TOKEN`).
 
