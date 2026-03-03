@@ -37,8 +37,9 @@ type MavenPackage struct {
 	LastPublishedAt time.Time // Latest version publish date (from Solr API)
 	Developers      []MavenDeveloper // From POM <developers> section
 	VersionCount    int              // Number of versions published (from maven-metadata.xml)
-	DirectDepCount  int              // Direct non-test dependencies from POM
-	HasGPGSignature bool             // Whether .asc GPG signature file exists
+	DirectDepCount  int                     // Direct compile+runtime dependencies from POM
+	ScopeBreakdown  *models.MavenScopeBreakdown // Dependency count by Maven scope
+	HasGPGSignature bool                        // Whether .asc GPG signature file exists
 }
 
 // NewMavenClient creates a new Maven Central client
@@ -293,15 +294,36 @@ func (c *MavenClient) enrichFromPOM(pkg *MavenPackage, groupID, artifactID, vers
 		pkg.Developers = pom.Developers
 	}
 
-	// Count direct non-test dependencies from POM.
-	// This provides a dependency sprawl signal even when no local pom.xml is available.
-	directCount := 0
+	// Count dependencies by Maven scope.
+	// Only compile and runtime scoped deps flow to consumers and represent actual
+	// supply chain entry points. Test, provided, and system scoped deps do not.
+	// When scope is absent, Maven defaults to "compile".
+	// Source: Maven POM reference — Dependency Scope
+	//         https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#Dependency_Scope
+	breakdown := &models.MavenScopeBreakdown{}
 	for _, dep := range pom.Dependencies {
-		if dep.Scope != "test" {
-			directCount++
+		scope := dep.Scope
+		if scope == "" {
+			scope = "compile" // Maven default
+		}
+		switch scope {
+		case "compile":
+			breakdown.Compile++
+		case "runtime":
+			breakdown.Runtime++
+		case "test":
+			breakdown.Test++
+		case "provided":
+			breakdown.Provided++
+		case "system":
+			breakdown.System++
+		default:
+			// Unknown scopes treated as compile (conservative)
+			breakdown.Compile++
 		}
 	}
-	pkg.DirectDepCount = directCount
+	pkg.ScopeBreakdown = breakdown
+	pkg.DirectDepCount = breakdown.Compile + breakdown.Runtime
 
 	return nil
 }
