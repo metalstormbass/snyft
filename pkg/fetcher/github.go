@@ -474,6 +474,8 @@ func (c *GitHubClient) GetCommitActivity(repoURL string, since time.Time) ([]Git
 // CheckGitTag verifies if a specific version tag exists in the repository.
 // Uses web scraping as the primary method (HEAD request to github.com tag page),
 // falling back to the API only when a token is available and scraping fails.
+// When direct lookups fail, falls back to paginated tag search to handle repos
+// with non-standard tag naming (e.g. "jackson-modules-java8-2.15.3").
 // Returns true if the tag exists, along with the tag URL.
 func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
@@ -481,13 +483,17 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 		return false, "", err
 	}
 
-	// Try common version tag formats: v1.2.3, 1.2.3, v1.2.3-beta, release-1.2.3
+	// Try common version tag formats: v1.2.3, 1.2.3, release-1.2.3, repo-1.2.3.
+	// The repo-prefixed variants handle projects like Jackson that use
+	// "jackson-modules-java8-2.15.3" style tags.
 	tagVariants := []string{
 		version,
 		"v" + version,
 		"V" + version,
 		"release-" + version,
 		"Release-" + version,
+		repo + "-" + version,
+		repo + "-v" + version,
 	}
 
 	// Scraping-first path: check the GitHub web page for each tag variant.
@@ -545,11 +551,99 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 		}
 	}
 
+	// Paginated fallback: when direct lookups fail (non-standard tag naming),
+	// search through the tags listing API. This catches repos that use
+	// arbitrary prefixes (e.g. "myproject-v2.15.3") that aren't covered
+	// by the variant list above.
+	if !rateLimited {
+		if found, tagURL := c.searchTagsPaginated(owner, repo, version); found {
+			return true, tagURL, nil
+		}
+	}
+
 	// Graceful degradation: when rate-limited and scraping didn't find the tag,
 	// return (false, "", nil) — "could not confirm tag" — rather than an error.
 	// The caller treats nil error + false as "tag not found" which is the safest
 	// interpretation: the provenance scorer already handles missing tags.
 	return false, "", nil
+}
+
+// maxTagSearchPages is the upper bound on pages fetched during paginated tag
+// search. At 100 tags per page, this covers repos with up to 1000 tags while
+// keeping API overhead bounded.
+const maxTagSearchPages = 10
+
+// searchTagsPaginated searches through paginated GitHub tags for any tag
+// ending with the target version string. This handles repos with non-standard
+// tag naming where the version appears as a suffix (e.g. "module-name-2.15.3").
+func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, string) {
+	// Build version suffixes to match against — a tag like "foo-2.15.3" or "foo-v2.15.3"
+	versionSuffixes := []string{
+		"-" + version,
+		"-v" + version,
+		"_" + version,
+		"_v" + version,
+		"/" + version,
+		"/v" + version,
+	}
+
+	nextURL := fmt.Sprintf("%s/repos/%s/%s/tags?per_page=100", c.baseURL, owner, repo)
+
+	for page := 0; page < maxTagSearchPages && nextURL != ""; page++ {
+		req, err := http.NewRequest("GET", nextURL, nil)
+		if err != nil {
+			break
+		}
+
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := c.doRequest(req)
+		if err != nil {
+			break
+		}
+
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			_ = resp.Body.Close()
+			break // Rate limited — stop searching.
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			break
+		}
+
+		var tags []struct {
+			Name string `json:"name"`
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			break
+		}
+		if err := json.Unmarshal(body, &tags); err != nil {
+			break
+		}
+
+		for _, tag := range tags {
+			for _, suffix := range versionSuffixes {
+				if strings.HasSuffix(tag.Name, suffix) {
+					tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag.Name)
+					return true, tagURL
+				}
+			}
+		}
+
+		if len(tags) == 0 {
+			break
+		}
+
+		nextURL = parseLinkHeaderNextURL(resp.Header.Get("Link"))
+	}
+
+	return false, ""
 }
 
 // checkTagViaWeb checks if a GitHub tag/release page exists by issuing a HEAD

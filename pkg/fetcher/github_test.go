@@ -775,6 +775,195 @@ func TestCheckGitTag(t *testing.T) {
 	}
 }
 
+// Test: CheckGitTag finds repo-name-prefixed tags (e.g. "jackson-modules-java8-2.15.3")
+// Justification: Many Java projects (Maven, multi-module) use repo-name-prefixed tags.
+//                If we only check "2.15.3" and "v2.15.3", we miss the real tag, producing
+//                a false-positive "No git tag found" — which incorrectly signals that the
+//                published artifact cannot be traced to source code.
+// Source: SLSA specification v1.0 – https://slsa.dev/spec/v1.0/
+// Methodology: Mock the GitHub Git Refs API to only recognize the repo-prefixed tag.
+//              Direct lookups for "2.15.3" and "v2.15.3" return 404; "mylib-2.15.3"
+//              returns 200.
+// Result: Returns (true, tagURL, nil) when repo-prefixed tag matches.
+func TestCheckGitTag_RepoNamePrefix(t *testing.T) {
+	tests := []struct {
+		name      string
+		repoURL   string
+		version   string
+		validTags map[string]bool
+		wantFound bool
+	}{
+		{
+			name:      "repo-prefixed tag found (jackson-style)",
+			repoURL:   "https://github.com/FasterXML/jackson-modules-java8",
+			version:   "2.15.3",
+			validTags: map[string]bool{"jackson-modules-java8-2.15.3": true},
+			wantFound: true,
+		},
+		{
+			name:      "repo-prefixed v-tag found",
+			repoURL:   "https://github.com/owner/mylib",
+			version:   "1.0.0",
+			validTags: map[string]bool{"mylib-v1.0.0": true},
+			wantFound: true,
+		},
+		{
+			name:      "plain v-prefix still works when repo-prefix doesn't match",
+			repoURL:   "https://github.com/owner/mylib",
+			version:   "1.0.0",
+			validTags: map[string]bool{"v1.0.0": true},
+			wantFound: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				parts := strings.Split(r.URL.Path, "/tags/")
+				if len(parts) == 2 && tt.validTags[parts[1]] {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{}`))
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
+			}
+
+			found, tagURL, err := client.CheckGitTag(tt.repoURL, tt.version)
+			if err != nil {
+				t.Fatalf("CheckGitTag() unexpected error: %v", err)
+			}
+			if found != tt.wantFound {
+				t.Errorf("CheckGitTag() found = %v, want %v", found, tt.wantFound)
+			}
+			if found && tagURL == "" {
+				t.Error("CheckGitTag() found=true but tagURL is empty")
+			}
+		})
+	}
+}
+
+// Test: CheckGitTag paginated fallback finds tags with non-standard prefixes
+// Justification: Some repos use tag formats not covered by static variants
+//                (e.g. "module-name-v2.15.3" where module-name != repo name).
+//                The paginated search through /repos/{owner}/{repo}/tags catches these
+//                by scanning for tags ending with the version string, preventing false
+//                "No git tag found" findings that incorrectly inflate risk scores.
+// Source: SLSA specification v1.0 – https://slsa.dev/spec/v1.0/
+// Methodology: Mock the GitHub Tags API to return paginated results. The target tag
+//              appears on page 2 (beyond the first 100 results). Direct ref lookups
+//              all return 404.
+// Result: Returns (true, tagURL, nil) after finding the tag via pagination.
+func TestCheckGitTag_PaginatedFallback(t *testing.T) {
+	tests := []struct {
+		name       string
+		version    string
+		page1Tags  []string
+		page2Tags  []string
+		wantFound  bool
+	}{
+		{
+			name:    "finds tag on page 2 with custom prefix",
+			version: "2.15.3",
+			page1Tags: []string{
+				"some-other-tag-3.0.0",
+				"some-other-tag-2.99.0",
+			},
+			page2Tags: []string{
+				"custom-prefix-2.15.3",
+				"another-tag-1.0.0",
+			},
+			wantFound: true,
+		},
+		{
+			name:    "finds tag with underscore separator",
+			version: "1.5.0",
+			page1Tags: []string{
+				"module_v1.5.0",
+			},
+			page2Tags: nil,
+			wantFound: true,
+		},
+		{
+			name:    "not found when no tag matches",
+			version: "9.9.9",
+			page1Tags: []string{
+				"module-1.0.0",
+				"module-2.0.0",
+			},
+			page2Tags: nil,
+			wantFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Direct ref lookups: always 404
+				if strings.Contains(r.URL.Path, "/git/ref/tags/") {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+
+				// Paginated tags listing
+				if strings.Contains(r.URL.Path, "/tags") {
+					page := r.URL.Query().Get("page")
+					w.Header().Set("Content-Type", "application/json")
+
+					var tags []string
+					if page == "" || page == "1" {
+						tags = tt.page1Tags
+						if len(tt.page2Tags) > 0 {
+							// Add Link header pointing to page 2
+							nextURL := fmt.Sprintf("<%s%s?per_page=100&page=2>; rel=\"next\"", r.Host, r.URL.Path)
+							// Use the full URL with the server's base
+							nextURL = fmt.Sprintf("<%s/repos/owner/repo/tags?per_page=100&page=2>; rel=\"next\"", "http://"+r.Host)
+							w.Header().Set("Link", nextURL)
+						}
+					} else if page == "2" {
+						tags = tt.page2Tags
+					}
+
+					var jsonTags []string
+					for _, tag := range tags {
+						jsonTags = append(jsonTags, fmt.Sprintf(`{"name":"%s"}`, tag))
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[" + strings.Join(jsonTags, ",") + "]"))
+					return
+				}
+
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer server.Close()
+
+			client := &GitHubClient{
+				httpClient: &http.Client{},
+				baseURL:    server.URL,
+				cache:      newRepoCache(),
+			}
+
+			found, tagURL, err := client.CheckGitTag("https://github.com/owner/repo", tt.version)
+			if err != nil {
+				t.Fatalf("CheckGitTag() unexpected error: %v", err)
+			}
+			if found != tt.wantFound {
+				t.Errorf("CheckGitTag() found = %v, want %v", found, tt.wantFound)
+			}
+			if found && tagURL == "" {
+				t.Error("CheckGitTag() found=true but tagURL is empty")
+			}
+		})
+	}
+}
+
 // Test: CheckIfOrganization detects whether a GitHub owner is an organization
 // Justification: Packages under organization ownership have different risk profiles
 //                than personal accounts — organizations can enforce MFA, branch protection,
