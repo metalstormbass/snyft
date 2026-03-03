@@ -155,6 +155,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	_, _ = fmt.Fprintf(statusOut, "🔍 Scanning directory: %s\n", scanPath)
 
+	// Show GitHub token status before scanning begins
+	if os.Getenv("GITHUB_TOKEN") != "" {
+		_, _ = fmt.Fprintln(statusOut, "🔑 GitHub token detected (authenticated API access)")
+	} else {
+		_, _ = fmt.Fprintln(statusOut, "💡 Tip: Set GITHUB_TOKEN for richer data and 5,000 req/hr instead of 60")
+	}
+
 	// Parse manifest files
 	manifestCount, dependencies, err := parseManifests(scanPath, statusOut)
 	if err != nil {
