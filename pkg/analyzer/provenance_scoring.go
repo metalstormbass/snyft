@@ -85,11 +85,13 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	// Check for Maven Central GPG signatures (.asc files)
 	// Maven Central has required GPG signing since 2010. The presence of a .asc
 	// file indicates the publisher followed proper release procedures.
+	// This is a strong provenance signal (+2 points) because Maven Central enforces
+	// GPG signing for all published artifacts — it is not optional.
 	// Source: https://central.sonatype.org/publish/requirements/gpg/
 	if result.Metadata.HasMavenGPGSignature {
-		provenanceScore += 1
+		provenanceScore += 2
 		evidence = append(evidence, "Maven Central GPG signature (.asc)")
-		checks = append(checks, models.CheckResult{Name: "Maven GPG signature", Status: "PASS", Detail: "GPG signature (.asc) file found in Maven Central"})
+		checks = append(checks, models.CheckResult{Name: "Maven GPG signature", Status: "PASS", Detail: "GPG signature (.asc) file found in Maven Central — Maven Central requires GPG signing for all artifacts"})
 	} else if result.Dependency.Ecosystem == models.EcosystemMaven {
 		checks = append(checks, models.CheckResult{Name: "Maven GPG signature", Status: "FAIL", Detail: "No GPG signature (.asc) file found in Maven Central"})
 	}
@@ -128,7 +130,7 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	//   no (explicit)    | none         | 2 - worst case: no source, no attestations
 	//   unknown          | strong (>=2) | 0 - attestation-only (backward compat)
 	//   unknown          | weak (1)     | 1 - partial provenance
-	//   unknown          | none (0)     | 2 - no provenance evidence
+	//   unknown          | none (0)     | 1 - couldn't check source, no attestations (unknown, not failed)
 
 	var riskPoints int
 	var description string
@@ -188,9 +190,12 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 			score = 1
 			description = "Partial provenance signals detected (" + strings.Join(evidence, ", ") + "), but insufficient for full build verification."
 		} else {
-			riskPoints = 2
-			score = 0
-			description = "No provenance evidence found (" + strings.Join(attestationDetails, ", ") + "). Without source access or build attestations, the integrity of published artifacts is unverifiable."
+			// SourceVerification is nil — we couldn't check source availability,
+			// not that it was explicitly absent. This is unknown, not worst-case.
+			// Distinguish from sourceExplicitlyFailed which gets 2 risk points.
+			riskPoints = 1
+			score = 1
+			description = "Source availability could not be determined and no build attestations were found (" + strings.Join(attestationDetails, ", ") + "). Cannot verify artifact integrity, but source may still exist."
 		}
 	}
 
