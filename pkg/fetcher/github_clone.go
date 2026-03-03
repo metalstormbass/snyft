@@ -31,8 +31,11 @@ type gitCloneData struct {
 	// fileTree is the set of all file paths in HEAD (from git ls-tree -r HEAD --name-only).
 	fileTree map[string]bool
 
+	// fileContentsMu protects concurrent access to fileContents.
+	fileContentsMu sync.RWMutex
+
 	// fileContents caches file content fetched via git show HEAD:<path>.
-	// Only populated on demand via getCloneFileContent.
+	// Only populated on demand via GetCloneFileContent.
 	fileContents map[string]string
 
 	// cloneDir is the temp directory holding the bare clone (for on-demand file reads).
@@ -227,10 +230,13 @@ func (c *GitHubClient) GetCloneFileContent(owner, repo, path string) (string, er
 		return "", fmt.Errorf("clone data not available")
 	}
 
-	// Check if already fetched
+	// Check if already fetched (read lock for cache hit)
+	data.fileContentsMu.RLock()
 	if content, exists := data.fileContents[path]; exists {
+		data.fileContentsMu.RUnlock()
 		return content, nil
 	}
+	data.fileContentsMu.RUnlock()
 
 	// Fetch via git show
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -243,7 +249,9 @@ func (c *GitHubClient) GetCloneFileContent(owner, repo, path string) (string, er
 	}
 
 	content := string(output)
+	data.fileContentsMu.Lock()
 	data.fileContents[path] = content
+	data.fileContentsMu.Unlock()
 	return content, nil
 }
 
