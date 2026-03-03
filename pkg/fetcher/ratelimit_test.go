@@ -155,3 +155,117 @@ func TestRateLimiter_Update_NilResponse(t *testing.T) {
 		t.Errorf("Remaining() = %d after nil Update, want -1", got)
 	}
 }
+
+// Test: ShouldPreferScraping() returns false when remaining is unknown
+// Justification: Before any API response is received, the remaining quota is
+//                unknown. We should not switch to scraping mode until we have
+//                positive evidence of quota pressure. Premature scraping wastes
+//                the opportunity to collect richer API data.
+// Source: GitHub REST API rate limiting documentation
+// Methodology: Create a fresh rate limiter and query ShouldPreferScraping()
+// Result: Returns false (no evidence of quota pressure)
+func TestRateLimiter_ShouldPreferScraping_FalseWhenUnknown(t *testing.T) {
+	rl := NewGitHubRateLimiter(true)
+	if rl.ShouldPreferScraping() {
+		t.Error("ShouldPreferScraping() = true when remaining is unknown, want false")
+	}
+}
+
+// Test: ShouldPreferScraping() returns true for authenticated client when remaining < 300
+// Justification: When the authenticated API quota (5000/hr) drops below 300,
+//                methods with scraping alternatives should switch to scraping
+//                to preserve remaining API calls for checks that truly need API
+//                access (signed commits, attestations, GraphQL batch queries).
+// Source: GitHub REST API rate limiting documentation
+// Methodology: Update the limiter with remaining=200 (below 300 threshold),
+//              verify ShouldPreferScraping() returns true
+// Result: Returns true (scraping should be preferred)
+func TestRateLimiter_ShouldPreferScraping_TrueWhenLowQuota_Authenticated(t *testing.T) {
+	rl := NewGitHubRateLimiter(true)
+	resp := &http.Response{
+		Header: http.Header{
+			"X-Ratelimit-Remaining": []string{"200"},
+			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
+		},
+	}
+	rl.Update(resp)
+
+	if !rl.ShouldPreferScraping() {
+		t.Error("ShouldPreferScraping() = false when remaining is 200 (authenticated), want true")
+	}
+}
+
+// Test: ShouldPreferScraping() returns false for authenticated client when quota is healthy
+// Justification: When the authenticated API quota has ample headroom (e.g. 2000
+//                remaining out of 5000), the API should be used for richer data.
+//                Scraping preference should only kick in when quota is genuinely low.
+// Source: GitHub REST API rate limiting documentation
+// Methodology: Update the limiter with remaining=2000 (above 300 threshold),
+//              verify ShouldPreferScraping() returns false
+// Result: Returns false (API should be preferred)
+func TestRateLimiter_ShouldPreferScraping_FalseWhenHealthyQuota_Authenticated(t *testing.T) {
+	rl := NewGitHubRateLimiter(true)
+	resp := &http.Response{
+		Header: http.Header{
+			"X-Ratelimit-Remaining": []string{"2000"},
+		},
+	}
+	rl.Update(resp)
+
+	if rl.ShouldPreferScraping() {
+		t.Error("ShouldPreferScraping() = true when remaining is 2000 (authenticated), want false")
+	}
+}
+
+// Test: ShouldPreferScraping() returns true for unauthenticated client when remaining < 15
+// Justification: Unauthenticated clients have only 60 req/hr. When remaining
+//                drops below 15, scraping should be preferred to preserve the
+//                small quota for API-only checks.
+// Source: GitHub REST API rate limiting documentation
+// Methodology: Update the limiter with remaining=10 (below 15 threshold),
+//              verify ShouldPreferScraping() returns true
+// Result: Returns true (scraping should be preferred)
+func TestRateLimiter_ShouldPreferScraping_TrueWhenLowQuota_Unauthenticated(t *testing.T) {
+	rl := NewGitHubRateLimiter(false)
+	resp := &http.Response{
+		Header: http.Header{
+			"X-Ratelimit-Remaining": []string{"10"},
+			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
+		},
+	}
+	rl.Update(resp)
+
+	if !rl.ShouldPreferScraping() {
+		t.Error("ShouldPreferScraping() = false when remaining is 10 (unauthenticated), want true")
+	}
+}
+
+// Test: ShouldPreferScraping() threshold boundary for authenticated client
+// Justification: The threshold check uses < 300. At exactly 300 remaining,
+//                the quota is at the boundary — not yet low enough to prefer
+//                scraping. At 299, scraping should be preferred.
+// Source: GitHub REST API rate limiting documentation
+// Methodology: Test at exactly 300 (not below) and at 299 (below)
+// Result: 300 returns false, 299 returns true
+func TestRateLimiter_ShouldPreferScraping_BoundaryAuthenticated(t *testing.T) {
+	rl := NewGitHubRateLimiter(true)
+
+	resp := &http.Response{
+		Header: http.Header{
+			"X-Ratelimit-Remaining": []string{"300"},
+		},
+	}
+	rl.Update(resp)
+
+	if rl.ShouldPreferScraping() {
+		t.Error("ShouldPreferScraping() = true when remaining is exactly 300, want false")
+	}
+
+	resp.Header.Set("X-Ratelimit-Remaining", "299")
+	resp.Header.Set("X-Ratelimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+	rl.Update(resp)
+
+	if !rl.ShouldPreferScraping() {
+		t.Error("ShouldPreferScraping() = false when remaining is 299, want true")
+	}
+}
