@@ -90,11 +90,12 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 	return a
 }
 
-// ShouldStopForRateLimit returns true when the GitHub API rate limit remaining
+// ShouldFallbackToScraping returns true when the GitHub API rate limit remaining
 // count is below the given threshold. The scan command uses this to decide
-// when to save progress and exit gracefully.
-func (a *Analyzer) ShouldStopForRateLimit(threshold int) bool {
-	return a.githubClient.ShouldStopForRateLimit(threshold)
+// when to switch remaining packages to scraping-only mode. The scan never
+// stops — it continues with web scraping for all remaining packages.
+func (a *Analyzer) ShouldFallbackToScraping(threshold int) bool {
+	return a.githubClient.ShouldFallbackToScraping(threshold)
 }
 
 // RateLimitRemaining returns the last observed GitHub API rate limit remaining count.
