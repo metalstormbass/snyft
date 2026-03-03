@@ -542,17 +542,20 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	// Source: Maven Central REST API docs — no owner/maintainer endpoint exists
 	caps := models.GetEcosystemCapabilities(analysis.Ecosystem)
 	if analysis.MaintainerCount == 0 {
+		// When maintainer count is zero, treat as "data unavailable" regardless of
+		// ecosystem capability. Even ecosystems that *can* expose maintainer data
+		// (HasMaintainerList == true) may fail to return it due to scraping fallbacks,
+		// API errors, or POM files without a <developers> section. Penalising these
+		// cases at 0.6 creates a double penalty: the data loss itself already harms
+		// accuracy, and then the higher weight inflates the risk score further.
+		// Uniform 0.3 ("unknown/moderate") avoids this while still flagging the gap.
+		riskScore += 0.3
 		if !caps.HasMaintainerList {
-			// Ecosystem does not expose maintainer data — treat as unknown, not worst-case
-			riskScore += 0.3
 			evidenceParts = append(evidenceParts,
 				fmt.Sprintf("Maintainer count unavailable (%s does not expose this data)", analysis.Ecosystem))
 		} else {
-			// Ecosystem exposes maintainer data but none found — cannot assess control
-			// Justification: Unknown ownership = unverifiable risk, treated as concerning
-			// 0.6 ensures this reaches at least MEDIUM risk threshold
-			riskScore += 0.6
-			evidenceParts = append(evidenceParts, "no maintainer data (unverifiable)")
+			evidenceParts = append(evidenceParts,
+				fmt.Sprintf("Maintainer data not found (%s can expose this data but none retrieved)", analysis.Ecosystem))
 		}
 	} else if analysis.SingleMaintainer {
 		riskScore += 1.0
