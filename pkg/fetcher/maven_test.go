@@ -1054,19 +1054,25 @@ func TestEnrichFromPOM_ExtractsDevelopers(t *testing.T) {
 	}
 }
 
-// Test: enrichFromPOM counts non-test dependencies from POM
+// Test: enrichFromPOM counts only compile+runtime dependencies and tracks scope breakdown
 // Justification: Maven Central does not expose a dependency list via its API.
 //
 //	POM dependencies provide a dependency sprawl signal enabling
 //	Dependency Sprawl (Category 5) assessment from Maven Central data alone,
 //	even when no local pom.xml or source repository is available.
+//	Only compile and runtime scoped deps flow to consumers — test, provided,
+//	and system scoped deps do not represent supply chain entry points.
 //
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Mock server serves a POM with mixed dependencies (compile + test).
 //
-//	Verify that enrichFromPOM counts only non-test dependencies.
+//	Maven Dependency Scope reference — https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#Dependency_Scope
 //
-// Result: pkg.DirectDepCount reflects only compile-scope dependencies.
+// Methodology: Mock server serves a POM with mixed dependencies (compile + runtime + test).
+//
+//	Verify that enrichFromPOM counts only compile+runtime dependencies and
+//	populates scope breakdown correctly.
+//
+// Result: pkg.DirectDepCount reflects only compile+runtime scope dependencies.
 func TestEnrichFromPOM_CountsDependencies(t *testing.T) {
 	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
 <project>
@@ -1122,9 +1128,145 @@ func TestEnrichFromPOM_CountsDependencies(t *testing.T) {
 		t.Fatalf("enrichFromPOM returned error: %v", err)
 	}
 
-	// 3 non-test deps: commons-lang3, guava, slf4j-api (runtime scope counts)
+	// 3 compile+runtime deps: commons-lang3 (compile), guava (compile), slf4j-api (runtime)
 	if pkg.DirectDepCount != 3 {
-		t.Errorf("DirectDepCount = %d, want 3 (exclude test scope)", pkg.DirectDepCount)
+		t.Errorf("DirectDepCount = %d, want 3 (compile+runtime only)", pkg.DirectDepCount)
+	}
+
+	// Verify scope breakdown
+	if pkg.ScopeBreakdown == nil {
+		t.Fatal("ScopeBreakdown is nil, expected non-nil")
+	}
+	if pkg.ScopeBreakdown.Compile != 2 {
+		t.Errorf("ScopeBreakdown.Compile = %d, want 2", pkg.ScopeBreakdown.Compile)
+	}
+	if pkg.ScopeBreakdown.Runtime != 1 {
+		t.Errorf("ScopeBreakdown.Runtime = %d, want 1", pkg.ScopeBreakdown.Runtime)
+	}
+	if pkg.ScopeBreakdown.Test != 1 {
+		t.Errorf("ScopeBreakdown.Test = %d, want 1", pkg.ScopeBreakdown.Test)
+	}
+}
+
+// Test: enrichFromPOM excludes provided and system scoped dependencies from DirectDepCount
+// Justification: Provided-scope dependencies (e.g., Lombok, Servlet API) are expected to be
+//
+//	supplied by the runtime environment (JDK, application server). System-scope
+//	deps point to local JAR paths. Neither flows to consumers via transitive
+//	resolution, so they do not increase the supply chain attack surface.
+//
+// Source: Maven Dependency Scope reference — https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#Dependency_Scope
+//
+//	"Small World with High Risks" (Zimmermann et al., 2019)
+//
+// Methodology: Mock server serves a POM with all scope types (compile, runtime, test,
+//
+//	provided, system). Verify that only compile+runtime are counted.
+//
+// Result: pkg.DirectDepCount excludes test, provided, and system scoped dependencies.
+func TestEnrichFromPOM_ExcludesProvidedAndSystemScope(t *testing.T) {
+	artifactPOM := `<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>scope-lib</artifactId>
+  <version>1.0.0</version>
+  <scm>
+    <url>https://github.com/example/scope-lib</url>
+  </scm>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>3.12.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson</groupId>
+      <artifactId>jackson-core</artifactId>
+      <version>2.15.0</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>1.7.36</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>1.18.30</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>javax.servlet</groupId>
+      <artifactId>javax.servlet-api</artifactId>
+      <version>4.0.1</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>local-lib</artifactId>
+      <version>1.0.0</version>
+      <scope>system</scope>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>5.3.0</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/com/example/scope-lib/1.0.0/scope-lib-1.0.0.pom", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, artifactPOM)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := &MavenClient{
+		httpClient: srv.Client(),
+		baseURL:    srv.URL,
+		searchURL:  srv.URL + "/search",
+	}
+
+	pkg := &MavenPackage{GroupID: "com.example", ArtifactID: "scope-lib"}
+	err := client.enrichFromPOM(pkg, "com.example", "scope-lib", "1.0.0")
+	if err != nil {
+		t.Fatalf("enrichFromPOM returned error: %v", err)
+	}
+
+	// Only compile+runtime: commons-lang3 (compile/default), jackson-core (compile), slf4j-api (runtime)
+	// Excluded: lombok (provided), servlet-api (provided), local-lib (system), junit (test), mockito (test)
+	if pkg.DirectDepCount != 3 {
+		t.Errorf("DirectDepCount = %d, want 3 (compile+runtime only, excluding test/provided/system)", pkg.DirectDepCount)
+	}
+
+	if pkg.ScopeBreakdown == nil {
+		t.Fatal("ScopeBreakdown is nil, expected non-nil")
+	}
+	if pkg.ScopeBreakdown.Compile != 2 {
+		t.Errorf("ScopeBreakdown.Compile = %d, want 2 (commons-lang3 default + jackson-core explicit)", pkg.ScopeBreakdown.Compile)
+	}
+	if pkg.ScopeBreakdown.Runtime != 1 {
+		t.Errorf("ScopeBreakdown.Runtime = %d, want 1 (slf4j-api)", pkg.ScopeBreakdown.Runtime)
+	}
+	if pkg.ScopeBreakdown.Test != 2 {
+		t.Errorf("ScopeBreakdown.Test = %d, want 2 (junit + mockito)", pkg.ScopeBreakdown.Test)
+	}
+	if pkg.ScopeBreakdown.Provided != 2 {
+		t.Errorf("ScopeBreakdown.Provided = %d, want 2 (lombok + servlet-api)", pkg.ScopeBreakdown.Provided)
+	}
+	if pkg.ScopeBreakdown.System != 1 {
+		t.Errorf("ScopeBreakdown.System = %d, want 1 (local-lib)", pkg.ScopeBreakdown.System)
 	}
 }
 

@@ -219,9 +219,27 @@ type CIWorkflowRisk struct {
 // DependencyMetrics contains information about dependency sprawl
 type DependencyMetrics struct {
 	TransitiveCount int `json:"transitive_count"` // Total number of transitive dependencies
-	DirectCount     int `json:"direct_count"`     // Number of direct dependencies
+	DirectCount     int `json:"direct_count"`     // Number of direct dependencies (compile+runtime only for Maven)
 	MaxDepth        int `json:"max_depth"`        // Maximum depth of dependency tree
 	Verified        bool `json:"verified"`        // Whether metrics were computed from lock file
+
+	// Maven scope breakdown — populated when dependency data comes from a Maven POM.
+	// Only compile and runtime scoped dependencies count toward DirectCount (and thus
+	// the sprawl score), since test/provided/system deps don't flow to consumers.
+	MavenScopeBreakdown *MavenScopeBreakdown `json:"maven_scope_breakdown,omitempty"`
+}
+
+// MavenScopeBreakdown records the number of dependencies in each Maven scope.
+// Maven defaults absent scope to "compile". Only compile and runtime scoped
+// dependencies represent actual supply chain entry points for consumers.
+//
+// Source: Maven POM reference — https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#Dependency_Scope
+type MavenScopeBreakdown struct {
+	Compile  int `json:"compile"`  // Default scope — available in all classpaths, transitive
+	Runtime  int `json:"runtime"`  // Needed at runtime, not compile-time — transitive
+	Test     int `json:"test"`     // Only for test compilation and execution — NOT transitive
+	Provided int `json:"provided"` // Expected to be provided by JDK/container at runtime — NOT transitive
+	System   int `json:"system"`   // Like provided but from explicit local path — NOT transitive
 }
 
 // ReleaseDocumentation contains signals parsed from contributing/release documentation files.
