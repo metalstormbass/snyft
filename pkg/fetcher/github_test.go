@@ -2346,3 +2346,169 @@ func TestSearchTagsPaginated_CachesResults(t *testing.T) {
 		t.Errorf("expected 1 API call, got %d (caching should prevent second call)", apiCalls)
 	}
 }
+
+// Test: Cross-package deduplication shares API results for same repo
+// Justification: When scanning multiple dependencies from the same GitHub repo
+//
+//	(e.g., 5 packages from FasterXML/jackson-databind), expensive API calls
+//	like GetPullRequestStats (~21 calls), GetCommitStats, GetCommitAuthors,
+//	CheckSignedCommits, and GetAverageIssueResponseTime should only hit the
+//	server once. Deduplication prevents API quota exhaustion when scanning
+//	large mono-repos or organizations with many published packages.
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — scanning
+//
+//	many packages from one org is common for enterprise dependency audits.
+//
+// Methodology: Mock server counts API requests per endpoint category; call
+//
+//	each method twice for the same owner/repo; assert second call uses cache.
+//
+// Result: Second call for the same repo produces zero additional API requests.
+func TestCrossPackageDeduplication(t *testing.T) {
+	var (
+		commitStatsHits       atomic.Int32
+		commitAuthorsHits     atomic.Int32
+		signedCommitsHits     atomic.Int32
+		prStatsHits           atomic.Int32
+		branchProtectionHits  atomic.Int32
+		issueResponseTimeHits atomic.Int32
+		workflowFilesHits     atomic.Int32
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+
+		switch {
+		// Repo info (for getBranchProtection -> GetRepositoryInfo)
+		case path == "/repos/org/repo":
+			_ = json.NewEncoder(w).Encode(GitHubRepository{
+				Name:          "repo",
+				Owner:         GitHubUser{Login: "org"},
+				DefaultBranch: "main",
+			})
+
+		// Commit stats (GetCommitStats)
+		case path == "/repos/org/repo/commits" && r.URL.Query().Get("per_page") == "100" && r.URL.Query().Get("page") == "":
+			commitStatsHits.Add(1)
+			_ = json.NewEncoder(w).Encode([]GitHubCommit{
+				{SHA: "a1", Author: &GitHubUser{Login: "alice"}, Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Alice", Email: "alice@test.com", Date: time.Now()}}},
+				{SHA: "b2", Author: &GitHubUser{Login: "bob"}, Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Bob", Email: "bob@test.com", Date: time.Now()}}},
+			})
+
+		// Commit authors (GetCommitAuthors) — uses ?per_page=100&page=N
+		case path == "/repos/org/repo/commits" && r.URL.Query().Get("page") != "":
+			commitAuthorsHits.Add(1)
+			page := r.URL.Query().Get("page")
+			if page == "1" {
+				_ = json.NewEncoder(w).Encode([]GitHubCommit{
+					{SHA: "c3", Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Alice", Email: "alice@test.com", Date: time.Now()}}},
+				})
+			} else {
+				_ = json.NewEncoder(w).Encode([]GitHubCommit{})
+			}
+
+		// Signed commits (CheckSignedCommits) — uses ?per_page=30
+		case path == "/repos/org/repo/commits" && r.URL.Query().Get("per_page") == "30":
+			signedCommitsHits.Add(1)
+			_ = json.NewEncoder(w).Encode([]GitHubCommit{
+				{SHA: "d4", Commit: GitHubCommitInfo{Verification: GitHubCommitVerification{Verified: true}}},
+			})
+
+		// PR stats (GetPullRequestStats)
+		case path == "/repos/org/repo/pulls":
+			prStatsHits.Add(1)
+			_ = json.NewEncoder(w).Encode([]GitHubPullRequest{})
+
+		// Branch protection (getBranchProtection)
+		case strings.Contains(path, "/branches/main/protection"):
+			branchProtectionHits.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+
+		// Issue response time (GetAverageIssueResponseTime)
+		case path == "/repos/org/repo/issues":
+			issueResponseTimeHits.Add(1)
+			_ = json.NewEncoder(w).Encode([]GitHubIssue{})
+
+		// Workflow files (AnalyzeCIQuality -> getWorkflowFiles)
+		case path == "/repos/org/repo/contents/.github/workflows":
+			workflowFilesHits.Add(1)
+			_ = json.NewEncoder(w).Encode([]GitHubContent{
+				{Name: "ci.yml", Path: ".github/workflows/ci.yml", Type: "file"},
+			})
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+		preferAPI:  true,
+	}
+
+	repoURL := "https://github.com/org/repo"
+
+	// --- First call for each method (should hit the server) ---
+	_, _ = client.GetCommitStats(repoURL)
+	_, _ = client.GetCommitAuthors(repoURL)
+	_, _, _ = client.CheckSignedCommits(repoURL)
+	_, _ = client.GetPullRequestStats(repoURL)
+	_, _ = client.GetAverageIssueResponseTime(repoURL)
+	_, _ = client.getWorkflowFiles("org", "repo")
+
+	// Record first-call hit counts
+	firstCommitStats := commitStatsHits.Load()
+	firstCommitAuthors := commitAuthorsHits.Load()
+	firstSignedCommits := signedCommitsHits.Load()
+	firstPRStats := prStatsHits.Load()
+	firstBranchProtection := branchProtectionHits.Load()
+	firstIssueResponseTime := issueResponseTimeHits.Load()
+	firstWorkflowFiles := workflowFilesHits.Load()
+
+	// Verify each method made at least 1 API call
+	if firstCommitStats == 0 {
+		t.Error("GetCommitStats first call should hit server")
+	}
+	if firstPRStats == 0 {
+		t.Error("GetPullRequestStats first call should hit server")
+	}
+	if firstWorkflowFiles == 0 {
+		t.Error("getWorkflowFiles first call should hit server")
+	}
+
+	// --- Second call (simulating a different package from same repo) ---
+	_, _ = client.GetCommitStats(repoURL)
+	_, _ = client.GetCommitAuthors(repoURL)
+	_, _, _ = client.CheckSignedCommits(repoURL)
+	_, _ = client.GetPullRequestStats(repoURL)
+	_, _ = client.GetAverageIssueResponseTime(repoURL)
+	_, _ = client.getWorkflowFiles("org", "repo")
+
+	// --- Assert no additional API calls were made ---
+	if got := commitStatsHits.Load(); got != firstCommitStats {
+		t.Errorf("GetCommitStats: expected %d total hits, got %d (cache miss on second call)", firstCommitStats, got)
+	}
+	if got := commitAuthorsHits.Load(); got != firstCommitAuthors {
+		t.Errorf("GetCommitAuthors: expected %d total hits, got %d (cache miss on second call)", firstCommitAuthors, got)
+	}
+	if got := signedCommitsHits.Load(); got != firstSignedCommits {
+		t.Errorf("CheckSignedCommits: expected %d total hits, got %d (cache miss on second call)", firstSignedCommits, got)
+	}
+	if got := prStatsHits.Load(); got != firstPRStats {
+		t.Errorf("GetPullRequestStats: expected %d total hits, got %d (cache miss on second call)", firstPRStats, got)
+	}
+	if got := branchProtectionHits.Load(); got != firstBranchProtection {
+		t.Errorf("getBranchProtection: expected %d total hits, got %d (cache miss on second call)", firstBranchProtection, got)
+	}
+	if got := issueResponseTimeHits.Load(); got != firstIssueResponseTime {
+		t.Errorf("GetAverageIssueResponseTime: expected %d total hits, got %d (cache miss on second call)", firstIssueResponseTime, got)
+	}
+	if got := workflowFilesHits.Load(); got != firstWorkflowFiles {
+		t.Errorf("getWorkflowFiles: expected %d total hits, got %d (cache miss on second call)", firstWorkflowFiles, got)
+	}
+}

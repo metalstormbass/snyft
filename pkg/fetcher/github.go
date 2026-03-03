@@ -37,24 +37,60 @@ type cachedOrgInfo struct {
 	found       bool // false when owner is not an org (404)
 }
 
+// cachedSignedCommits stores the result of CheckSignedCommits so that
+// multiple packages from the same repo don't re-fetch commit signatures.
+type cachedSignedCommits struct {
+	hasSigning    bool
+	verifiedCount int
+}
+
+// cachedBranchProtection stores the result of getBranchProtection so that
+// multiple packages from the same repo reuse a single API call.
+type cachedBranchProtection struct {
+	protection   *GitHubBranchProtection
+	accessDenied bool
+}
+
+// cachedIssueResponseTime stores the result of GetAverageIssueResponseTime
+// so that multiple packages from the same repo share the expensive
+// per-issue comment fetching.
+type cachedIssueResponseTime struct {
+	avgDays float64
+	hasData bool // true when at least one issue had a response
+}
+
 type repoCache struct {
-	mu         sync.RWMutex
-	repoInfo   map[string]*models.RepositoryInfo // key: "owner/repo"
-	releases   map[string][]GitHubRelease        // key: "owner/repo"
-	fileExists map[string]bool                   // key: "owner/repo/path"
-	identity   map[string]*cachedIdentity        // key: owner (user/org identity)
-	orgInfo    map[string]*cachedOrgInfo          // key: owner (org details)
-	tags       map[string][]string               // key: "owner/repo" → all discovered tag names
+	mu                sync.RWMutex
+	repoInfo          map[string]*models.RepositoryInfo   // key: "owner/repo"
+	releases          map[string][]GitHubRelease          // key: "owner/repo"
+	fileExists        map[string]bool                     // key: "owner/repo/path"
+	identity          map[string]*cachedIdentity          // key: owner (user/org identity)
+	orgInfo           map[string]*cachedOrgInfo           // key: owner (org details)
+	tags              map[string][]string                 // key: "owner/repo" → all discovered tag names
+	commitStats       map[string]*CommitStats             // key: "owner/repo"
+	commitAuthors     map[string]*CommitAuthorStats       // key: "owner/repo"
+	signedCommits     map[string]*cachedSignedCommits     // key: "owner/repo"
+	prStats           map[string]*PRStats                 // key: "owner/repo"
+	branchProtection  map[string]*cachedBranchProtection  // key: "owner/repo"
+	issueResponseTime map[string]*cachedIssueResponseTime // key: "owner/repo"
+	workflowFiles     map[string][]string                 // key: "owner/repo"
 }
 
 func newRepoCache() *repoCache {
 	return &repoCache{
-		repoInfo:   make(map[string]*models.RepositoryInfo),
-		releases:   make(map[string][]GitHubRelease),
-		fileExists: make(map[string]bool),
-		identity:   make(map[string]*cachedIdentity),
-		orgInfo:    make(map[string]*cachedOrgInfo),
-		tags:       make(map[string][]string),
+		repoInfo:          make(map[string]*models.RepositoryInfo),
+		releases:          make(map[string][]GitHubRelease),
+		fileExists:        make(map[string]bool),
+		identity:          make(map[string]*cachedIdentity),
+		orgInfo:           make(map[string]*cachedOrgInfo),
+		tags:              make(map[string][]string),
+		commitStats:       make(map[string]*CommitStats),
+		commitAuthors:     make(map[string]*CommitAuthorStats),
+		signedCommits:     make(map[string]*cachedSignedCommits),
+		prStats:           make(map[string]*PRStats),
+		branchProtection:  make(map[string]*cachedBranchProtection),
+		issueResponseTime: make(map[string]*cachedIssueResponseTime),
+		workflowFiles:     make(map[string][]string),
 	}
 }
 
@@ -134,6 +170,97 @@ func (rc *repoCache) setTagNames(key string, names []string) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.tags[key] = names
+}
+
+func (rc *repoCache) getCommitStats(key string) (*CommitStats, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.commitStats[key]
+	return v, ok
+}
+
+func (rc *repoCache) setCommitStats(key string, stats *CommitStats) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.commitStats[key] = stats
+}
+
+func (rc *repoCache) getCommitAuthors(key string) (*CommitAuthorStats, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.commitAuthors[key]
+	return v, ok
+}
+
+func (rc *repoCache) setCommitAuthors(key string, stats *CommitAuthorStats) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.commitAuthors[key] = stats
+}
+
+func (rc *repoCache) getSignedCommits(key string) (*cachedSignedCommits, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.signedCommits[key]
+	return v, ok
+}
+
+func (rc *repoCache) setSignedCommits(key string, sc *cachedSignedCommits) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.signedCommits[key] = sc
+}
+
+func (rc *repoCache) getPRStats(key string) (*PRStats, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.prStats[key]
+	return v, ok
+}
+
+func (rc *repoCache) setPRStats(key string, stats *PRStats) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.prStats[key] = stats
+}
+
+func (rc *repoCache) getBranchProtectionCached(key string) (*cachedBranchProtection, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.branchProtection[key]
+	return v, ok
+}
+
+func (rc *repoCache) setBranchProtectionCached(key string, bp *cachedBranchProtection) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.branchProtection[key] = bp
+}
+
+func (rc *repoCache) getIssueResponseTime(key string) (*cachedIssueResponseTime, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.issueResponseTime[key]
+	return v, ok
+}
+
+func (rc *repoCache) setIssueResponseTime(key string, irt *cachedIssueResponseTime) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.issueResponseTime[key] = irt
+}
+
+func (rc *repoCache) getWorkflowFiles(key string) ([]string, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.workflowFiles[key]
+	return v, ok
+}
+
+func (rc *repoCache) setWorkflowFiles(key string, files []string) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.workflowFiles[key] = files
 }
 
 // GitHubClient handles interactions with GitHub API and web scraping.
@@ -1531,11 +1658,20 @@ func (c *GitHubClient) getFileContentViaRawURL(owner, repo, path string) (string
 	return "", fmt.Errorf("file not found via raw.githubusercontent.com: %s", path)
 }
 
-// GetCommitAuthors analyzes commit authorship patterns for ownership change detection
+// GetCommitAuthors analyzes commit authorship patterns for ownership change detection.
+// Results are cached per owner/repo so multiple packages from the same repository
+// share a single set of API calls (up to 3 pages of commits).
 func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
+	}
+
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getCommitAuthors(cacheKey); ok {
+			return cached, nil
+		}
 	}
 
 	// Fetch recent commits (up to 300) to determine contributor diversity
@@ -1641,15 +1777,27 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		}
 	}
 
+	if c.cache != nil {
+		c.cache.setCommitAuthors(cacheKey, stats)
+	}
 	return stats, nil
 }
 
 // CheckSignedCommits checks if recent commits in the repository are GPG signed.
 // Returns (false, 0, nil) when rate-limited — cannot verify signatures without API.
+// Results are cached per owner/repo so multiple packages from the same repository
+// share a single API call.
 func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return false, 0, err
+	}
+
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getSignedCommits(cacheKey); ok {
+			return cached.hasSigning, cached.verifiedCount, nil
+		}
 	}
 
 	// Get recent commits (last 100)
@@ -1698,6 +1846,12 @@ func (c *GitHubClient) CheckSignedCommits(repoURL string) (bool, int, error) {
 	// Consider "signed commits enabled" if >50% of recent commits are signed
 	hasSigning := float64(verifiedCount)/float64(len(commits)) > 0.5
 
+	if c.cache != nil {
+		c.cache.setSignedCommits(cacheKey, &cachedSignedCommits{
+			hasSigning:    hasSigning,
+			verifiedCount: verifiedCount,
+		})
+	}
 	return hasSigning, verifiedCount, nil
 }
 
@@ -1807,16 +1961,28 @@ func calculateBusFactor(authorCommits map[string]int, totalCommits int) int {
 // GetCommitStats fetches commit distribution to calculate bus factor.
 // When no token is set, the GitHub contributors page is scraped first.
 // With a token, the API provides per-commit author data for more accurate analysis.
+// Results are cached per owner/repo so multiple packages from the same repository
+// share a single set of API calls.
 func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
 	}
 
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getCommitStats(cacheKey); ok {
+			return cached, nil
+		}
+	}
+
 	// Scraping-first path: when no token, scrape contributor data.
 	if c.shouldPreferScraping() {
 		stats, scrapeErr := c.scrapeCommitStats(owner, repo)
 		if scrapeErr == nil {
+			if c.cache != nil {
+				c.cache.setCommitStats(cacheKey, stats)
+			}
 			return stats, nil
 		}
 		// Scraping failed — fall through to try the API
@@ -1838,7 +2004,11 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	if err != nil {
 		// Network error — try scraping if we haven't already
 		if !c.shouldPreferScraping() {
-			return c.scrapeCommitStats(owner, repo)
+			stats, scrapeErr := c.scrapeCommitStats(owner, repo)
+			if scrapeErr == nil && c.cache != nil {
+				c.cache.setCommitStats(cacheKey, stats)
+			}
+			return stats, scrapeErr
 		}
 		return nil, err
 	}
@@ -1847,7 +2017,11 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try scraping if we haven't already
 		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
-			return c.scrapeCommitStats(owner, repo)
+			stats, scrapeErr := c.scrapeCommitStats(owner, repo)
+			if scrapeErr == nil && c.cache != nil {
+				c.cache.setCommitStats(cacheKey, stats)
+			}
+			return stats, scrapeErr
 		}
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
@@ -1885,12 +2059,16 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 		topContributorPct = float64(maxCommits) / float64(totalCommits) * 100
 	}
 
-	return &CommitStats{
+	stats := &CommitStats{
 		TotalCommits:      totalCommits,
 		AuthorCommits:     authorCommits,
 		BusFactor:         busFactor,
 		TopContributorPct: topContributorPct,
-	}, nil
+	}
+	if c.cache != nil {
+		c.cache.setCommitStats(cacheKey, stats)
+	}
+	return stats, nil
 }
 
 // scrapeCommitStats scrapes contributor data from the GitHub repository page.
@@ -1960,11 +2138,20 @@ func (c *GitHubClient) scrapeCommitStats(owner, repo string) (*CommitStats, erro
 	}, nil
 }
 
-// GetPullRequestStats analyzes PR statistics for code review verification
+// GetPullRequestStats analyzes PR statistics for code review verification.
+// Results are cached per owner/repo so multiple packages from the same repository
+// share a single set of API calls (up to 21 calls for PR list + review checks).
 func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return nil, err
+	}
+
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getPRStats(cacheKey); ok {
+			return cached, nil
+		}
 	}
 
 	stats := &PRStats{}
@@ -2031,6 +2218,9 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 		stats.RequiredReviewers = branchProtection.RequiredReviews.RequiredApprovingReviewCount
 	}
 
+	if c.cache != nil {
+		c.cache.setPRStats(cacheKey, stats)
+	}
 	return stats, nil
 }
 // prHasReviews checks if a PR has any reviews
@@ -2067,7 +2257,15 @@ func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 // Returns (protection, accessDenied) where accessDenied is true when the API
 // returned 403/404 (admin access required), distinguishing "can't check" from
 // "no protection configured".
+// Results are cached per owner/repo to avoid redundant API calls.
 func (c *GitHubClient) getBranchProtection(owner, repo string) (*GitHubBranchProtection, bool) {
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getBranchProtectionCached(cacheKey); ok {
+			return cached.protection, cached.accessDenied
+		}
+	}
+
 	// First get the default branch
 	repoInfo, err := c.GetRepositoryInfo(fmt.Sprintf("https://github.com/%s/%s", owner, repo))
 	if err != nil {
@@ -2092,6 +2290,12 @@ func (c *GitHubClient) getBranchProtection(owner, repo string) (*GitHubBranchPro
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
+		if c.cache != nil {
+			c.cache.setBranchProtectionCached(cacheKey, &cachedBranchProtection{
+				protection:   nil,
+				accessDenied: true,
+			})
+		}
 		return nil, true
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -2103,6 +2307,12 @@ func (c *GitHubClient) getBranchProtection(owner, repo string) (*GitHubBranchPro
 		return nil, false
 	}
 
+	if c.cache != nil {
+		c.cache.setBranchProtectionCached(cacheKey, &cachedBranchProtection{
+			protection:   &protection,
+			accessDenied: false,
+		})
+	}
 	return &protection, false
 }
 
@@ -2153,11 +2363,22 @@ func (c *GitHubClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 // Uses web scraping as the primary method when no token is set. Falls back
 // to the API when a token is available or scraping fails. Returns empty list
 // (not error) when all methods fail so CI detection degrades gracefully.
+// Results are cached per owner/repo to avoid redundant API calls.
 func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getWorkflowFiles(cacheKey); ok {
+			return cached, nil
+		}
+	}
+
 	// Scraping-first path: scrape the GitHub tree page for the workflows directory.
 	if c.shouldPreferScraping() {
 		workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 		if scrapeErr == nil {
+			if c.cache != nil {
+				c.cache.setWorkflowFiles(cacheKey, workflows)
+			}
 			return workflows, nil
 		}
 		// Scraping failed — fall through to try the API
@@ -2181,6 +2402,9 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 		if !c.shouldPreferScraping() {
 			workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 			if scrapeErr == nil {
+				if c.cache != nil {
+					c.cache.setWorkflowFiles(cacheKey, workflows)
+				}
 				return workflows, nil
 			}
 		}
@@ -2193,6 +2417,9 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 			if scrapeErr == nil {
+				if c.cache != nil {
+					c.cache.setWorkflowFiles(cacheKey, workflows)
+				}
 				return workflows, nil
 			}
 		}
@@ -2215,6 +2442,9 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 		}
 	}
 
+	if c.cache != nil {
+		c.cache.setWorkflowFiles(cacheKey, workflows)
+	}
 	return workflows, nil
 }
 
@@ -2296,12 +2526,24 @@ type GitHubContent struct {
 	Type string `json:"type"`
 }
 
-// GetAverageIssueResponseTime calculates the average time to first response on issues
-// This helps assess maintainer responsiveness and governance quality
+// GetAverageIssueResponseTime calculates the average time to first response on issues.
+// This helps assess maintainer responsiveness and governance quality.
+// Results are cached per owner/repo so multiple packages from the same repository
+// share the expensive per-issue comment fetching (up to 31 API calls).
 func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
 		return 0, err
+	}
+
+	cacheKey := owner + "/" + repo
+	if c.cache != nil {
+		if cached, ok := c.cache.getIssueResponseTime(cacheKey); ok {
+			if !cached.hasData {
+				return 0, fmt.Errorf("no issues with responses found")
+			}
+			return cached.avgDays, nil
+		}
 	}
 
 	// Fetch recent closed issues (one API call with per_page=100 for max data)
@@ -2337,6 +2579,9 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 	}
 
 	if len(issues) == 0 {
+		if c.cache != nil {
+			c.cache.setIssueResponseTime(cacheKey, &cachedIssueResponseTime{hasData: false})
+		}
 		return 0, fmt.Errorf("no closed issues found")
 	}
 
@@ -2388,10 +2633,20 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 	}
 
 	if issuesWithResponse == 0 {
+		if c.cache != nil {
+			c.cache.setIssueResponseTime(cacheKey, &cachedIssueResponseTime{hasData: false})
+		}
 		return 0, fmt.Errorf("no issues with responses found")
 	}
 
-	return totalResponseTime / float64(issuesWithResponse), nil
+	avgDays := totalResponseTime / float64(issuesWithResponse)
+	if c.cache != nil {
+		c.cache.setIssueResponseTime(cacheKey, &cachedIssueResponseTime{
+			avgDays: avgDays,
+			hasData: true,
+		})
+	}
+	return avgDays, nil
 }
 
 // GitHubIssue represents a GitHub issue
