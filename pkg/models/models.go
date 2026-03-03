@@ -349,6 +349,7 @@ type CategoryScore struct {
 	Description     string             `json:"description"`                     // Human-readable description
 	Evidence        string             `json:"evidence"`                        // Evidence for the score
 	Verified        bool               `json:"verified"`                        // Whether data was available to verify
+	DataAvailable   bool               `json:"data_available"`                  // True when sufficient data was available for assessment; false means score reflects uncertainty (unable to verify)
 	Skipped         bool               `json:"skipped,omitempty"`              // True when check was excluded via --check flag
 	Methodology     string             `json:"methodology,omitempty"`           // How this check was performed (data sources, APIs)
 	ChecksPerformed []CheckResult      `json:"checks_performed,omitempty"`      // Individual sub-check outcomes

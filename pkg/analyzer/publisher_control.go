@@ -702,6 +702,15 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 		analysis.RiskPoints = 0
 	}
 
+	// When key publisher control signals are all unknown/unchecked, ensure minimum
+	// 1 risk point. The tool's inability to verify publisher controls represents
+	// genuine uncertainty, not evidence of safety. This fixes the paradox where
+	// packages with no verifiable data score better than fully-analyzed ones.
+	if analysis.RiskPoints == 0 && analysis.MaintainerCount == 0 &&
+		!analysis.IsOrganization && !analysis.IsPersonalAccount && !analysis.SigningChecked {
+		analysis.RiskPoints = 1
+	}
+
 	// Set risk level
 	switch analysis.RiskPoints {
 	case 0:
