@@ -412,6 +412,9 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 	if result.Dependency.IsTransitive {
 		f(w, "<span class=\"pkg-trans\">transitive</span>\n")
 	}
+	if result.DataMode == models.DataModeScrapingOnly {
+		f(w, "<span class=\"pkg-trans\" style=\"color:#e9c46a\" title=\"Analyzed via web scraping only (GitHub API rate limit reached)\">scraping-only</span>\n")
+	}
 	f(w, "</div>\n")
 	f(w, "<div class=\"pkg-right\">\n")
 	if result.SupplyChainScore != nil {
