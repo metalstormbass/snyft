@@ -66,16 +66,17 @@ type Reporter struct {
 
 // ScanStats contains scan statistics
 type ScanStats struct {
-	StartTime      time.Time
-	EndTime        time.Time
-	TotalPackages  int
-	HighRisk       int
-	MediumRisk     int
-	LowRisk        int
-	ManifestFiles  int
-	ScannedPath    string
-	DirectDeps     int // Number of direct dependencies found (before filtering)
-	TransitiveDeps int // Number of transitive dependencies found (before filtering)
+	StartTime        time.Time
+	EndTime          time.Time
+	TotalPackages    int
+	HighRisk         int
+	MediumRisk       int
+	LowRisk          int
+	ManifestFiles    int
+	ScannedPath      string
+	DirectDeps       int // Number of direct dependencies found (before filtering)
+	TransitiveDeps   int // Number of transitive dependencies found (before filtering)
+	ScrapingOnlyPkgs int // Number of packages analyzed in scraping-only mode (reduced fidelity)
 }
 
 // NewReporter creates a new reporter
@@ -124,6 +125,9 @@ func (r *Reporter) AddResults(results []models.AnalysisResult) {
 			r.stats.MediumRisk++
 		case "LOW":
 			r.stats.LowRisk++
+		}
+		if result.DataMode == models.DataModeScrapingOnly {
+			r.stats.ScrapingOnlyPkgs++
 		}
 	}
 }

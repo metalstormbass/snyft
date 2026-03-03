@@ -1402,3 +1402,165 @@ func TestHTMLCategoryTooltips(t *testing.T) {
 		t.Error("HTML output missing tooltip CSS (attr(data-tooltip) rule)")
 	}
 }
+
+// Test: Text report shows scraping-only marker on packages analyzed with reduced fidelity
+// Justification: When the GitHub API rate limit is exhausted during a scan, remaining
+//                packages are analyzed via scraping only. Users must clearly see which
+//                packages have reduced data fidelity so they know to re-run with full
+//                API access for those packages.
+// Source: Graceful degradation principle for supply chain risk assessment
+// Methodology: Create results with DataMode set to scraping-only, generate text report,
+//              verify the scraping-only marker appears in output
+// Result: "(scraping-only)" label is visible for affected packages
+func TestTextReport_ScrapingOnlyMarker(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{
+				Name:      "express",
+				Version:   "4.17.1",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "LOW",
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 3,
+				MaxScore:   20,
+				RiskLevel:  "LOW",
+			},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "lodash",
+				Version:   "4.17.21",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "LOW",
+			DataMode:  models.DataModeScrapingOnly,
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 5,
+				MaxScore:   20,
+				RiskLevel:  "LOW",
+			},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format:  FormatText,
+		Verbose: false,
+		Writer:  buf,
+	})
+	reporter.stats.StartTime = time.Now().Add(-5 * time.Second)
+	reporter.stats.EndTime = time.Now()
+	reporter.AddResults(results)
+
+	err := reporter.Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// The scraping-only package should have the marker
+	if !strings.Contains(output, "(scraping-only)") {
+		t.Error("Text output missing (scraping-only) marker for lodash")
+	}
+
+	// The summary should mention scraping-only count
+	if !strings.Contains(output, "1 package analyzed via scraping only") {
+		t.Error("Text output missing scraping-only summary line")
+	}
+
+	// The non-scraping package should NOT have the marker on its line
+	// Find the express line and check it doesn't contain scraping-only
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "express@4.17.1") && strings.Contains(line, "(scraping-only)") {
+			t.Error("express@4.17.1 should NOT have (scraping-only) marker")
+		}
+	}
+}
+
+// Test: AddResults counts scraping-only packages in stats
+// Justification: The report summary must accurately report how many packages
+//                were analyzed in scraping-only mode so users understand the
+//                data fidelity of the scan results.
+// Source: Graceful degradation principle
+// Methodology: Add results with mixed DataMode values, verify ScrapingOnlyPkgs count
+// Result: ScrapingOnlyPkgs matches the number of results with DataModeScrapingOnly
+func TestAddResults_CountsScrapingOnlyPackages(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{Name: "pkg-a", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "LOW",
+		},
+		{
+			Dependency: models.Dependency{Name: "pkg-b", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "MEDIUM",
+			DataMode:   models.DataModeScrapingOnly,
+		},
+		{
+			Dependency: models.Dependency{Name: "pkg-c", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "HIGH",
+			DataMode:   models.DataModeScrapingOnly,
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format: FormatText,
+		Writer: buf,
+	})
+	reporter.AddResults(results)
+
+	if reporter.stats.ScrapingOnlyPkgs != 2 {
+		t.Errorf("ScrapingOnlyPkgs = %d, want 2", reporter.stats.ScrapingOnlyPkgs)
+	}
+	if reporter.stats.TotalPackages != 3 {
+		t.Errorf("TotalPackages = %d, want 3", reporter.stats.TotalPackages)
+	}
+}
+
+// Test: Markdown report shows scraping-only marker for affected packages
+// Justification: Scraping-only data fidelity must be visible in all output formats,
+//                not just the text format. Markdown is commonly used for CI reports.
+// Source: Graceful degradation principle
+// Methodology: Generate markdown output with scraping-only results, check for marker
+// Result: "scraping-only" text appears in markdown output for affected packages
+func TestMarkdownReport_ScrapingOnlyMarker(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{
+				Name:      "axios",
+				Version:   "1.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "LOW",
+			DataMode:  models.DataModeScrapingOnly,
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 4,
+				MaxScore:   20,
+				RiskLevel:  "LOW",
+			},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format:  FormatMarkdown,
+		Verbose: false,
+		Writer:  buf,
+	})
+	reporter.stats.StartTime = time.Now().Add(-5 * time.Second)
+	reporter.stats.EndTime = time.Now()
+	reporter.AddResults(results)
+
+	err := reporter.Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "scraping-only") {
+		t.Error("Markdown output missing scraping-only marker for axios")
+	}
+}

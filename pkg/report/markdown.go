@@ -109,8 +109,13 @@ func (r *Reporter) printMarkdownPackage(w io.Writer, result models.AnalysisResul
 		transitive = " *(transitive)*"
 	}
 
-	f(w, "### %s %s@%s (%s)%s\n", icon, result.Dependency.Name, result.Dependency.DisplayVersion(),
-		result.Dependency.Ecosystem, transitive)
+	scrapingOnly := ""
+	if result.DataMode == models.DataModeScrapingOnly {
+		scrapingOnly = " ⚠️ *scraping-only*"
+	}
+
+	f(w, "### %s %s@%s (%s)%s%s\n", icon, result.Dependency.Name, result.Dependency.DisplayVersion(),
+		result.Dependency.Ecosystem, transitive, scrapingOnly)
 	p(w, "")
 
 	f(w, "**Risk:** %s", result.RiskLevel)
