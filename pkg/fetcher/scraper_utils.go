@@ -13,13 +13,18 @@ import (
 // Common user agent to avoid being blocked
 const userAgent = "Mozilla/5.0 (compatible; Snyft/1.0; +https://github.com/metalstormbass/snyft)"
 
+// scrapeClient is a shared HTTP client for all scraping requests. Reusing a
+// single client enables HTTP keep-alive and connection pooling across the many
+// scraping calls within a scan, avoiding the overhead of a fresh TCP+TLS
+// handshake per request.
+var scrapeClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
+
 // scrapeWithUserAgent performs an HTTP GET with proper user-agent headers.
 // This is the primary data-fetching mechanism when no API tokens are configured.
 func scrapeWithUserAgent(url string) (*goquery.Document, error) {
-	client := &http.Client{
-		// 10s timeout keeps failures fast — matching the API client timeout.
-		Timeout: 10 * time.Second,
-	}
+	client := scrapeClient
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
