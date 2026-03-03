@@ -62,6 +62,9 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 	// counts without representing actual attack surface. We apply higher thresholds
 	// for Maven to avoid penalizing its idiomatic patterns.
 	//
+	// For Maven, only compile and runtime scoped dependencies count toward the
+	// sprawl score — test, provided, and system scoped deps don't flow to consumers.
+	//
 	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — each direct dep
 	//         carries its own transitive tree, expanding the attack surface multiplicatively.
 	//         Maven-specific adjustment accounts for managed/inherited dependencies that
@@ -82,34 +85,53 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 			thresholdNote = "0-12 low, 13-29 moderate, 30+ high risk (Maven-adjusted: BOM/management imports inflate counts)"
 		}
 
+		// Build scope detail string for Maven packages
+		scopeDetail := ""
+		if sb := result.Metadata.DependencyMetrics.MavenScopeBreakdown; sb != nil {
+			scopeDetail = mavenScopeDetail(sb)
+		}
+
 		methodology := fmt.Sprintf("No lock file available. Used direct dependency count from package registry metadata as proxy for transitive exposure. Thresholds: %s.", thresholdNote)
+		if scopeDetail != "" {
+			methodology += fmt.Sprintf(" Maven scope breakdown: %s. Only compile and runtime scoped dependencies are counted — test, provided, and system scoped deps don't flow to consumers.", scopeDetail)
+		}
 		checks := []models.CheckResult{
 			{Name: "Lock file analysis", Status: "UNAVAILABLE", Detail: "No lock file found in project"},
 			{Name: "Registry dependency count", Status: "PASS", Detail: fmt.Sprintf("%d direct dependencies found in registry metadata", directCount)},
+		}
+		if scopeDetail != "" {
+			checks = append(checks, models.CheckResult{Name: "Maven scope analysis", Status: "PASS", Detail: fmt.Sprintf("Scope breakdown: %s", scopeDetail)})
+		}
+
+		descSuffix := ""
+		evidenceSuffix := ""
+		if scopeDetail != "" {
+			descSuffix = fmt.Sprintf(" Scope breakdown: %s.", scopeDetail)
+			evidenceSuffix = fmt.Sprintf("; scope: %s", scopeDetail)
 		}
 
 		if directCount <= lowThreshold {
 			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "PASS", Detail: fmt.Sprintf("%d direct deps <= %d threshold", directCount, lowThreshold)})
 			return models.CategoryScore{
 				Score: 2, RiskPoints: 0,
-				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (no lock file available). A small dependency count limits the supply chain attack surface.", directCount),
-				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount),
+				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (no lock file available). A small dependency count limits the supply chain attack surface.%s", directCount, descSuffix),
+				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)%s", directCount, evidenceSuffix),
 				Verified: false, Methodology: methodology, ChecksPerformed: checks,
 			}
 		} else if directCount <= modThreshold {
 			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "FAIL", Detail: fmt.Sprintf("%d direct deps in %d-%d range (moderate)", directCount, lowThreshold+1, modThreshold)})
 			return models.CategoryScore{
 				Score: 1, RiskPoints: 1,
-				Description: fmt.Sprintf("%d direct dependencies found in registry metadata. Each direct dependency carries its own transitive tree, expanding the attack surface multiplicatively.", directCount),
-				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount),
+				Description: fmt.Sprintf("%d direct dependencies found in registry metadata. Each direct dependency carries its own transitive tree, expanding the attack surface multiplicatively.%s", directCount, descSuffix),
+				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)%s", directCount, evidenceSuffix),
 				Verified: false, Methodology: methodology, ChecksPerformed: checks,
 			}
 		} else {
 			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "FAIL", Detail: fmt.Sprintf("%d direct deps > %d threshold (high sprawl)", directCount, modThreshold)})
 			return models.CategoryScore{
 				Score: 0, RiskPoints: 2,
-				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (>%d threshold). A large number of direct dependencies significantly increases the supply chain attack surface.", directCount, modThreshold),
-				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount),
+				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (>%d threshold). A large number of direct dependencies significantly increases the supply chain attack surface.%s", directCount, modThreshold, descSuffix),
+				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)%s", directCount, evidenceSuffix),
 				Verified: false, Methodology: methodology, ChecksPerformed: checks,
 			}
 		}
@@ -127,4 +149,34 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 			{Name: "Registry dependency count", Status: "UNAVAILABLE", Detail: "No dependency data in registry metadata"},
 		},
 	}
+}
+
+// mavenScopeDetail formats a human-readable scope breakdown string
+// from Maven scope counts, e.g. "8 compile, 3 runtime, 17 test".
+// Only includes scopes with non-zero counts.
+func mavenScopeDetail(sb *models.MavenScopeBreakdown) string {
+	var parts []string
+	if sb.Compile > 0 {
+		parts = append(parts, fmt.Sprintf("%d compile", sb.Compile))
+	}
+	if sb.Runtime > 0 {
+		parts = append(parts, fmt.Sprintf("%d runtime", sb.Runtime))
+	}
+	if sb.Test > 0 {
+		parts = append(parts, fmt.Sprintf("%d test", sb.Test))
+	}
+	if sb.Provided > 0 {
+		parts = append(parts, fmt.Sprintf("%d provided", sb.Provided))
+	}
+	if sb.System > 0 {
+		parts = append(parts, fmt.Sprintf("%d system", sb.System))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	result := parts[0]
+	for i := 1; i < len(parts); i++ {
+		result += ", " + parts[i]
+	}
+	return result
 }
