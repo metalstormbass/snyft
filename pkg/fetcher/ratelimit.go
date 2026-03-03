@@ -159,3 +159,27 @@ func (rl *GitHubRateLimiter) ShouldStop(threshold int) bool {
 	defer rl.mu.Unlock()
 	return rl.remaining >= 0 && rl.remaining < threshold
 }
+
+// ShouldPreferScraping returns true when the API quota is low enough that
+// methods with scraping alternatives should prefer scraping over API calls.
+// This preserves remaining API quota for checks that truly need it (signed
+// commits, attestations, GraphQL batch queries) while scraping handles the
+// rest.
+//
+// Thresholds:
+//   - Authenticated:   remaining < 300 (6% of 5000/hr)
+//   - Unauthenticated: remaining < 15  (25% of 60/hr)
+//
+// Returns false when remaining is unknown (-1) — we only switch to scraping
+// when we have positive evidence of quota pressure.
+func (rl *GitHubRateLimiter) ShouldPreferScraping() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if rl.remaining < 0 {
+		return false
+	}
+	if rl.hasToken {
+		return rl.remaining < 300
+	}
+	return rl.remaining < 15
+}
