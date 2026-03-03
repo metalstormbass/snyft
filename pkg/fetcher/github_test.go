@@ -2867,6 +2867,159 @@ func TestGetAverageIssueResponseTime_QuotaLow_SkipsAPI(t *testing.T) {
 	}
 }
 
+// Test: GetAverageIssueResponseTime skips API on custom baseURL when rate limit low
+// Justification: Enterprise/custom GitHub setups bypass shouldPreferScraping() but
+//                should still skip expensive API calls when quota is nearly exhausted.
+//                Without this check, 11 sequential API calls would waste limited quota.
+// Source: GitHub REST API rate limiting documentation
+// Methodology: Create client with custom baseURL and low rate limit quota, verify
+//              function returns (0, nil) without making any API calls
+// Result: Returns (0, nil) graceful degradation without API calls
+func TestGetAverageIssueResponseTime_RateLimiterLow_SkipsAPI(t *testing.T) {
+	var apiCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	rl := NewGitHubRateLimiter(true) // authenticated
+	resp := &http.Response{
+		Header: http.Header{
+			"X-Ratelimit-Remaining": []string{"100"}, // below 300 threshold
+			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
+		},
+	}
+	rl.Update(resp)
+
+	// Custom baseURL (not api.github.com) so shouldPreferScraping() returns false
+	client := &GitHubClient{
+		token:       "test-token",
+		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		baseURL:     server.URL,
+		cache:       newRepoCache(),
+		preferAPI:   true,
+		rateLimiter: rl,
+	}
+
+	avgDays, err := client.GetAverageIssueResponseTime("https://github.com/owner/repo")
+	if err != nil {
+		t.Errorf("GetAverageIssueResponseTime() returned error: %v, want nil", err)
+	}
+	if avgDays != 0 {
+		t.Errorf("GetAverageIssueResponseTime() = %f, want 0 (graceful degradation)", avgDays)
+	}
+	if calls := apiCalls.Load(); calls > 0 {
+		t.Errorf("Expected 0 API calls when rate limiter reports low quota, got %d", calls)
+	}
+}
+
+// Test: batchCheckPRReviews uses GraphQL when token available
+// Justification: Checking reviews for 20 individual PRs via REST wastes API quota
+//                (20 calls). A single GraphQL query replaces all of them, preserving
+//                quota for critical checks like signed commits and attestations.
+// Source: GitHub GraphQL API documentation for pullRequest review queries
+// Methodology: Set up mock GraphQL server, call batchCheckPRReviews with token,
+//              verify only 1 API call made and review status correctly parsed.
+// Result: Single GraphQL call returns correct review status for all PRs.
+func TestBatchCheckPRReviews_GraphQL(t *testing.T) {
+	var apiCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.URL.Path == "/graphql" {
+			// Return GraphQL response with review counts
+			resp := `{
+				"data": {
+					"repository": {
+						"pr1": {"reviews": {"totalCount": 2}},
+						"pr3": {"reviews": {"totalCount": 0}},
+						"pr5": {"reviews": {"totalCount": 1}}
+					}
+				}
+			}`
+			_, _ = w.Write([]byte(resp))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		token:       "test-token",
+		httpClient:  &http.Client{},
+		baseURL:     server.URL,
+		cache:       newRepoCache(),
+		rateLimiter: NewGitHubRateLimiter(true),
+	}
+
+	result := client.batchCheckPRReviews("owner", "repo", []int{1, 3, 5})
+
+	if !result[1] {
+		t.Error("PR #1 should have reviews (totalCount=2)")
+	}
+	if result[3] {
+		t.Error("PR #3 should NOT have reviews (totalCount=0)")
+	}
+	if !result[5] {
+		t.Error("PR #5 should have reviews (totalCount=1)")
+	}
+
+	if calls := apiCalls.Load(); calls != 1 {
+		t.Errorf("Expected 1 GraphQL call, got %d", calls)
+	}
+}
+
+// Test: batchCheckPRReviews falls back to REST without token
+// Justification: When no GitHub token is available, GraphQL is unavailable.
+//                The batch method must fall back to individual REST calls so
+//                review data is still collected for risk assessment.
+// Source: GitHub API authentication requirements
+// Methodology: Create client without token, verify REST calls are made per PR.
+// Result: Individual REST calls made; review status correctly determined.
+func TestBatchCheckPRReviews_RESTFallback(t *testing.T) {
+	var apiCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.Contains(r.URL.Path, "/pulls/1/reviews") {
+			_ = json.NewEncoder(w).Encode([]GitHubReview{{ID: 1, State: "APPROVED"}})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/pulls/2/reviews") {
+			_ = json.NewEncoder(w).Encode([]GitHubReview{})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		// No token — GraphQL will be skipped
+		httpClient:  &http.Client{},
+		baseURL:     server.URL,
+		cache:       newRepoCache(),
+		rateLimiter: NewGitHubRateLimiter(false),
+	}
+
+	result := client.batchCheckPRReviews("owner", "repo", []int{1, 2})
+
+	if !result[1] {
+		t.Error("PR #1 should have reviews")
+	}
+	if result[2] {
+		t.Error("PR #2 should NOT have reviews")
+	}
+
+	// Should have made 2 individual REST calls (no GraphQL)
+	if calls := apiCalls.Load(); calls != 2 {
+		t.Errorf("Expected 2 REST calls (no token for GraphQL), got %d", calls)
+	}
+}
+
 // Test: SetScrapingOnlyMode toggles the scraping-only flag
 // Justification: When the rate limit gate triggers during a scan, the system
 //                switches to scraping-only mode to continue analyzing remaining
