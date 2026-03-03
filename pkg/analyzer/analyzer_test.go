@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -542,6 +543,238 @@ func TestClassifyOwnershipFromCommitStats_EmptyStats(t *testing.T) {
 	// Empty data: moderate risk, no crash
 	if pts < 0 || pts > 2 {
 		t.Errorf("Expected risk 0-2 for empty stats, got %d (evidence: %s)", pts, ev)
+	}
+}
+
+// ===== Continuity Check Tests =====
+// Test: Long-term authors (2+ year history) are NOT flagged as new arrivals
+// Justification: A continuously active maintainer who has been committing for years is not
+//                a new team member even if they don't appear in HistoricalAuthors (because
+//                their last commit is recent, not historical). Flagging them as "new" produces
+//                false positives for healthy, active open-source projects like Spring Boot.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - distinguishing normal
+//         team activity from takeover patterns
+// Methodology: Use AuthorFirstCommit to detect authors with long commit history
+// Result: Authors with 2+ year history reduce the "new author" count
+
+func TestClassifyOwnershipFromCommitStats_ContinuityCheckReducesRisk(t *testing.T) {
+	// Test: All recent authors appear "new" (not in historical set) but have 3-year commit history
+	// Justification: These are continuing maintainers, not new arrivals
+	// Source: Ohm et al. (2020) - normal project baseline vs. ownership takeover
+	now := time.Now()
+	stats := &fetcher.CommitAuthorStats{
+		UniqueAuthors:     []string{"dev1@corp.com", "dev2@corp.com", "old@corp.com"},
+		RecentAuthors:     []string{"dev1@corp.com", "dev2@corp.com"},
+		HistoricalAuthors: []string{"old@corp.com"},
+		AuthorCommitCounts: map[string]int{
+			"dev1@corp.com": 500,
+			"dev2@corp.com": 300,
+			"old@corp.com":  100,
+		},
+		AuthorFirstCommit: map[string]time.Time{
+			"dev1@corp.com": now.AddDate(-3, 0, 0), // 3 years ago
+			"dev2@corp.com": now.AddDate(-4, 0, 0), // 4 years ago
+			"old@corp.com":  now.AddDate(-5, 0, 0),
+		},
+		AuthorLastCommit: map[string]time.Time{
+			"dev1@corp.com": now.AddDate(0, 0, -10),
+			"dev2@corp.com": now.AddDate(0, 0, -20),
+			"old@corp.com":  now.AddDate(0, -6, 0),
+		},
+	}
+
+	pts, ev := classifyOwnershipFromCommitStats(stats)
+
+	// Both "new" authors have 2+ year history → they're continuing maintainers
+	// newAuthorRatio should be 0/2 = 0%, so risk=0
+	if pts != 0 {
+		t.Errorf("Expected risk=0 when all 'new' authors have 2+ year history (continuing maintainers), got %d (evidence: %s)", pts, ev)
+	}
+	if !strings.Contains(ev, "continuing maintainer") {
+		t.Errorf("Expected evidence to mention continuing maintainers, got: %s", ev)
+	}
+}
+
+func TestClassifyOwnershipFromCommitStats_ContinuityCheckPartialEffect(t *testing.T) {
+	// Test: Some recent authors are truly new, some are continuing maintainers
+	// Justification: Mixed scenario where continuity check correctly identifies long-term
+	//                contributors while still flagging genuinely new authors
+	// Source: Ohm et al. (2020) - nuanced ownership analysis
+	now := time.Now()
+	stats := &fetcher.CommitAuthorStats{
+		UniqueAuthors:     []string{"veteran@corp.com", "newbie@evil.com", "old@corp.com"},
+		RecentAuthors:     []string{"veteran@corp.com", "newbie@evil.com"},
+		HistoricalAuthors: []string{"old@corp.com"},
+		AuthorCommitCounts: map[string]int{
+			"veteran@corp.com": 500,
+			"newbie@evil.com":  3,
+			"old@corp.com":     100,
+		},
+		AuthorFirstCommit: map[string]time.Time{
+			"veteran@corp.com": now.AddDate(-5, 0, 0), // 5 years ago — continuing
+			"newbie@evil.com":  now.AddDate(0, -1, 0), // 1 month ago — truly new
+			"old@corp.com":     now.AddDate(-6, 0, 0),
+		},
+		AuthorLastCommit: map[string]time.Time{
+			"veteran@corp.com": now.AddDate(0, 0, -5),
+			"newbie@evil.com":  now.AddDate(0, 0, -2),
+			"old@corp.com":     now.AddDate(0, -6, 0),
+		},
+	}
+
+	pts, ev := classifyOwnershipFromCommitStats(stats)
+
+	// 1 truly new out of 2 recent = 50%, moderate risk
+	if pts != 1 {
+		t.Errorf("Expected risk=1 for mixed continuity (1 continuing + 1 new out of 2), got %d (evidence: %s)", pts, ev)
+	}
+}
+
+// ===== Large Project Scale Tests =====
+// Test: Large projects (20+ unique authors) get lower risk for author turnover
+// Justification: In large open-source projects, contributor rotation is normal dynamics.
+//                45/45 new in a 200-person project is fundamentally different from 1/1 new
+//                in a 2-person project. Large projects can't be taken over by contributor churn.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - npm dependency network
+//         analysis showing healthy large projects have high contributor turnover
+// Methodology: Check UniqueAuthors count; >20 total contributors indicates large project scale
+// Result: Large projects with high turnover get risk=0 (normal rotation)
+
+func TestClassifyOwnershipFromCommitStats_LargeProjectHighTurnover(t *testing.T) {
+	// Test: 15/15 recent authors are new in a project with 50 total contributors
+	// Justification: Large project natural rotation, not a takeover
+	// Source: Zimmermann et al. (2019) - contributor dynamics in large OSS
+	uniqueAuthors := make([]string, 50)
+	for i := range uniqueAuthors {
+		uniqueAuthors[i] = fmt.Sprintf("dev%d@corp.com", i)
+	}
+	recentAuthors := uniqueAuthors[:15]
+	historicalAuthors := uniqueAuthors[15:]
+
+	stats := &fetcher.CommitAuthorStats{
+		UniqueAuthors:      uniqueAuthors,
+		RecentAuthors:      recentAuthors,
+		HistoricalAuthors:  historicalAuthors,
+		AuthorCommitCounts: map[string]int{},
+		AuthorFirstCommit:  map[string]time.Time{},
+		AuthorLastCommit:   map[string]time.Time{},
+	}
+
+	pts, ev := classifyOwnershipFromCommitStats(stats)
+
+	// All 15 recent are "new" (100%) but large project → risk=0
+	if pts != 0 {
+		t.Errorf("Expected risk=0 for large project (50 contributors) with high turnover, got %d (evidence: %s)", pts, ev)
+	}
+	if !strings.Contains(ev, "large project") {
+		t.Errorf("Expected evidence to mention large project, got: %s", ev)
+	}
+}
+
+func TestClassifyOwnershipFromCommitStats_SmallProjectHighTurnover(t *testing.T) {
+	// Test: 1/1 recent author is new in a project with 2 total contributors
+	// Justification: In a small project, complete team replacement is a strong takeover signal
+	// Source: Ohm et al. (2020) - ownership transfer pattern
+	stats := &fetcher.CommitAuthorStats{
+		UniqueAuthors:      []string{"old-owner@corp.com", "new-person@evil.com"},
+		RecentAuthors:      []string{"new-person@evil.com"},
+		HistoricalAuthors:  []string{"old-owner@corp.com"},
+		AuthorCommitCounts: map[string]int{},
+		AuthorFirstCommit:  map[string]time.Time{},
+		AuthorLastCommit:   map[string]time.Time{},
+	}
+
+	pts, ev := classifyOwnershipFromCommitStats(stats)
+
+	// 1/1 new (100%) in small project → risk=2
+	if pts != 2 {
+		t.Errorf("Expected risk=2 for small project (2 contributors) with complete turnover, got %d (evidence: %s)", pts, ev)
+	}
+	if !strings.Contains(ev, "small project") {
+		t.Errorf("Expected evidence to mention small project, got: %s", ev)
+	}
+}
+
+// ===== Scale Description Tests =====
+// Test: Description text differentiates by project scale
+// Justification: Descriptive evidence must help users understand that turnover risk
+//                depends on project size — the same ratio means very different things
+//                at different scales
+// Source: OSSF Scorecard methodology - context-dependent risk interpretation
+
+func TestScaleDescription_DifferentScales(t *testing.T) {
+	// Test: scaleDescription produces different text for different project sizes
+	// Justification: User-facing evidence must clearly communicate scale context
+	// Source: OSSF Scorecard methodology - context-aware risk communication
+	// Methodology: Call scaleDescription with different totalUnique values
+	// Result: Large projects mention "large project" and "normal rotation",
+	//         small projects mention "small project"
+
+	smallDesc := scaleDescription(1, 1, 3, 2, 1.0, 0)
+	medDesc := scaleDescription(5, 8, 12, 10, 0.625, 0)
+	largeDesc := scaleDescription(45, 45, 200, 150, 1.0, 0)
+	withContinuity := scaleDescription(3, 5, 10, 8, 0.6, 2)
+
+	if !strings.Contains(smallDesc, "small project") {
+		t.Errorf("Small project description should mention 'small project', got: %s", smallDesc)
+	}
+	if !strings.Contains(largeDesc, "large project") {
+		t.Errorf("Large project description should mention 'large project', got: %s", largeDesc)
+	}
+	if !strings.Contains(largeDesc, "normal rotation") {
+		t.Errorf("Large project description should mention 'normal rotation', got: %s", largeDesc)
+	}
+	if strings.Contains(medDesc, "small project") || strings.Contains(medDesc, "large project") {
+		t.Errorf("Medium project should not be labeled as small or large, got: %s", medDesc)
+	}
+	if !strings.Contains(withContinuity, "continuing maintainer") {
+		t.Errorf("Description with continuing authors should mention them, got: %s", withContinuity)
+	}
+}
+
+// ===== Window Reclassification Tests =====
+// Test: reclassifyAuthorsForWindow correctly re-derives author lists with wider window
+// Justification: Established projects (>5 years) use 180-day window to avoid flagging
+//                natural contributor cadence in mature projects as "inactivity"
+// Source: OSSF Scorecard "Maintained" check - longer observation windows for mature projects
+// Methodology: Provide AuthorLastCommit data with authors between 90-180 days ago
+// Result: Authors within 180 days are classified as "recent" with wider window
+
+func TestReclassifyAuthorsForWindow(t *testing.T) {
+	// Test: Author with last commit 120 days ago should be "historical" at 90 days but "recent" at 180 days
+	// Justification: 120-day absence in a 10-year-old project is normal cadence, not inactivity
+	// Source: OSSF Scorecard methodology
+	now := time.Now()
+	stats := &fetcher.CommitAuthorStats{
+		RecentAuthors:     []string{"active@corp.com"},
+		HistoricalAuthors: []string{"slow-cadence@corp.com", "truly-gone@corp.com"},
+		AuthorLastCommit: map[string]time.Time{
+			"active@corp.com":      now.AddDate(0, 0, -30),  // 30 days ago
+			"slow-cadence@corp.com": now.AddDate(0, 0, -120), // 120 days ago
+			"truly-gone@corp.com":  now.AddDate(-1, 0, 0),   // 1 year ago
+		},
+	}
+
+	recent, historical := reclassifyAuthorsForWindow(stats, 180)
+
+	// With 180-day window: active (30d) and slow-cadence (120d) should be recent
+	recentSet := make(map[string]bool)
+	for _, a := range recent {
+		recentSet[a] = true
+	}
+	historicalSet := make(map[string]bool)
+	for _, a := range historical {
+		historicalSet[a] = true
+	}
+
+	if !recentSet["active@corp.com"] {
+		t.Error("active@corp.com should be recent with 180-day window")
+	}
+	if !recentSet["slow-cadence@corp.com"] {
+		t.Error("slow-cadence@corp.com (120 days) should be recent with 180-day window")
+	}
+	if !historicalSet["truly-gone@corp.com"] {
+		t.Error("truly-gone@corp.com (1 year) should be historical even with 180-day window")
 	}
 }
 

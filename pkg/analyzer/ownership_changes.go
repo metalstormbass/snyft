@@ -18,13 +18,16 @@ import (
 //                new contributors while retaining historical ones; a transfer replaces them.
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - ownership takeover pattern analysis
 //         https://arxiv.org/abs/2005.09535
-// Methodology: Compare authors with recent commits (last 90 days) against historical authors
+// Methodology: Compare authors with recent commits against historical authors
 //              (committed previously but not recently). High ratio of entirely-new recent authors
 //              indicates team replacement rather than natural growth.
+//              Continuity check: authors with commits going back 2+ years are long-term
+//              maintainers, not new arrivals (they just weren't in HistoricalAuthors because
+//              they're still active). Scale matters: large projects naturally rotate contributors.
 // Result:
-//   - 0 risk: stable ownership (same team or healthy growth with continuity)
+//   - 0 risk: stable ownership (same team, healthy growth, or large-project rotation)
 //   - 1 risk: partial team turnover (>50% new authors but continuity exists, or dormant project)
-//   - 2 risk: near-complete team replacement (≥80% of recent committers are new)
+//   - 2 risk: near-complete team replacement (≥80% of recent committers are genuinely new)
 func classifyOwnershipFromCommitStats(stats *fetcher.CommitAuthorStats) (riskPoints int, evidence string) {
 	hasRecent := len(stats.RecentAuthors) > 0
 	hasHistorical := len(stats.HistoricalAuthors) > 0
@@ -36,34 +39,62 @@ func classifyOwnershipFromCommitStats(stats *fetcher.CommitAuthorStats) (riskPoi
 			historicalSet[author] = true
 		}
 
+		// Count truly new authors vs continuing maintainers.
+		// An author not in historicalSet might still be a long-term contributor —
+		// they just didn't go inactive (so they never appeared in HistoricalAuthors).
+		// Check AuthorFirstCommit: if their first commit is 2+ years ago, they're
+		// a continuing maintainer, not a new arrival.
 		newAuthors := 0
+		continuingAuthors := 0
 		for _, author := range stats.RecentAuthors {
-			if !historicalSet[author] {
-				newAuthors++
+			if historicalSet[author] {
+				// Known historical author still active — not new
+				continue
 			}
+			// Not in historical set. Check if they have a long commit history.
+			if firstCommit, ok := stats.AuthorFirstCommit[author]; ok {
+				if time.Since(firstCommit) > 2*365*24*time.Hour {
+					continuingAuthors++
+					continue
+				}
+			}
+			newAuthors++
 		}
 
 		newAuthorRatio := float64(newAuthors) / float64(len(stats.RecentAuthors))
+		totalUnique := len(stats.UniqueAuthors)
 
 		switch {
 		case newAuthorRatio >= 0.8:
-			// ≥80% of recent committers are entirely new: near-complete team replacement
-			// This is the primary behavioral signal of a malicious ownership transfer.
-			return 2, fmt.Sprintf(
-				"%d/%d recent authors are new (%.0f%% team change; %d historical authors stepped back)",
-				newAuthors, len(stats.RecentAuthors), newAuthorRatio*100, len(stats.HistoricalAuthors))
+			// ≥80% of recent committers are genuinely new: possible team replacement.
+			// But scale matters: in large projects (20+ unique authors), high turnover
+			// is natural contributor rotation, not a takeover signal.
+			desc := scaleDescription(newAuthors, len(stats.RecentAuthors), totalUnique,
+				len(stats.HistoricalAuthors), newAuthorRatio, continuingAuthors)
+			if totalUnique > 20 {
+				// Large project: high turnover is normal open-source dynamics
+				return 0, desc
+			}
+			return 2, desc
 
 		case newAuthorRatio >= 0.5:
 			// Majority new but some continuity: notable churn, moderate concern
-			return 1, fmt.Sprintf(
-				"%d/%d recent authors are new (%.0f%% partial team change)",
-				newAuthors, len(stats.RecentAuthors), newAuthorRatio*100)
+			desc := scaleDescription(newAuthors, len(stats.RecentAuthors), totalUnique,
+				len(stats.HistoricalAuthors), newAuthorRatio, continuingAuthors)
+			if totalUnique > 20 {
+				return 0, desc
+			}
+			return 1, desc
 
 		default:
 			// Mostly same team with some new contributors: healthy, stable ownership
+			continuityNote := ""
+			if continuingAuthors > 0 {
+				continuityNote = fmt.Sprintf("; %d continuing maintainer(s) with 2+ year history", continuingAuthors)
+			}
 			return 0, fmt.Sprintf(
-				"%d unique authors, %d recent, %d new (stable ownership with continuity)",
-				len(stats.UniqueAuthors), len(stats.RecentAuthors), newAuthors)
+				"%d unique authors, %d recent, %d new (stable ownership with continuity%s)",
+				totalUnique, len(stats.RecentAuthors), newAuthors, continuityNote)
 		}
 
 	} else if hasRecent && !hasHistorical {
@@ -85,6 +116,56 @@ func classifyOwnershipFromCommitStats(stats *fetcher.CommitAuthorStats) (riskPoi
 	}
 	// No author data at all (empty repo or API returned nothing useful)
 	return 1, "No commit author data available"
+}
+
+// scaleDescription produces a human-readable evidence string that differentiates
+// based on project scale. 1/1 new in a 2-person project is very different from
+// 45/45 new in a 200-person project.
+func scaleDescription(newAuthors, recentTotal, totalUnique, historicalCount int,
+	ratio float64, continuingAuthors int) string {
+
+	continuityNote := ""
+	if continuingAuthors > 0 {
+		continuityNote = fmt.Sprintf("; %d continuing maintainer(s) with 2+ year history", continuingAuthors)
+	}
+
+	switch {
+	case totalUnique > 20:
+		return fmt.Sprintf(
+			"%d/%d recent authors are new (%.0f%% turnover in large project with %d total contributors%s; normal rotation)",
+			newAuthors, recentTotal, ratio*100, totalUnique, continuityNote)
+	case totalUnique <= 5:
+		return fmt.Sprintf(
+			"%d/%d recent authors are new (%.0f%% team change in small project with %d total contributors; %d historical authors stepped back%s)",
+			newAuthors, recentTotal, ratio*100, totalUnique, historicalCount, continuityNote)
+	default:
+		return fmt.Sprintf(
+			"%d/%d recent authors are new (%.0f%% team change; %d total contributors, %d historical authors stepped back%s)",
+			newAuthors, recentTotal, ratio*100, totalUnique, historicalCount, continuityNote)
+	}
+}
+
+// reclassifyAuthorsForWindow re-derives the recent/historical author classification
+// using a different time window. Used for established projects (>5 years old) where
+// a 180-day window better captures natural contributor cadence.
+func reclassifyAuthorsForWindow(stats *fetcher.CommitAuthorStats, windowDays int) (recent []string, historical []string) {
+	cutoff := time.Now().AddDate(0, 0, -windowDays)
+	seen := make(map[string]bool)
+	allAuthors := make([]string, 0, len(stats.RecentAuthors)+len(stats.HistoricalAuthors))
+	allAuthors = append(allAuthors, stats.RecentAuthors...)
+	allAuthors = append(allAuthors, stats.HistoricalAuthors...)
+	for _, author := range allAuthors {
+		if seen[author] {
+			continue
+		}
+		seen[author] = true
+		if lastCommit, ok := stats.AuthorLastCommit[author]; ok && lastCommit.After(cutoff) {
+			recent = append(recent, author)
+		} else {
+			historical = append(historical, author)
+		}
+	}
+	return
 }
 
 // scoreOwnershipChanges: ownership transfers (0-2 pts)
@@ -110,7 +191,25 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 	ownerChecks := []models.CheckResult{}
 	verified := false
 	riskPoints := 1 // Default to medium risk when unable to verify
-	ownerMethodology := "Multi-source analysis: (1) Git commit author change patterns (recent vs historical committers, 90-day window), (2) npm/PyPI registry ownership history, (3) repository creation date vs package first-published date (transfer signal), (4) fallback: repository age + maintainer count heuristic."
+	ownerMethodology := "Multi-source analysis: (1) Git commit author change patterns (recent vs historical committers, 90/180-day window based on project age), (2) continuity check for long-term contributors (2+ year history), (3) org-owned repo adjustment, (4) npm/PyPI registry ownership history, (5) repository creation date vs package first-published date (transfer signal), (6) fallback: repository age + maintainer count heuristic."
+
+	// Determine if this is an established project (>5 years old) for window adjustment
+	isEstablished := false
+	if !result.Metadata.RepoCreatedAt.IsZero() {
+		repoAge := time.Since(result.Metadata.RepoCreatedAt)
+		isEstablished = repoAge > 5*365*24*time.Hour
+	}
+
+	// Check if repository is org-owned (author turnover in orgs is normal team management)
+	isOrgOwned := false
+	if result.RepositoryURL != "" {
+		owner, _, parseErr := fetcher.ParseRepoURL(result.RepositoryURL)
+		if parseErr == nil && owner != "" {
+			gitClient := a.getGitClient(result.RepositoryURL)
+			isOrg, _ := gitClient.CheckIfOrganization(owner)
+			isOrgOwned = isOrg
+		}
+	}
 
 	// 1. Check Git platform commit author changes (if repository available)
 	if result.RepositoryURL != "" {
@@ -126,7 +225,32 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "UNAVAILABLE", Detail: "Could not check: API rate limited"})
 		} else if err == nil && commitStats != nil {
 			verified = true
+
+			// For established projects (>5 years), use 180-day window instead of 90 days
+			// to account for natural contributor cadence in mature open-source projects.
+			if isEstablished && len(commitStats.AuthorLastCommit) > 0 {
+				recent, historical := reclassifyAuthorsForWindow(commitStats, 180)
+				commitStats = &fetcher.CommitAuthorStats{
+					TotalCommits:       commitStats.TotalCommits,
+					UniqueAuthors:      commitStats.UniqueAuthors,
+					AuthorCommitCounts: commitStats.AuthorCommitCounts,
+					AuthorFirstCommit:  commitStats.AuthorFirstCommit,
+					AuthorLastCommit:   commitStats.AuthorLastCommit,
+					RecentAuthors:      recent,
+					HistoricalAuthors:  historical,
+				}
+			}
+
 			pts, ev := classifyOwnershipFromCommitStats(commitStats)
+
+			// For org-owned repos, cap commit-author risk at 1 (moderate).
+			// Author turnover in organizations is normal team management, not
+			// evidence of malicious acquisition.
+			if isOrgOwned && pts > 1 {
+				pts = 1
+				ev += " (org-owned: team turnover is normal)"
+			}
+
 			riskPoints = pts
 			if ev != "" {
 				evidenceParts = append(evidenceParts, gitClient.GetPlatformName()+": "+ev)
