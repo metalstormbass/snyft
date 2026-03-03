@@ -250,3 +250,121 @@ func TestScoreDependencySprawl_LockFile_EcosystemAgnostic(t *testing.T) {
 		t.Error("Expected Verified=true for lock file path")
 	}
 }
+
+// Test: Maven scope breakdown appears in description and evidence
+// Justification: Packages like Lombok declare many test/provided deps that inflate
+//                apparent dependency counts. Scope-aware counting gives accurate risk
+//                assessment, and the breakdown helps users understand why the score
+//                differs from the raw dependency count visible in the POM.
+// Source: Maven Dependency Scope reference — https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#Dependency_Scope
+//         "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Set DirectCount=3 with MavenScopeBreakdown showing 3 compile, 2 runtime, 17 test, 2 provided.
+//              Verify description includes scope breakdown.
+// Result: Description includes "3 compile, 2 runtime, 17 test, 2 provided" breakdown
+func TestScoreDependencySprawl_Maven_ScopeBreakdownInDescription(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name: "com.example:scope-test", Version: "1.0.0", Ecosystem: models.EcosystemMaven,
+		},
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				DirectCount: 5,
+				Verified:    false,
+				MavenScopeBreakdown: &models.MavenScopeBreakdown{
+					Compile:  3,
+					Runtime:  2,
+					Test:     17,
+					Provided: 2,
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreDependencySprawl(result)
+
+	// 5 compile+runtime deps is well within Maven low threshold (≤12)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for Maven with 5 compile+runtime deps, got %d", score.RiskPoints)
+	}
+
+	// Description should contain scope breakdown
+	if !contains(score.Description, "3 compile") {
+		t.Errorf("Description should contain '3 compile', got: %s", score.Description)
+	}
+	if !contains(score.Description, "2 runtime") {
+		t.Errorf("Description should contain '2 runtime', got: %s", score.Description)
+	}
+	if !contains(score.Description, "17 test") {
+		t.Errorf("Description should contain '17 test', got: %s", score.Description)
+	}
+	if !contains(score.Description, "2 provided") {
+		t.Errorf("Description should contain '2 provided', got: %s", score.Description)
+	}
+
+	// Evidence should also contain scope info
+	if !contains(score.Evidence, "scope:") {
+		t.Errorf("Evidence should contain scope breakdown, got: %s", score.Evidence)
+	}
+}
+
+// Test: Maven package with many test/provided deps but few compile+runtime scores low risk
+// Justification: This is the Lombok scenario — 28 total POM deps but zero runtime deps.
+//                Without scope awareness, this would score as high sprawl. With scope
+//                awareness, only compile+runtime deps count, giving an accurate low score.
+// Source: Maven Dependency Scope reference — https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#Dependency_Scope
+//         "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Set DirectCount=0 with scope breakdown showing all deps are test/provided.
+// Result: 0 risk points (no compile+runtime deps = no supply chain sprawl)
+func TestScoreDependencySprawl_Maven_LombokScenario(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name: "org.projectlombok:lombok", Version: "1.18.30", Ecosystem: models.EcosystemMaven,
+		},
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				DirectCount: 0,
+				Verified:    false,
+				MavenScopeBreakdown: &models.MavenScopeBreakdown{
+					Compile:  0,
+					Runtime:  0,
+					Test:     25,
+					Provided: 3,
+				},
+			},
+		},
+	}
+
+	score := analyzer.scoreDependencySprawl(result)
+
+	// 0 compile+runtime deps = low risk
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for Maven with 0 compile+runtime deps (Lombok scenario), got %d", score.RiskPoints)
+	}
+}
+
+// Test: npm packages do not get Maven scope breakdown (only Maven uses scopes)
+// Justification: Scope breakdown is Maven-specific and should not appear for other ecosystems.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Set DirectCount=10 for npm without MavenScopeBreakdown.
+//              Verify description does not contain scope information.
+// Result: No scope breakdown in description for non-Maven ecosystems
+func TestScoreDependencySprawl_NPM_NoScopeBreakdown(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name: "npm-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{DirectCount: 10, Verified: false},
+		},
+	}
+
+	score := analyzer.scoreDependencySprawl(result)
+
+	if contains(score.Description, "compile") {
+		t.Errorf("npm description should not contain Maven scope info, got: %s", score.Description)
+	}
+}
+
