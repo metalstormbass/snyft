@@ -665,9 +665,10 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 		repo + "-v" + version,
 	}
 
-	// Scraping-first path: check the GitHub web page for each tag variant.
-	// HEAD request to github.com/owner/repo/releases/tag/{tag} is served by
-	// the web frontend, not the API, and is not subject to API rate limits.
+	// Scraping-first path: check the GitHub web page for each tag variant,
+	// then try scraping the tags listing page for non-standard naming.
+	// HEAD requests to github.com are served by the web frontend, not the API,
+	// and are not subject to API rate limits.
 	if c.shouldPreferScraping() {
 		for _, tag := range tagVariants {
 			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
@@ -675,8 +676,13 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 				return true, tagURL, nil
 			}
 		}
-		// Scraping didn't find a tag — fall through to try the API as a last resort.
-		// The tag may exist but not have a releases page (lightweight tags).
+		// Direct tag lookups didn't find a release page — the tag may exist
+		// as a lightweight tag or use non-standard naming. Search the tags
+		// listing page (scraped, not API) before falling through to API.
+		if found, tagURL := c.searchTagsPaginated(owner, repo, version); found {
+			return true, tagURL, nil
+		}
+		// Scraping exhausted — fall through to API as last resort.
 	}
 
 	// API path: primary when token is set, fallback when scraping didn't find the tag.
@@ -718,13 +724,16 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 				return true, tagURL, nil
 			}
 		}
+		// Also try the scraping-based tag search for non-standard naming.
+		if found, tagURL := c.searchTagsPaginated(owner, repo, version); found {
+			return true, tagURL, nil
+		}
 	}
 
 	// Paginated fallback: when direct lookups fail (non-standard tag naming),
-	// search through the tags listing API. This catches repos that use
-	// arbitrary prefixes (e.g. "myproject-v2.15.3") that aren't covered
-	// by the variant list above.
-	if !rateLimited {
+	// search through the tags listing. searchTagsPaginated uses scraping when
+	// shouldPreferScraping() and API otherwise, with scraping fallback on rate limit.
+	if !rateLimited && !c.shouldPreferScraping() {
 		if found, tagURL := c.searchTagsPaginated(owner, repo, version); found {
 			return true, tagURL, nil
 		}
@@ -743,9 +752,11 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 // few hundred entries; 3 pages strikes a good balance between coverage and cost.
 const maxTagSearchPages = 3
 
-// searchTagsPaginated searches through paginated GitHub tags for any tag
-// ending with the target version string. This handles repos with non-standard
-// tag naming where the version appears as a suffix (e.g. "module-name-2.15.3").
+// searchTagsPaginated searches through GitHub tags for any tag ending with the
+// target version string. This handles repos with non-standard tag naming where
+// the version appears as a suffix (e.g. "module-name-2.15.3").
+// When no token is set, tags are scraped from the web frontend to avoid API
+// rate limits. With a token, the API is used with scraping as fallback.
 // Results are cached per owner/repo so that multiple dependencies from the same
 // repository resolve instantly without repeating pagination.
 func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, string) {
@@ -765,19 +776,52 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 	// have already fetched and stored all discovered tag names.
 	if c.cache != nil {
 		if cached, ok := c.cache.getTagNames(cacheKey); ok {
-			for _, name := range cached {
-				for _, suffix := range versionSuffixes {
-					if strings.HasSuffix(name, suffix) {
-						tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, name)
-						return true, tagURL
-					}
-				}
-			}
-			return false, ""
+			return matchTagVersion(cached, versionSuffixes, owner, repo)
 		}
 	}
 
-	// Cache miss — fetch tags from the API and collect all names.
+	// Scraping-first path: scrape the tags page to avoid API rate limits.
+	if c.shouldPreferScraping() {
+		if scraped, err := c.scrapeTagNames(owner, repo); err == nil {
+			return matchTagVersion(scraped, versionSuffixes, owner, repo)
+		}
+		// Scraping failed — fall through to try the API
+	}
+
+	// API path: primary when token is set, fallback when scraping fails.
+	allTagNames := c.fetchTagNamesViaAPI(owner, repo)
+
+	// If API returned nothing (rate limited or error) and we haven't scraped yet, try scraping.
+	if len(allTagNames) == 0 && !c.shouldPreferScraping() {
+		if scraped, err := c.scrapeTagNames(owner, repo); err == nil && len(scraped) > 0 {
+			return matchTagVersion(scraped, versionSuffixes, owner, repo)
+		}
+	}
+
+	// Cache all discovered tags so subsequent calls for the same repo skip API/scraping.
+	if c.cache != nil {
+		c.cache.setTagNames(cacheKey, allTagNames)
+	}
+
+	return matchTagVersion(allTagNames, versionSuffixes, owner, repo)
+}
+
+// matchTagVersion searches a list of tag names for any matching the version suffixes.
+func matchTagVersion(tagNames, versionSuffixes []string, owner, repo string) (bool, string) {
+	for _, name := range tagNames {
+		for _, suffix := range versionSuffixes {
+			if strings.HasSuffix(name, suffix) {
+				tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, name)
+				return true, tagURL
+			}
+		}
+	}
+	return false, ""
+}
+
+// fetchTagNamesViaAPI paginates through the GitHub tags API collecting tag names.
+// Returns the collected names (may be empty on rate limit or error).
+func (c *GitHubClient) fetchTagNamesViaAPI(owner, repo string) []string {
 	var allTagNames []string
 	nextURL := fmt.Sprintf("%s/repos/%s/%s/tags?per_page=100", c.baseURL, owner, repo)
 
@@ -830,22 +874,13 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 		nextURL = parseLinkHeaderNextURL(resp.Header.Get("Link"))
 	}
 
-	// Cache all discovered tags so subsequent calls for the same repo skip API calls.
+	// Cache all discovered tags.
+	cacheKey := owner + "/" + repo
 	if c.cache != nil {
 		c.cache.setTagNames(cacheKey, allTagNames)
 	}
 
-	// Search collected tags for matching version suffix.
-	for _, name := range allTagNames {
-		for _, suffix := range versionSuffixes {
-			if strings.HasSuffix(name, suffix) {
-				tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, name)
-				return true, tagURL
-			}
-		}
-	}
-
-	return false, ""
+	return allTagNames
 }
 
 // checkTagViaWeb checks if a GitHub tag/release page exists by issuing a HEAD
@@ -863,6 +898,79 @@ func (c *GitHubClient) checkTagViaWeb(tagURL string) bool {
 	}
 	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// scrapeTagNames scrapes tag names from the GitHub tags page. This avoids
+// the paginated tags API (up to 3 API calls per repo) by fetching tag names
+// from the web frontend, which is not subject to API rate limits.
+// Results are cached per owner/repo so subsequent CheckGitTag calls for
+// different versions of the same repo resolve without network calls.
+func (c *GitHubClient) scrapeTagNames(owner, repo string) ([]string, error) {
+	cacheKey := owner + "/" + repo
+
+	// Return cached tags if available.
+	if c.cache != nil {
+		if cached, ok := c.cache.getTagNames(cacheKey); ok {
+			return cached, nil
+		}
+	}
+
+	var allTags []string
+	nextPageURL := fmt.Sprintf("https://github.com/%s/%s/tags", owner, repo)
+	tagPrefix := fmt.Sprintf("/%s/%s/releases/tag/", owner, repo)
+
+	for page := 0; page < maxTagSearchPages && nextPageURL != ""; page++ {
+		doc, err := scrapeWithUserAgent(nextPageURL)
+		if err != nil {
+			if page == 0 {
+				return nil, fmt.Errorf("scraping tags page failed: %w", err)
+			}
+			break // Return what we have so far
+		}
+
+		pageHadTags := false
+
+		// GitHub tags page lists each tag as a link to /releases/tag/{name}.
+		doc.Find("a[href*='/releases/tag/']").Each(func(_ int, a *goquery.Selection) {
+			href, exists := a.Attr("href")
+			if !exists {
+				return
+			}
+			// Extract tag name from href like /{owner}/{repo}/releases/tag/{tagname}
+			idx := strings.Index(href, tagPrefix)
+			if idx < 0 {
+				return
+			}
+			tagName := href[idx+len(tagPrefix):]
+			if tagName != "" {
+				allTags = append(allTags, tagName)
+				pageHadTags = true
+			}
+		})
+
+		// Look for the "Next" pagination link
+		nextPageURL = ""
+		doc.Find("a.next_page, a[rel='next']").Each(func(_ int, a *goquery.Selection) {
+			if href, exists := a.Attr("href"); exists && href != "" {
+				if strings.HasPrefix(href, "/") {
+					nextPageURL = "https://github.com" + href
+				} else if strings.HasPrefix(href, "http") {
+					nextPageURL = href
+				}
+			}
+		})
+
+		if !pageHadTags {
+			break
+		}
+	}
+
+	// Cache all discovered tags.
+	if c.cache != nil {
+		c.cache.setTagNames(cacheKey, allTags)
+	}
+
+	return allTags, nil
 }
 
 func (c *GitHubClient) fileExists(owner, repo, path string) bool {
@@ -2332,14 +2440,28 @@ func (c *GitHubClient) CheckIfOrganization(owner string) (bool, string) {
 	return id.isOrg, id.name
 }
 
-// fetchIdentity fetches and caches the result of GET /users/{owner}.
+// fetchIdentity fetches and caches user/org identity information.
+// When no token is set, the profile page is scraped to avoid API rate limits.
+// With a token, the API provides richer data (exact creation date, type field).
 // Called by CheckIfOrganization and GetUserAccountCreatedDate to avoid
-// duplicate API calls for the same owner within a scan.
+// duplicate network calls for the same owner within a scan.
 func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 	if c.cache != nil {
 		if cached, ok := c.cache.getIdentity(owner); ok {
 			return cached
 		}
+	}
+
+	// Scraping-first path: when no token, scrape the profile page to avoid
+	// burning the limited unauthenticated API quota.
+	if c.shouldPreferScraping() {
+		if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
+			if c.cache != nil {
+				c.cache.setIdentity(owner, id)
+			}
+			return id
+		}
+		// Scraping failed — fall through to try the API
 	}
 
 	url := fmt.Sprintf("%s/users/%s", c.baseURL, owner)
@@ -2355,16 +2477,23 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 
 	resp, err := c.doRequest(req)
 	if err != nil {
+		// Network error — try scraping if we haven't already
+		if !c.shouldPreferScraping() {
+			if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
+				if c.cache != nil {
+					c.cache.setIdentity(owner, id)
+				}
+				return id
+			}
+		}
 		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Rate limit — try scraping the profile page to detect org vs user
-		if shouldFallbackToScraping(nil, resp.StatusCode) {
-			isOrg, name := c.scrapeIsOrganization(owner)
-			if name != "" {
-				id := &cachedIdentity{isOrg: isOrg, name: name}
+		// Rate limit or auth error — try scraping if we haven't already
+		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+			if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
 				if c.cache != nil {
 					c.cache.setIdentity(owner, id)
 				}
@@ -2401,21 +2530,24 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 	return id
 }
 
-// scrapeIsOrganization checks whether a GitHub owner is an organization by
-// scraping the profile page. GitHub uses different page structures for orgs
-// and users (orgs show "People" tab, users show "Repositories" tab).
-func (c *GitHubClient) scrapeIsOrganization(owner string) (bool, string) {
+// scrapeIdentity scrapes the GitHub profile page to determine if an owner is
+// an organization and to extract the display name and account creation date.
+// GitHub uses different page structures for orgs and users (orgs show "People"
+// tab, users show "Repositories" tab). The creation date is extracted from the
+// <relative-time> element in the "Joined" section of the sidebar.
+func (c *GitHubClient) scrapeIdentity(owner string) *cachedIdentity {
 	pageURL := fmt.Sprintf("https://github.com/%s", owner)
 	doc, err := scrapeWithUserAgent(pageURL)
 	if err != nil {
-		return false, ""
+		return nil
 	}
 
-	// GitHub org pages have an "org-" prefix in the body class or a "People" tab
+	// GitHub org pages have a "People" tab in the navigation.
 	isOrg := false
 	doc.Find("nav a[data-tab='people']").Each(func(_ int, _ *goquery.Selection) {
 		isOrg = true
 	})
+
 	name := owner
 	doc.Find("h1.h2.lh-condensed, span[itemprop='name']").First().Each(func(_ int, s *goquery.Selection) {
 		if text := strings.TrimSpace(s.Text()); text != "" {
@@ -2423,7 +2555,18 @@ func (c *GitHubClient) scrapeIsOrganization(owner string) (bool, string) {
 		}
 	})
 
-	return isOrg, name
+	// Extract "Joined" date from the sidebar's <relative-time> element.
+	// User profiles show: <relative-time datetime="2020-03-15T12:00:00Z">
+	var createdAt time.Time
+	doc.Find("relative-time").Each(func(_ int, rt *goquery.Selection) {
+		if datetime, exists := rt.Attr("datetime"); exists && createdAt.IsZero() {
+			if t, parseErr := time.Parse(time.RFC3339, datetime); parseErr == nil {
+				createdAt = t
+			}
+		}
+	})
+
+	return &cachedIdentity{isOrg: isOrg, name: name, createdAt: createdAt}
 }
 
 // fetchOrgInfo fetches and caches the result of GET /orgs/{owner}.
