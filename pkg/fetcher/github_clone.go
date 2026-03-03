@@ -42,9 +42,6 @@ type gitCloneData struct {
 	// Empty after cleanup.
 	cloneDir string
 
-	// diskSizeMB is the size of the clone directory in megabytes.
-	diskSizeMB float64
-
 	// ready indicates that clone data is available for use.
 	ready bool
 }
@@ -175,9 +172,6 @@ func (c *GitHubClient) CloneAndAnalyze(repoURL string) error {
 
 	extractWg.Wait()
 
-	// Calculate disk size
-	data.diskSizeMB = dirSizeMB(cloneDir)
-
 	// Mark as ready even if some extractions failed — partial data is useful
 	data.ready = true
 
@@ -217,7 +211,10 @@ func (c *GitHubClient) CleanupClone(repoURL string) {
 	}
 }
 
-// GetCloneFileContent fetches a file's content from the bare clone via git show.
+// GetCloneFileContent returns a file's content from the bare clone.
+// It first checks the in-memory cache (works even after CleanupClone has removed
+// the temp directory). If not cached and the clone directory still exists on disk,
+// it fetches via git show and caches the result.
 // Returns ("", error) if the file doesn't exist or clone data is not available.
 func (c *GitHubClient) GetCloneFileContent(owner, repo, path string) (string, error) {
 	cacheKey := owner + "/" + repo
@@ -226,7 +223,7 @@ func (c *GitHubClient) GetCloneFileContent(owner, repo, path string) (string, er
 	}
 
 	data, ok := c.cache.getCloneData(cacheKey)
-	if !ok || !data.ready || data.cloneDir == "" {
+	if !ok || !data.ready {
 		return "", fmt.Errorf("clone data not available")
 	}
 
@@ -237,6 +234,11 @@ func (c *GitHubClient) GetCloneFileContent(owner, repo, path string) (string, er
 		return content, nil
 	}
 	data.fileContentsMu.RUnlock()
+
+	// Clone directory already cleaned up — cannot fetch new files
+	if data.cloneDir == "" {
+		return "", fmt.Errorf("clone cleaned up and file not in cache: %s", path)
+	}
 
 	// Fetch via git show
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -266,22 +268,6 @@ func (c *GitHubClient) HasCloneData(repoURL string) bool {
 	}
 	data, ok := c.cache.getCloneData(owner + "/" + repo)
 	return ok && data.ready
-}
-
-// CloneDiskSizeMB returns the size of the clone directory in MB, or 0 if no clone data.
-func (c *GitHubClient) CloneDiskSizeMB(repoURL string) float64 {
-	owner, repo, err := parseGitHubURL(repoURL)
-	if err != nil {
-		return 0
-	}
-	if c.cache == nil {
-		return 0
-	}
-	data, ok := c.cache.getCloneData(owner + "/" + repo)
-	if !ok {
-		return 0
-	}
-	return data.diskSizeMB
 }
 
 // extractCommitAuthors runs git log to extract commit author stats.
@@ -488,21 +474,6 @@ func extractFileTree(ctx context.Context, cloneDir string) (map[string]bool, err
 	}
 
 	return tree, nil
-}
-
-// dirSizeMB calculates the total size of a directory in megabytes.
-func dirSizeMB(path string) float64 {
-	var size int64
-	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !info.IsDir() {
-			size += info.Size()
-		}
-		return nil
-	})
-	return float64(size) / (1024 * 1024)
 }
 
 // repoCache methods for clone data

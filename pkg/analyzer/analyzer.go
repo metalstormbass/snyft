@@ -458,50 +458,62 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		}
 	}
 
-	wg.Wait()
-
-	// Clone cleanup and npm script file analysis
+	// Clean up the bare clone as soon as all clone-dependent work finishes.
+	// This runs concurrently with other goroutines — any file reads that arrive
+	// after cleanup will fall back to API/scraping via GetFileContent.
 	if cloneDone != nil {
-		<-cloneDone
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-cloneDone // Wait for clone to finish
 
-		if dep.Ecosystem == models.EcosystemNPM && result.Metadata.HasInstallScripts && len(result.Metadata.InstallScripts) > 0 {
-			gitClient := a.getGitClient(repoURL)
-			readFile := func(path string) (string, error) {
-				return gitClient.GetFileContent(repoURL, path)
-			}
-			filePatterns := AnalyzeNPMScriptFiles(result.Metadata.InstallScripts, readFile)
-			if len(filePatterns) > 0 {
-				if result.Metadata.InstallScriptAnalysis == nil {
-					result.Metadata.InstallScriptAnalysis = &models.InstallScriptAnalysis{}
+			// Analyze actual script files referenced by npm install hooks.
+			// Uses the bare clone (no API calls) to read files like scripts/postinstall.js
+			// that are pointed to by package.json hook commands.
+			if dep.Ecosystem == models.EcosystemNPM && result.Metadata.HasInstallScripts && len(result.Metadata.InstallScripts) > 0 {
+				gitClient := a.getGitClient(repoURL)
+				readFile := func(path string) (string, error) {
+					return gitClient.GetFileContent(repoURL, path)
 				}
-				for _, p := range filePatterns {
-					result.Metadata.InstallScriptAnalysis.DangerousPatterns = append(
-						result.Metadata.InstallScriptAnalysis.DangerousPatterns,
-						models.DangerousPattern{
-							Pattern:     p.Pattern,
-							Description: p.Description,
-							Severity:    p.Severity,
-							Match:       p.Match,
-						},
-					)
-				}
-				result.Metadata.InstallScriptAnalysis.HasDangerousPatterns = true
-				highCount := 0
-				for _, p := range result.Metadata.InstallScriptAnalysis.DangerousPatterns {
-					if p.Severity == "HIGH" {
-						highCount++
+				filePatterns := AnalyzeNPMScriptFiles(result.Metadata.InstallScripts, readFile)
+				if len(filePatterns) > 0 {
+					if result.Metadata.InstallScriptAnalysis == nil {
+						result.Metadata.InstallScriptAnalysis = &models.InstallScriptAnalysis{}
+					}
+					for _, p := range filePatterns {
+						result.Metadata.InstallScriptAnalysis.DangerousPatterns = append(
+							result.Metadata.InstallScriptAnalysis.DangerousPatterns,
+							models.DangerousPattern{
+								Pattern:     p.Pattern,
+								Description: p.Description,
+								Severity:    p.Severity,
+								Match:       p.Match,
+							},
+						)
+					}
+					result.Metadata.InstallScriptAnalysis.HasDangerousPatterns = true
+					// Recalculate risk level after merging file-level findings
+					highCount := 0
+					for _, p := range result.Metadata.InstallScriptAnalysis.DangerousPatterns {
+						if p.Severity == "HIGH" {
+							highCount++
+						}
+					}
+					if highCount > 0 {
+						result.Metadata.InstallScriptAnalysis.RiskLevel = "HIGH"
+					} else {
+						result.Metadata.InstallScriptAnalysis.RiskLevel = "MEDIUM"
 					}
 				}
-				if highCount > 0 {
-					result.Metadata.InstallScriptAnalysis.RiskLevel = "HIGH"
-				} else {
-					result.Metadata.InstallScriptAnalysis.RiskLevel = "MEDIUM"
-				}
 			}
-		}
 
-		a.githubClient.CleanupClone(repoURL)
+			// Clean up immediately — don't hold the clone directory on disk
+			a.githubClient.CleanupClone(repoURL)
+		}()
 	}
+
+	// Wait for all data collection steps to complete before scoring
+	wg.Wait()
 
 	// Cache repo-level data for subsequent packages from the same repo
 	if !usedRepoCache && repoURL != "" && cacheKey != "" {
