@@ -287,8 +287,14 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		}
 	}
 
+	// Cap Score at 2 (the maximum for any category is 0-2)
+	score := points
+	if score > 2 {
+		score = 2
+	}
+
 	return models.CategoryScore{
-		Score:           points,
+		Score:           score,
 		RiskPoints:      riskPoints,
 		Description:     description,
 		Evidence:        strings.Join(evidence, "; "),
