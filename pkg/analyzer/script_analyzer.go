@@ -7,8 +7,61 @@ import (
 	"strings"
 )
 
-// Compiled regexes for Maven POM plugin analysis.
-// Used by AnalyzeJavaPOM to extract and inspect plugin configurations.
+// Pre-compiled regexes for script analysis.
+// All *regexp.Regexp objects are safe for concurrent use.
+
+// AnalyzeScript patterns — generic dangerous script operations.
+var (
+	reCurlWgetPipeBash = regexp.MustCompile(`(?i)(curl|wget)\s+.*\|\s*(bash|sh|zsh)`)
+	reEvalCall         = regexp.MustCompile(`(?i)eval\s*\(`)
+	reHTTPDownload     = regexp.MustCompile(`(?i)(curl|wget|fetch|requests\.get|urllib\.request|http\.client).*http://`)
+	reExecDownload     = regexp.MustCompile(`(?i)(curl|wget|fetch).*\.(sh|bash|py|pl|rb|exe|dll|so|dylib)`)
+	reRmRfRoot         = regexp.MustCompile(`(?i)rm\s+(-rf|-fr)\s+/`)
+	reSensitiveEnv     = regexp.MustCompile(`(?i)(process\.env|os\.environ|System\.getenv|getenv)[\[\.]?['"]?(TOKEN|KEY|SECRET|PASSWORD|API|AWS)`)
+	reBase64Decode     = regexp.MustCompile(`(?i)base64\s+(-d|--decode)`)
+	reChmodExec        = regexp.MustCompile(`(?i)chmod\s+(\+x|777)`)
+	reProcessSpawn     = regexp.MustCompile(`(?i)(exec|spawn|child_process|subprocess)\s*\(`)
+	reConfigDirAccess  = regexp.MustCompile(`(?i)(~|/root|/home)/\.(ssh|gnupg|aws|config)`)
+	reSysAuthFile      = regexp.MustCompile(`(?i)/etc/(passwd|shadow|sudoers)`)
+	reNodeEval         = regexp.MustCompile(`(?i)node\s+(-e|--eval)`)
+	rePythonExec       = regexp.MustCompile(`(?i)python\s+(-c|<<)`)
+	reNetcat           = regexp.MustCompile(`(?i)(nc|netcat|telnet)\s+`)
+	reDevTCP           = regexp.MustCompile(`(?i)/dev/tcp/`)
+)
+
+// AnalyzePythonSetup patterns — Python-specific supply chain attack patterns.
+var (
+	rePyCmdclass      = regexp.MustCompile(`(?i)cmdclass\s*=`)
+	rePyNetImport     = regexp.MustCompile(`(?i)import\s+(requests|urllib|http\.client|httplib|httpx|aiohttp)`)
+	rePyNetFromImport = regexp.MustCompile(`(?i)from\s+(requests|urllib|urllib\.request|http\.client|httplib|httpx|aiohttp)\s+import`)
+	rePyDynImport     = regexp.MustCompile(`(?i)__import__\s*\(`)
+	rePyOsExec        = regexp.MustCompile(`(?i)os\.(system|popen|exec[lv]p?e?)\s*\(`)
+	rePySubprocess    = regexp.MustCompile(`(?i)subprocess\.(call|run|Popen|check_output|check_call|getoutput)\s*\(`)
+	rePyBase64Decode  = regexp.MustCompile(`(?i)base64\.(b64decode|decodebytes|decodestring)\s*\(`)
+	rePyExec          = regexp.MustCompile(`(?i)\bexec\s*\(`)
+	rePySocket        = regexp.MustCompile(`(?i)socket\.(socket|create_connection|connect)\s*\(`)
+	rePySocketImport  = regexp.MustCompile(`(?i)import\s+socket`)
+	rePyCodecsDecode  = regexp.MustCompile(`(?i)codecs\.decode\s*\(`)
+	rePyMarshalLoads  = regexp.MustCompile(`(?i)marshal\.loads\s*\(`)
+	rePyCompileExec   = regexp.MustCompile(`(?i)compile\s*\([^)]*,\s*['\"]exec['\"]\s*\)`)
+	rePyCtypes        = regexp.MustCompile(`(?i)(ctypes\.CDLL|ctypes\.cdll|ctypes\.windll)\s*\(`)
+	rePyHexObfuscated = regexp.MustCompile(`(?i)\\x[0-9a-f]{2}(\\x[0-9a-f]{2}){7,}`)
+	rePyWebbrowser    = regexp.MustCompile(`(?i)import\s+webbrowser`)
+)
+
+// analyzeNodeScript patterns — Node.js-specific supply chain attack patterns.
+var (
+	reNodeChildProcess = regexp.MustCompile(`(?i)require\s*\(\s*['"]child_process['"]\s*\)`)
+	reNodeNetModule    = regexp.MustCompile(`(?i)require\s*\(\s*['"](http|https|net|dgram|dns)['"]\s*\)`)
+	reNodeFsWrite      = regexp.MustCompile(`(?i)(?:fs\.writeFileSync|fs\.writeFile|fs\.appendFileSync|fs\.appendFile)\s*\(\s*['"](?:/usr|/etc|/tmp|/var|/bin|/sbin|/opt|~)`)
+	reNodeNewFunction  = regexp.MustCompile(`(?i)new\s+Function\s*\(`)
+	reNodeBase64Buffer = regexp.MustCompile(`(?i)Buffer\.from\s*\([^)]*,\s*['"]base64['"]\s*\)`)
+	reNodeExecSpawn    = regexp.MustCompile(`(?i)(?:execSync|exec|execFile|execFileSync|spawn|spawnSync|fork)\s*\(`)
+	reNodeHTTPRequest  = regexp.MustCompile(`(?i)(?:https?\.get|https?\.request|fetch)\s*\(`)
+	reNodeDNSLookup    = regexp.MustCompile(`(?i)(?:dns\.lookup|dns\.resolve)\s*\(`)
+)
+
+// Maven POM plugin analysis patterns.
 var (
 	pluginBlockRe   = regexp.MustCompile(`(?s)<plugin>.*?</plugin>`)
 	executableRe    = regexp.MustCompile(`(?i)<executable>\s*([^<\s]+)\s*</executable>`)
@@ -64,103 +117,28 @@ func AnalyzeScript(scriptContent string) ScriptAnalysis {
 		DangerousPatterns: []DangerousPattern{},
 	}
 
-	// Define dangerous patterns to check
+	// Dangerous patterns to check (regexes pre-compiled at package level)
 	patterns := []struct {
 		regex       *regexp.Regexp
 		description string
 		severity    string
 		pattern     string
 	}{
-		{
-			regex:       regexp.MustCompile(`(?i)(curl|wget)\s+.*\|\s*(bash|sh|zsh)`),
-			description: "Downloads and executes remote script without verification",
-			severity:    "HIGH",
-			pattern:     "curl/wget | bash",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)eval\s*\(`),
-			description: "Uses eval() which can execute arbitrary code",
-			severity:    "HIGH",
-			pattern:     "eval()",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(curl|wget|fetch|requests\.get|urllib\.request|http\.client).*http://`),
-			description: "Downloads content over unencrypted HTTP",
-			severity:    "MEDIUM",
-			pattern:     "HTTP download",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(curl|wget|fetch).*\.(sh|bash|py|pl|rb|exe|dll|so|dylib)`),
-			description: "Downloads executable or script files",
-			severity:    "HIGH",
-			pattern:     "executable download",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)rm\s+(-rf|-fr)\s+/`),
-			description: "Recursive force delete from root directory",
-			severity:    "HIGH",
-			pattern:     "rm -rf /",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(process\.env|os\.environ|System\.getenv|getenv)[\[\.]?['"]?(TOKEN|KEY|SECRET|PASSWORD|API|AWS)`),
-			description: "Accesses sensitive environment variables",
-			severity:    "HIGH",
-			pattern:     "sensitive env access",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)base64\s+(-d|--decode)`),
-			description: "Decodes base64, potentially to hide malicious code",
-			severity:    "MEDIUM",
-			pattern:     "base64 decode",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)chmod\s+(\+x|777)`),
-			description: "Makes files executable or grants full permissions",
-			severity:    "MEDIUM",
-			pattern:     "chmod +x/777",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(exec|spawn|child_process|subprocess)\s*\(`),
-			description: "Spawns child processes (potential for code execution)",
-			severity:    "MEDIUM",
-			pattern:     "process spawn",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(~|/root|/home)/\.(ssh|gnupg|aws|config)`),
-			description: "Accesses sensitive user configuration directories",
-			severity:    "HIGH",
-			pattern:     "config directory access",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)/etc/(passwd|shadow|sudoers)`),
-			description: "Accesses system authentication files",
-			severity:    "HIGH",
-			pattern:     "system auth file access",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)node\s+(-e|--eval)`),
-			description: "Executes Node.js code from command line",
-			severity:    "MEDIUM",
-			pattern:     "node -e",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)python\s+(-c|<<)`),
-			description: "Executes Python code from command line",
-			severity:    "MEDIUM",
-			pattern:     "python -c",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(nc|netcat|telnet)\s+`),
-			description: "Uses network tools that can exfiltrate data",
-			severity:    "HIGH",
-			pattern:     "netcat/telnet",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)/dev/tcp/`),
-			description: "Opens raw TCP connections",
-			severity:    "HIGH",
-			pattern:     "/dev/tcp",
-		},
+		{reCurlWgetPipeBash, "Downloads and executes remote script without verification", "HIGH", "curl/wget | bash"},
+		{reEvalCall, "Uses eval() which can execute arbitrary code", "HIGH", "eval()"},
+		{reHTTPDownload, "Downloads content over unencrypted HTTP", "MEDIUM", "HTTP download"},
+		{reExecDownload, "Downloads executable or script files", "HIGH", "executable download"},
+		{reRmRfRoot, "Recursive force delete from root directory", "HIGH", "rm -rf /"},
+		{reSensitiveEnv, "Accesses sensitive environment variables", "HIGH", "sensitive env access"},
+		{reBase64Decode, "Decodes base64, potentially to hide malicious code", "MEDIUM", "base64 decode"},
+		{reChmodExec, "Makes files executable or grants full permissions", "MEDIUM", "chmod +x/777"},
+		{reProcessSpawn, "Spawns child processes (potential for code execution)", "MEDIUM", "process spawn"},
+		{reConfigDirAccess, "Accesses sensitive user configuration directories", "HIGH", "config directory access"},
+		{reSysAuthFile, "Accesses system authentication files", "HIGH", "system auth file access"},
+		{reNodeEval, "Executes Node.js code from command line", "MEDIUM", "node -e"},
+		{rePythonExec, "Executes Python code from command line", "MEDIUM", "python -c"},
+		{reNetcat, "Uses network tools that can exfiltrate data", "HIGH", "netcat/telnet"},
+		{reDevTCP, "Opens raw TCP connections", "HIGH", "/dev/tcp"},
 	}
 
 	// Check for each dangerous pattern
@@ -222,108 +200,29 @@ func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 	// These patterns are documented in real-world attacks against PyPI packages.
 	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 	//         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+	// Regexes pre-compiled at package level.
 	pythonPatterns := []struct {
 		regex       *regexp.Regexp
 		description string
 		severity    string
 		pattern     string
 	}{
-		{
-			regex:       regexp.MustCompile(`(?i)cmdclass\s*=`),
-			description: "Overrides setup.py command classes (can execute arbitrary code during install/build)",
-			severity:    "MEDIUM",
-			pattern:     "cmdclass override",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)import\s+(requests|urllib|http\.client|httplib|httpx|aiohttp)`),
-			description: "Imports network libraries during installation — common in data exfiltration attacks",
-			severity:    "MEDIUM",
-			pattern:     "network import",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)from\s+(requests|urllib|urllib\.request|http\.client|httplib|httpx|aiohttp)\s+import`),
-			description: "Imports network libraries during installation — common in data exfiltration attacks",
-			severity:    "MEDIUM",
-			pattern:     "network from-import",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)__import__\s*\(`),
-			description: "Dynamic imports can load arbitrary modules at install time",
-			severity:    "MEDIUM",
-			pattern:     "__import__",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)os\.(system|popen|exec[lv]p?e?)\s*\(`),
-			description: "Executes system commands during installation — direct code execution vector",
-			severity:    "HIGH",
-			pattern:     "os.system/popen/exec",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)subprocess\.(call|run|Popen|check_output|check_call|getoutput)\s*\(`),
-			description: "Spawns subprocesses during installation — used in malicious packages to run payloads",
-			severity:    "HIGH",
-			pattern:     "subprocess call",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)base64\.(b64decode|decodebytes|decodestring)\s*\(`),
-			description: "Decodes base64 data during installation — commonly used to hide malicious payloads",
-			severity:    "HIGH",
-			pattern:     "base64 decode",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)\bexec\s*\(`),
-			description: "Executes dynamically constructed code — primary vector for obfuscated malware in setup.py",
-			severity:    "HIGH",
-			pattern:     "exec()",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)socket\.(socket|create_connection|connect)\s*\(`),
-			description: "Creates network sockets during installation — used for reverse shells and data exfiltration",
-			severity:    "HIGH",
-			pattern:     "socket connection",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)import\s+socket`),
-			description: "Imports socket module during installation — potential network backdoor",
-			severity:    "MEDIUM",
-			pattern:     "socket import",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)codecs\.decode\s*\(`),
-			description: "Uses codecs.decode which can obfuscate malicious strings (e.g., rot13 encoding)",
-			severity:    "MEDIUM",
-			pattern:     "codecs.decode",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)marshal\.loads\s*\(`),
-			description: "Deserializes Python bytecode — can execute arbitrary code without visible source",
-			severity:    "HIGH",
-			pattern:     "marshal.loads",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)compile\s*\([^)]*,\s*['\"]exec['\"]\s*\)`),
-			description: "Compiles code for execution — used to run dynamically generated malicious code",
-			severity:    "HIGH",
-			pattern:     "compile(exec)",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(ctypes\.CDLL|ctypes\.cdll|ctypes\.windll)\s*\(`),
-			description: "Loads native shared libraries — can execute arbitrary native code",
-			severity:    "HIGH",
-			pattern:     "ctypes library load",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)\\x[0-9a-f]{2}(\\x[0-9a-f]{2}){7,}`),
-			description: "Contains hex-escaped byte sequences — common obfuscation technique in malicious packages",
-			severity:    "MEDIUM",
-			pattern:     "hex-obfuscated data",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)import\s+webbrowser`),
-			description: "Imports webbrowser module during installation — can open arbitrary URLs",
-			severity:    "MEDIUM",
-			pattern:     "webbrowser import",
-		},
+		{rePyCmdclass, "Overrides setup.py command classes (can execute arbitrary code during install/build)", "MEDIUM", "cmdclass override"},
+		{rePyNetImport, "Imports network libraries during installation — common in data exfiltration attacks", "MEDIUM", "network import"},
+		{rePyNetFromImport, "Imports network libraries during installation — common in data exfiltration attacks", "MEDIUM", "network from-import"},
+		{rePyDynImport, "Dynamic imports can load arbitrary modules at install time", "MEDIUM", "__import__"},
+		{rePyOsExec, "Executes system commands during installation — direct code execution vector", "HIGH", "os.system/popen/exec"},
+		{rePySubprocess, "Spawns subprocesses during installation — used in malicious packages to run payloads", "HIGH", "subprocess call"},
+		{rePyBase64Decode, "Decodes base64 data during installation — commonly used to hide malicious payloads", "HIGH", "base64 decode"},
+		{rePyExec, "Executes dynamically constructed code — primary vector for obfuscated malware in setup.py", "HIGH", "exec()"},
+		{rePySocket, "Creates network sockets during installation — used for reverse shells and data exfiltration", "HIGH", "socket connection"},
+		{rePySocketImport, "Imports socket module during installation — potential network backdoor", "MEDIUM", "socket import"},
+		{rePyCodecsDecode, "Uses codecs.decode which can obfuscate malicious strings (e.g., rot13 encoding)", "MEDIUM", "codecs.decode"},
+		{rePyMarshalLoads, "Deserializes Python bytecode — can execute arbitrary code without visible source", "HIGH", "marshal.loads"},
+		{rePyCompileExec, "Compiles code for execution — used to run dynamically generated malicious code", "HIGH", "compile(exec)"},
+		{rePyCtypes, "Loads native shared libraries — can execute arbitrary native code", "HIGH", "ctypes library load"},
+		{rePyHexObfuscated, "Contains hex-escaped byte sequences — common obfuscation technique in malicious packages", "MEDIUM", "hex-obfuscated data"},
+		{rePyWebbrowser, "Imports webbrowser module during installation — can open arbitrary URLs", "MEDIUM", "webbrowser import"},
 	}
 
 	for _, p := range pythonPatterns {
@@ -510,60 +409,21 @@ func analyzeNodeScript(content string) ScriptAnalysis {
 	// Node.js-specific patterns documented in real-world npm supply chain attacks.
 	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 	//         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+	// Regexes pre-compiled at package level.
 	nodePatterns := []struct {
 		regex       *regexp.Regexp
 		description string
 		severity    string
 		pattern     string
 	}{
-		{
-			regex:       regexp.MustCompile(`(?i)require\s*\(\s*['"]child_process['"]\s*\)`),
-			description: "Loads child_process module — enables arbitrary command execution at install time",
-			severity:    "HIGH",
-			pattern:     "require(child_process)",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)require\s*\(\s*['"](http|https|net|dgram|dns)['"]\s*\)`),
-			description: "Loads network module at install time — used for data exfiltration and payload download",
-			severity:    "HIGH",
-			pattern:     "require(network module)",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(?:fs\.writeFileSync|fs\.writeFile|fs\.appendFileSync|fs\.appendFile)\s*\(\s*['"](?:/usr|/etc|/tmp|/var|/bin|/sbin|/opt|~)`),
-			description: "Writes to system paths at install time — can modify system files or drop payloads",
-			severity:    "HIGH",
-			pattern:     "fs.write to system path",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)new\s+Function\s*\(`),
-			description: "Dynamically creates function from string — equivalent to eval() for code execution",
-			severity:    "HIGH",
-			pattern:     "new Function()",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)Buffer\.from\s*\([^)]*,\s*['"]base64['"]\s*\)`),
-			description: "Decodes base64 data — commonly used to hide malicious payloads in npm packages",
-			severity:    "MEDIUM",
-			pattern:     "Buffer.from(base64)",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(?:execSync|exec|execFile|execFileSync|spawn|spawnSync|fork)\s*\(`),
-			description: "Executes external commands via child_process — direct code execution vector",
-			severity:    "HIGH",
-			pattern:     "child_process exec",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(?:https?\.get|https?\.request|fetch)\s*\(`),
-			description: "Makes HTTP requests at install time — used for data exfiltration or payload download",
-			severity:    "HIGH",
-			pattern:     "HTTP request",
-		},
-		{
-			regex:       regexp.MustCompile(`(?i)(?:dns\.lookup|dns\.resolve)\s*\(`),
-			description: "Performs DNS lookups at install time — used for DNS-based data exfiltration",
-			severity:    "MEDIUM",
-			pattern:     "DNS lookup",
-		},
+		{reNodeChildProcess, "Loads child_process module — enables arbitrary command execution at install time", "HIGH", "require(child_process)"},
+		{reNodeNetModule, "Loads network module at install time — used for data exfiltration and payload download", "HIGH", "require(network module)"},
+		{reNodeFsWrite, "Writes to system paths at install time — can modify system files or drop payloads", "HIGH", "fs.write to system path"},
+		{reNodeNewFunction, "Dynamically creates function from string — equivalent to eval() for code execution", "HIGH", "new Function()"},
+		{reNodeBase64Buffer, "Decodes base64 data — commonly used to hide malicious payloads in npm packages", "MEDIUM", "Buffer.from(base64)"},
+		{reNodeExecSpawn, "Executes external commands via child_process — direct code execution vector", "HIGH", "child_process exec"},
+		{reNodeHTTPRequest, "Makes HTTP requests at install time — used for data exfiltration or payload download", "HIGH", "HTTP request"},
+		{reNodeDNSLookup, "Performs DNS lookups at install time — used for DNS-based data exfiltration", "MEDIUM", "DNS lookup"},
 	}
 
 	for _, p := range nodePatterns {
