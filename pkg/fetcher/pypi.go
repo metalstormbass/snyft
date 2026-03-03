@@ -83,10 +83,13 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	// Source: PyPI JSON API — project_urls is an arbitrary string→URL map.
 	pkg.RepositoryURL = extractPyPIRepoURL(pypiResp.Info)
 
-	// Get author as maintainer
-	if pypiResp.Info.Author != "" {
-		pkg.Maintainers = []string{pypiResp.Info.Author}
-	}
+	// Extract maintainers from all available PyPI metadata fields.
+	// Modern packages using pyproject.toml populate author_email instead of author.
+	// The maintainer/maintainer_email fields are used when a separate maintainer
+	// is designated. We check all fields to avoid missing maintainer data.
+	// Source: PyPI JSON API docs — info.author, info.author_email, info.maintainer,
+	//         info.maintainer_email fields
+	pkg.Maintainers = extractPyPIMaintainers(pypiResp.Info)
 
 	// PyPI doesn't provide download counts in the JSON API directly
 	pkg.Downloads = 0
@@ -115,14 +118,17 @@ type PyPIURL struct {
 }
 
 type PyPIInfo struct {
-	Name         string            `json:"name"`
-	Version      string            `json:"version"`
-	Author       string            `json:"author"`
-	License      string            `json:"license"`
-	HomePage     string            `json:"home_page"`
-	ProjectURL   string            `json:"project_url"`
-	ProjectURLs  map[string]string `json:"project_urls"`
-	RequiresDist []string          `json:"requires_dist"`
+	Name            string            `json:"name"`
+	Version         string            `json:"version"`
+	Author          string            `json:"author"`
+	AuthorEmail     string            `json:"author_email"`
+	Maintainer      string            `json:"maintainer"`
+	MaintainerEmail string            `json:"maintainer_email"`
+	License         string            `json:"license"`
+	HomePage        string            `json:"home_page"`
+	ProjectURL      string            `json:"project_url"`
+	ProjectURLs     map[string]string `json:"project_urls"`
+	RequiresDist    []string          `json:"requires_dist"`
 }
 
 // extractPyPIRepoURL extracts the best available source-code repository URL from
@@ -170,6 +176,125 @@ func extractPyPIRepoURL(info PyPIInfo) string {
 	}
 
 	return ""
+}
+
+// extractPyPIMaintainers extracts maintainer names from all available PyPI info fields.
+// Modern Python packages using pyproject.toml populate author_email (e.g.
+// "Name <email>, Name2 <email2>") while leaving the author field empty.
+// We check author, author_email, maintainer, and maintainer_email fields,
+// deduplicating by name to produce an accurate maintainer count.
+//
+// Justification: Accurate maintainer count is critical for single-maintainer
+// detection — the #1 supply chain compromise risk signal.
+// Source: PyPI JSON API docs, PEP 621 (pyproject.toml metadata)
+func extractPyPIMaintainers(info PyPIInfo) []string {
+	seen := make(map[string]bool)
+	var maintainers []string
+
+	addName := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		// For dedup, use only the name part (before "<") so that
+		// "Tom Christie" and "Tom Christie <tom@example.com>" are recognized
+		// as the same person. The entry with the email is preferred for
+		// downstream email domain analysis.
+		dedupKey := strings.ToLower(name)
+		if idx := strings.Index(dedupKey, "<"); idx > 0 {
+			dedupKey = strings.TrimSpace(dedupKey[:idx])
+		}
+		if seen[dedupKey] {
+			return
+		}
+		seen[dedupKey] = true
+		maintainers = append(maintainers, name)
+	}
+
+	// Parse a "Name <email>, Name2 <email2>" formatted string into individual entries.
+	// This format is used by pyproject.toml's authors/maintainers lists when serialized
+	// to the author_email/maintainer_email fields.
+	parseEmailList := func(emailList string) {
+		if emailList == "" {
+			return
+		}
+		// Split on commas that are NOT inside angle brackets.
+		// e.g. "Sam <s@x.com>, Eric <e@x.com>" → ["Sam <s@x.com>", "Eric <e@x.com>"]
+		entries := splitEmailList(emailList)
+		for _, entry := range entries {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			// Extract name from "Name <email>" format
+			if idx := strings.Index(entry, "<"); idx > 0 {
+				name := strings.TrimSpace(entry[:idx])
+				if name != "" {
+					email := ""
+					if end := strings.Index(entry, ">"); end > idx {
+						email = entry[idx+1 : end]
+					}
+					if email != "" {
+						addName(name + " <" + email + ">")
+					} else {
+						addName(name)
+					}
+					continue
+				}
+			}
+			// Bare email or name without angle brackets
+			addName(entry)
+		}
+	}
+
+	// Priority 1: maintainer/maintainer_email (explicitly designated maintainer)
+	if info.Maintainer != "" {
+		addName(info.Maintainer)
+	}
+	parseEmailList(info.MaintainerEmail)
+
+	// Priority 2: author/author_email (package author)
+	if info.Author != "" {
+		addName(info.Author)
+	}
+	parseEmailList(info.AuthorEmail)
+
+	return maintainers
+}
+
+// splitEmailList splits a comma-separated email list like
+// "Name1 <a@b.com>, Name2 <c@d.com>" into individual entries,
+// correctly handling commas inside angle brackets (which shouldn't occur
+// in practice but we handle defensively).
+func splitEmailList(s string) []string {
+	var entries []string
+	var current strings.Builder
+	depth := 0
+	for _, ch := range s {
+		switch ch {
+		case '<':
+			depth++
+			current.WriteRune(ch)
+		case '>':
+			if depth > 0 {
+				depth--
+			}
+			current.WriteRune(ch)
+		case ',':
+			if depth == 0 {
+				entries = append(entries, current.String())
+				current.Reset()
+			} else {
+				current.WriteRune(ch)
+			}
+		default:
+			current.WriteRune(ch)
+		}
+	}
+	if current.Len() > 0 {
+		entries = append(entries, current.String())
+	}
+	return entries
 }
 
 // countRequiresDist counts required (non-extra) dependencies from requires_dist.
@@ -448,15 +573,28 @@ func (c *PyPIClient) GetOwnershipHistory(packageName string) (*PyPIOwnershipHist
 		return nil, fmt.Errorf("failed to decode PyPI response: %w", err)
 	}
 
+	// Use the full maintainer extraction to get current author, falling back
+	// to just the author field for backward compatibility.
+	currentAuthor := pypiResp.Info.Author
+	if currentAuthor == "" {
+		// Try author_email, maintainer, maintainer_email
+		maintainers := extractPyPIMaintainers(pypiResp.Info)
+		if len(maintainers) > 0 {
+			currentAuthor = maintainers[0]
+		}
+	}
+
 	history := &PyPIOwnershipHistory{
-		CurrentAuthor:     pypiResp.Info.Author,
+		CurrentAuthor:     currentAuthor,
 		HistoricalAuthors: []string{},
 		AuthorChanges:     0,
 		RecentTransfer:    false,
 	}
 
 	allAuthors := make(map[string]bool)
-	allAuthors[pypiResp.Info.Author] = true
+	if currentAuthor != "" {
+		allAuthors[currentAuthor] = true
+	}
 
 	// Analyze releases for author changes
 	type releaseInfo struct {
