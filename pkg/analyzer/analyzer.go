@@ -416,56 +416,62 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		}
 	}
 
-	// Wait for all data collection steps to complete before scoring
-	wg.Wait()
-
-	// Clean up the bare clone temp directory now that all data has been extracted.
-	// Wait for clone to finish first if it hasn't already.
+	// Clean up the bare clone as soon as all clone-dependent work finishes.
+	// This runs concurrently with other goroutines — any file reads that arrive
+	// after cleanup will fall back to API/scraping via GetFileContent.
 	if cloneDone != nil {
-		<-cloneDone
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-cloneDone // Wait for clone to finish
 
-		// Analyze actual script files referenced by npm install hooks.
-		// Uses the bare clone (no API calls) to read files like scripts/postinstall.js
-		// that are pointed to by package.json hook commands.
-		if dep.Ecosystem == models.EcosystemNPM && result.Metadata.HasInstallScripts && len(result.Metadata.InstallScripts) > 0 {
-			gitClient := a.getGitClient(repoURL)
-			readFile := func(path string) (string, error) {
-				return gitClient.GetFileContent(repoURL, path)
-			}
-			filePatterns := AnalyzeNPMScriptFiles(result.Metadata.InstallScripts, readFile)
-			if len(filePatterns) > 0 {
-				if result.Metadata.InstallScriptAnalysis == nil {
-					result.Metadata.InstallScriptAnalysis = &models.InstallScriptAnalysis{}
+			// Analyze actual script files referenced by npm install hooks.
+			// Uses the bare clone (no API calls) to read files like scripts/postinstall.js
+			// that are pointed to by package.json hook commands.
+			if dep.Ecosystem == models.EcosystemNPM && result.Metadata.HasInstallScripts && len(result.Metadata.InstallScripts) > 0 {
+				gitClient := a.getGitClient(repoURL)
+				readFile := func(path string) (string, error) {
+					return gitClient.GetFileContent(repoURL, path)
 				}
-				for _, p := range filePatterns {
-					result.Metadata.InstallScriptAnalysis.DangerousPatterns = append(
-						result.Metadata.InstallScriptAnalysis.DangerousPatterns,
-						models.DangerousPattern{
-							Pattern:     p.Pattern,
-							Description: p.Description,
-							Severity:    p.Severity,
-							Match:       p.Match,
-						},
-					)
-				}
-				result.Metadata.InstallScriptAnalysis.HasDangerousPatterns = true
-				// Recalculate risk level after merging file-level findings
-				highCount := 0
-				for _, p := range result.Metadata.InstallScriptAnalysis.DangerousPatterns {
-					if p.Severity == "HIGH" {
-						highCount++
+				filePatterns := AnalyzeNPMScriptFiles(result.Metadata.InstallScripts, readFile)
+				if len(filePatterns) > 0 {
+					if result.Metadata.InstallScriptAnalysis == nil {
+						result.Metadata.InstallScriptAnalysis = &models.InstallScriptAnalysis{}
+					}
+					for _, p := range filePatterns {
+						result.Metadata.InstallScriptAnalysis.DangerousPatterns = append(
+							result.Metadata.InstallScriptAnalysis.DangerousPatterns,
+							models.DangerousPattern{
+								Pattern:     p.Pattern,
+								Description: p.Description,
+								Severity:    p.Severity,
+								Match:       p.Match,
+							},
+						)
+					}
+					result.Metadata.InstallScriptAnalysis.HasDangerousPatterns = true
+					// Recalculate risk level after merging file-level findings
+					highCount := 0
+					for _, p := range result.Metadata.InstallScriptAnalysis.DangerousPatterns {
+						if p.Severity == "HIGH" {
+							highCount++
+						}
+					}
+					if highCount > 0 {
+						result.Metadata.InstallScriptAnalysis.RiskLevel = "HIGH"
+					} else {
+						result.Metadata.InstallScriptAnalysis.RiskLevel = "MEDIUM"
 					}
 				}
-				if highCount > 0 {
-					result.Metadata.InstallScriptAnalysis.RiskLevel = "HIGH"
-				} else {
-					result.Metadata.InstallScriptAnalysis.RiskLevel = "MEDIUM"
-				}
 			}
-		}
 
-		a.githubClient.CleanupClone(repoURL)
+			// Clean up immediately — don't hold the clone directory on disk
+			a.githubClient.CleanupClone(repoURL)
+		}()
 	}
+
+	// Wait for all data collection steps to complete before scoring
+	wg.Wait()
 
 	// Calculate supply chain score (0-20 point rubric, 10 categories)
 	a.calculateSupplyChainScore(&result)
