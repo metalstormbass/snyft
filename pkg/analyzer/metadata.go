@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/fetcher"
@@ -13,9 +14,28 @@ import (
 	"github.com/metalstormbass/snyft/pkg/parser"
 )
 
+// addFindingSafe appends a finding to result.Findings, using the mutex if non-nil.
+// When mu is nil (e.g. in tests or sequential code), appends directly without locking.
+func addFindingSafe(mu *sync.Mutex, result *models.AnalysisResult, f models.Finding) {
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	result.Findings = append(result.Findings, f)
+}
+
+// addRiskFactorSafe appends a risk factor to result.RiskFactors, using the mutex if non-nil.
+func addRiskFactorSafe(mu *sync.Mutex, result *models.AnalysisResult, rf string) {
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	result.RiskFactors = append(result.RiskFactors, rf)
+}
+
 // verifySourceCode performs primary source code availability verification
 // This is the FIRST check before any other scoring
-func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.Dependency, repoURL string) {
+func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.Dependency, repoURL string, mu *sync.Mutex) {
 	// Skip version-dependent source verification when version could not be
 	// determined (e.g. Maven BOM imports, unresolved property references).
 	// An undetermined version is a parser limitation, not a supply chain risk.
@@ -56,7 +76,7 @@ func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.De
 				if repoSrcURL != "" {
 					sourceLink = repoSrcURL
 				}
-				result.Findings = append(result.Findings, models.Finding{
+				addFindingSafe(mu, result, models.Finding{
 					Severity:    "HIGH",
 					Category:    "Source Code Verification Failed",
 					Description: "No verifiable source code found for this exact version",
@@ -64,9 +84,9 @@ func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.De
 					Evidence:    strings.Join(sourceVerification.VerificationErrors, "; "),
 					SourceURL:   sourceLink,
 				})
-				result.RiskFactors = append(result.RiskFactors, "No verifiable source code for exact version")
+				addRiskFactorSafe(mu, result, "No verifiable source code for exact version")
 			} else if !sourceVerification.HasSourcePackage {
-				result.Findings = append(result.Findings, models.Finding{
+				addFindingSafe(mu, result, models.Finding{
 					Severity:    "HIGH",
 					Category:    "Missing Source Package",
 					Description: "Package distribution lacks source code",
@@ -74,12 +94,12 @@ func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.De
 					Evidence:    sourceVerification.Details,
 					SourceURL:   srcURL,
 				})
-				result.RiskFactors = append(result.RiskFactors, "No source package available")
+				addRiskFactorSafe(mu, result, "No source package available")
 			} else if !sourceVerification.HasMatchingGitTag && repoURL != "" {
 				// Only flag a missing git tag when a repository URL was available and
 				// a tag check was actually attempted. When repoURL is empty the check
 				// was never performed, so HasMatchingGitTag == false is not actionable.
-				result.Findings = append(result.Findings, models.Finding{
+				addFindingSafe(mu, result, models.Finding{
 					Severity:    "MEDIUM",
 					Category:    "Missing Git Tag",
 					Description: fmt.Sprintf("No git tag found for version %s in repository", dep.Version),
@@ -87,18 +107,18 @@ func (a *Analyzer) verifySourceCode(result *models.AnalysisResult, dep models.De
 					Evidence:    "Cannot verify build corresponds to repository state",
 					SourceURL:   repoSrcURL + "/tags",
 				})
-				result.RiskFactors = append(result.RiskFactors, "No matching git tag for version")
+				addRiskFactorSafe(mu, result, "No matching git tag for version")
 			}
 		}
 	}
 }
 
-func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL string) {
+func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL string, mu *sync.Mutex) {
 	repoSrcURL := repoSourceURL(repoURL)
 	gitClient := a.getGitClient(repoURL)
 	repoInfo, err := gitClient.GetRepositoryInfo(repoURL)
 	if err != nil {
-		result.Findings = append(result.Findings, models.Finding{
+		addFindingSafe(mu, result, models.Finding{
 			Severity:    "MEDIUM",
 			Category:    "Repository Access",
 			Description: fmt.Sprintf("Failed to fetch repository info: %v", err),
@@ -125,14 +145,14 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 
 	// Check for concerning signals
 	if repoInfo.Archived {
-		result.Findings = append(result.Findings, models.Finding{
+		addFindingSafe(mu, result, models.Finding{
 			Severity:    "HIGH",
 			Category:    "Archived Repository",
 			Description: "The repository is archived and no longer maintained",
 			Check:       "Repository Status Check",
 			SourceURL:   repoSrcURL,
 		})
-		result.RiskFactors = append(result.RiskFactors, "Archived repository")
+		addRiskFactorSafe(mu, result, "Archived repository")
 	}
 
 	// Check last commit age
@@ -141,14 +161,14 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 	if !repoInfo.PushedAt.IsZero() {
 		daysSinceLastCommit := time.Since(repoInfo.PushedAt).Hours() / 24
 		if daysSinceLastCommit > 365 {
-			result.Findings = append(result.Findings, models.Finding{
+			addFindingSafe(mu, result, models.Finding{
 				Severity:    "MEDIUM",
 				Category:    "Stale Repository",
 				Description: fmt.Sprintf("No commits in the last %.0f days", daysSinceLastCommit),
 				Check:       "Repository Activity Check",
 				SourceURL:   repoSrcURL + "/commits",
 			})
-			result.RiskFactors = append(result.RiskFactors, "Inactive development")
+			addRiskFactorSafe(mu, result, "Inactive development")
 		}
 	}
 
@@ -157,14 +177,14 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 	// or scraper returned data; Stars == 0 could mean the count was never populated,
 	// which would produce a false positive for large, popular projects).
 	if repoInfo.Stars > 0 && repoInfo.Stars < 10 && repoInfo.Forks < 5 {
-		result.Findings = append(result.Findings, models.Finding{
+		addFindingSafe(mu, result, models.Finding{
 			Severity:    "MEDIUM",
 			Category:    "Low Community Engagement",
 			Description: "Package has minimal community engagement (low stars/forks)",
 			Check:       "Community Engagement Check",
 			SourceURL:   repoSrcURL,
 		})
-		result.RiskFactors = append(result.RiskFactors, "Limited community adoption")
+		addRiskFactorSafe(mu, result, "Limited community adoption")
 	}
 }
 
@@ -237,7 +257,7 @@ func (a *Analyzer) analyzeDependencySprawl(result *models.AnalysisResult, dep mo
 	}
 }
 
-func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, repoURL string) {
+func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, repoURL string, mu *sync.Mutex) {
 	if repoURL == "" {
 		return
 	}
@@ -326,7 +346,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 	ciSourceURL := repoSourceURL(repoURL) + "/actions"
 	for _, ciRisk := range result.Metadata.CIWorkflowRisks {
 		if ciRisk.HasScriptInjection {
-			result.Findings = append(result.Findings, models.Finding{
+			addFindingSafe(mu, result, models.Finding{
 				Severity:    "HIGH",
 				Category:    "CI Script Injection",
 				Description: fmt.Sprintf("Script injection risk detected in %s workflow: untrusted input interpolated into run steps", ciRisk.Platform),
@@ -334,10 +354,10 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 				Evidence:    strings.Join(ciRisk.Details, "; "),
 				SourceURL:   ciSourceURL,
 			})
-			result.RiskFactors = append(result.RiskFactors, "CI workflow vulnerable to script injection")
+			addRiskFactorSafe(mu, result, "CI workflow vulnerable to script injection")
 		}
 		if len(ciRisk.DangerousTriggers) > 0 {
-			result.Findings = append(result.Findings, models.Finding{
+			addFindingSafe(mu, result, models.Finding{
 				Severity:    "HIGH",
 				Category:    "Dangerous CI Triggers",
 				Description: fmt.Sprintf("Dangerous workflow triggers in %s: %s", ciRisk.Platform, strings.Join(ciRisk.DangerousTriggers, ", ")),
@@ -345,10 +365,10 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 				Evidence:    strings.Join(ciRisk.Details, "; "),
 				SourceURL:   ciSourceURL,
 			})
-			result.RiskFactors = append(result.RiskFactors, "CI workflow uses dangerous triggers")
+			addRiskFactorSafe(mu, result, "CI workflow uses dangerous triggers")
 		}
 		if ciRisk.HasExcessivePermissions {
-			result.Findings = append(result.Findings, models.Finding{
+			addFindingSafe(mu, result, models.Finding{
 				Severity:    "MEDIUM",
 				Category:    "Excessive CI Permissions",
 				Description: fmt.Sprintf("Overly broad permissions in %s workflow (violates least privilege)", ciRisk.Platform),
@@ -358,7 +378,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 			})
 		}
 		if len(ciRisk.UnpinnedActions) > 0 {
-			result.Findings = append(result.Findings, models.Finding{
+			addFindingSafe(mu, result, models.Finding{
 				Severity:    "MEDIUM",
 				Category:    "Unpinned CI Dependencies",
 				Description: fmt.Sprintf("%d unpinned actions/orbs in %s (vulnerable to tag hijacking)", len(ciRisk.UnpinnedActions), ciRisk.Platform),
@@ -368,7 +388,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 			})
 		}
 		if ciRisk.MissingEnvironmentProtection {
-			result.Findings = append(result.Findings, models.Finding{
+			addFindingSafe(mu, result, models.Finding{
 				Severity:    "MEDIUM",
 				Category:    "Missing CI Environment Protection",
 				Description: fmt.Sprintf("Publish/deploy workflow in %s lacks environment protection rules (no manual approval gate)", ciRisk.Platform),
@@ -391,7 +411,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 		result.BuildInfrastructure = "CI detected: " + strings.Join(descriptions, ", ")
 
 		if result.Metadata.HasSelfHosted {
-			result.Findings = append(result.Findings, models.Finding{
+			addFindingSafe(mu, result, models.Finding{
 				Severity:    "HIGH",
 				Category:    "Self-Hosted CI Runners",
 				Description: "Self-hosted CI runners detected: build environment is not controlled by a trusted cloud provider",
@@ -399,18 +419,18 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 				Evidence:    result.BuildInfrastructure,
 				SourceURL:   ciSourceURL,
 			})
-			result.RiskFactors = append(result.RiskFactors, "Self-hosted build runners (uncontrolled build environment)")
+			addRiskFactorSafe(mu, result, "Self-hosted build runners (uncontrolled build environment)")
 		}
 	} else {
 		result.BuildInfrastructure = "No CI detected"
-		result.Findings = append(result.Findings, models.Finding{
+		addFindingSafe(mu, result, models.Finding{
 			Severity:    "MEDIUM",
 			Category:    "No CI/CD",
 			Description: "No continuous integration system detected",
 			Check:       "CI/CD Detection Check",
 			SourceURL:   repoSourceURL(repoURL),
 		})
-		result.RiskFactors = append(result.RiskFactors, "No automated build verification")
+		addRiskFactorSafe(mu, result, "No automated build verification")
 	}
 
 	// Check for automated release process
@@ -421,7 +441,7 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 	} else if err == nil && hasReleases {
 		result.Metadata.HasReleaseProcess = true
 	} else {
-		result.Findings = append(result.Findings, models.Finding{
+		addFindingSafe(mu, result, models.Finding{
 			Severity:    "LOW",
 			Category:    "Manual Releases",
 			Description: "No evidence of automated release process",
@@ -462,7 +482,7 @@ func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL s
 	}
 }
 
-func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL string) {
+func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL string, mu *sync.Mutex) {
 	scorecard, err := a.ossfClient.GetScorecard(repoURL)
 	if err != nil {
 		// OSSF scorecard may not be available for all projects
@@ -473,14 +493,14 @@ func (a *Analyzer) analyzeOSSFScorecard(result *models.AnalysisResult, repoURL s
 	result.Metadata.OSSFChecks = scorecard.Checks
 
 	if scorecard.Score < 5.0 {
-		result.Findings = append(result.Findings, models.Finding{
+		addFindingSafe(mu, result, models.Finding{
 			Severity:    "MEDIUM",
 			Category:    "Low OSSF Score",
 			Description: fmt.Sprintf("OpenSSF Scorecard overall score is %.1f/10 — indicates weak supply chain security practices across multiple dimensions (branch protection, code review, signed releases, dependency management)", scorecard.Score),
 			Check:       "OSSF Scorecard Check",
 			SourceURL:   ossfScorecardURL(repoURL),
 		})
-		result.RiskFactors = append(result.RiskFactors, "Low supply chain security score")
+		addRiskFactorSafe(mu, result, "Low supply chain security score")
 	}
 }
 

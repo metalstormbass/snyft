@@ -2302,7 +2302,7 @@ func TestVerifySourceCode(t *testing.T) {
 				Findings:   []models.Finding{},
 			}
 
-			analyzer.verifySourceCode(&result, tt.dep, tt.repoURL)
+			analyzer.verifySourceCode(&result, tt.dep, tt.repoURL, nil)
 
 			if tt.expectSourceVerification && result.SourceVerification == nil {
 				t.Error("Expected SourceVerification to be populated")
@@ -2542,7 +2542,7 @@ func TestSourceVerificationIntegrationInAnalyzer(t *testing.T) {
 		}
 
 		analyzer := NewAnalyzer()
-		analyzer.verifySourceCode(&result, result.Dependency, "") // No repo URL = no API calls
+		analyzer.verifySourceCode(&result, result.Dependency, "", nil) // No repo URL = no API calls
 
 		if result.SourceVerification == nil {
 			t.Error("Expected SourceVerification to be populated")
