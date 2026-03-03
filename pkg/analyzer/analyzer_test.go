@@ -1251,14 +1251,12 @@ func TestScoreInstallExecution_HighRisk_PythonSetupPy(t *testing.T) {
 }
 
 func TestScoreInstallExecution_HighRisk_MavenPOM(t *testing.T) {
-	// Test: Maven pom.xml with exec-maven-plugin in a low-trust package
-	// Justification: Maven plugins can execute arbitrary code during build lifecycle;
-	//                a low-trust package with exec plugins is a direct compromise vector
+	// Test: Maven pom.xml with exec-maven-plugin
+	// Justification: Maven plugins can execute arbitrary code during build lifecycle
 	// Source: "Software Supply Chain Attacks on Package Managers for Interpreted Languages" (Ohm et al., 2020)
 	//         https://arxiv.org/abs/2002.01139
 	//         Maven Security documentation on plugin risks
 	// Methodology: Analyzed pom.xml for dangerous plugins (exec-maven-plugin, maven-antrun-plugin)
-	// Result: Assigns 2 risk points when package lacks strong trust signals
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
@@ -1283,60 +1281,7 @@ func TestScoreInstallExecution_HighRisk_MavenPOM(t *testing.T) {
 	score := analyzer.scoreInstallExecution(result)
 
 	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for dangerous pom.xml in low-trust package, got %d", score.RiskPoints)
-	}
-}
-
-func TestScoreInstallExecution_ModerateRisk_MavenPOM_HighTrust(t *testing.T) {
-	// Test: Maven pom.xml with exec-maven-plugin in a high-trust package
-	// Justification: Well-established packages (many stars, forks, maintainers) use build
-	//                plugins for legitimate purposes (benchmarks, doc generation, native
-	//                compilation). The large contributor base means many eyes watch for
-	//                malicious changes, reducing compromise likelihood.
-	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — packages with
-	//         larger contributor bases have lower compromise probability
-	// Methodology: Checked trust signals (stars >= 1000, forks >= 100, maintainers >= 5);
-	//              if any 2 are met, downgrade from 2 to 1 risk point
-	// Result: Assigns 1 risk point when package has strong trust signals
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasInstallScripts: true,
-			InstallScripts: map[string]string{
-				"pom.xml": "<plugin><artifactId>exec-maven-plugin</artifactId></plugin>",
-			},
-			InstallScriptAnalysis: &models.InstallScriptAnalysis{
-				HasDangerousPatterns: true,
-				DangerousPatterns: []models.DangerousPattern{
-					{
-						Pattern:     "exec-maven-plugin",
-						Description: "Arbitrary command execution during build",
-						Severity:    "HIGH",
-					},
-				},
-				RiskLevel: "HIGH",
-			},
-			RepoStars: 1500,
-			RepoForks: 200,
-			Maintainers: []string{
-				"maintainer1", "maintainer2", "maintainer3",
-				"maintainer4", "maintainer5", "maintainer6",
-			},
-		},
-	}
-
-	score := analyzer.scoreInstallExecution(result)
-
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for dangerous pom.xml in high-trust package, got %d", score.RiskPoints)
-	}
-
-	if !strings.Contains(score.Description, "well-established package") {
-		t.Errorf("Description should mention well-established package, got: %s", score.Description)
-	}
-
-	if !strings.Contains(score.Evidence, "Trust signals") {
-		t.Errorf("Evidence should include trust signals, got: %s", score.Evidence)
+		t.Errorf("Expected 2 risk points for dangerous pom.xml, got %d", score.RiskPoints)
 	}
 }
 

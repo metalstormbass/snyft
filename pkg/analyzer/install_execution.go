@@ -62,7 +62,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 		}
 	}
 
-	// If we have script analysis with dangerous patterns, score based on trust profile
+	// If we have script analysis with dangerous patterns, return worst score
 	if result.Metadata.InstallScriptAnalysis != nil && result.Metadata.InstallScriptAnalysis.HasDangerousPatterns {
 		patterns := []string{}
 		patternNames := []string{}
@@ -77,39 +77,6 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 				Status: "FAIL",
 				Detail: fmt.Sprintf("%s (severity: %s, match: %s)", p.Description, p.Severity, p.Match),
 			})
-		}
-
-		// Check if the package has a high-trust profile that reduces compromise likelihood.
-		// Well-established packages (many stars, forks, maintainers) use build plugins for
-		// legitimate purposes; the risk is lower because many eyes watch for malicious changes.
-		// Source: "Small World with High Risks" (Zimmermann et al., 2019) — packages with
-		// larger contributor bases have lower compromise probability.
-		trustSignals := 0
-		if result.Metadata.RepoStars >= 1000 {
-			trustSignals++
-		}
-		if result.Metadata.RepoForks >= 100 {
-			trustSignals++
-		}
-		if len(result.Metadata.Maintainers) >= 5 {
-			trustSignals++
-		}
-
-		if trustSignals >= 2 {
-			checks = append(checks, models.CheckResult{
-				Name:   "Package trust profile",
-				Status: "PASS",
-				Detail: fmt.Sprintf("High-trust package (stars: %d, forks: %d, maintainers: %d) — build plugins likely used for legitimate purposes", result.Metadata.RepoStars, result.Metadata.RepoForks, len(result.Metadata.Maintainers)),
-			})
-			return models.CategoryScore{
-				Score:       0,
-				RiskPoints:  1,
-				Description: fmt.Sprintf("Build plugins detected (%s), but this is a well-established package with strong trust signals. Build plugins in high-trust packages typically represent legitimate tooling (benchmarks, documentation generation, native compilation) rather than a compromise vector.", strings.Join(patternNames, ", ")),
-				Evidence:    fmt.Sprintf("Risk level: %s, Patterns: %s, Trust signals: stars=%d forks=%d maintainers=%d", result.Metadata.InstallScriptAnalysis.RiskLevel, strings.Join(patterns, ", "), result.Metadata.RepoStars, result.Metadata.RepoForks, len(result.Metadata.Maintainers)),
-				Verified:    true,
-				Methodology: methodology,
-				ChecksPerformed: checks,
-			}
 		}
 
 		return models.CategoryScore{
