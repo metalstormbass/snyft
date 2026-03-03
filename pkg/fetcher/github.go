@@ -114,19 +114,34 @@ type cachedIssueResponseTime struct {
 }
 
 type repoCache struct {
-	mu                sync.RWMutex
-	repoInfo          map[string]*models.RepositoryInfo   // key: "owner/repo"
-	releases          map[string][]GitHubRelease          // key: "owner/repo"
-	fileExists        map[string]bool                     // key: "owner/repo/path"
-	tags              map[string][]string                 // key: "owner/repo" → all discovered tag names
-	commitStats       map[string]*CommitStats             // key: "owner/repo"
-	commitAuthors     map[string]*CommitAuthorStats       // key: "owner/repo"
-	signedCommits     map[string]*cachedSignedCommits     // key: "owner/repo"
-	prStats           map[string]*PRStats                 // key: "owner/repo"
-	branchProtection  map[string]*cachedBranchProtection  // key: "owner/repo"
-	issueResponseTime map[string]*cachedIssueResponseTime // key: "owner/repo"
-	workflowFiles     map[string][]string                 // key: "owner/repo"
-	cloneData         map[string]*gitCloneData            // key: "owner/repo" — data from bare git clone
+	muRepoInfo          sync.RWMutex
+	repoInfo            map[string]*models.RepositoryInfo // key: "owner/repo"
+	muReleases          sync.RWMutex
+	releases            map[string][]GitHubRelease // key: "owner/repo"
+	muFileExists        sync.RWMutex
+	fileExists          map[string]bool // key: "owner/repo/path"
+	muIdentity          sync.RWMutex
+	identity            map[string]*cachedIdentity // key: owner (user/org identity)
+	muOrgInfo           sync.RWMutex
+	orgInfo             map[string]*cachedOrgInfo // key: owner (org details)
+	muTags              sync.RWMutex
+	tags                map[string][]string // key: "owner/repo" → all discovered tag names
+	muCommitStats       sync.RWMutex
+	commitStats         map[string]*CommitStats // key: "owner/repo"
+	muCommitAuthors     sync.RWMutex
+	commitAuthors       map[string]*CommitAuthorStats // key: "owner/repo"
+	muSignedCommits     sync.RWMutex
+	signedCommits       map[string]*cachedSignedCommits // key: "owner/repo"
+	muPRStats           sync.RWMutex
+	prStats             map[string]*PRStats // key: "owner/repo"
+	muBranchProtection  sync.RWMutex
+	branchProtection    map[string]*cachedBranchProtection // key: "owner/repo"
+	muIssueResponseTime sync.RWMutex
+	issueResponseTime   map[string]*cachedIssueResponseTime // key: "owner/repo"
+	muWorkflowFiles     sync.RWMutex
+	workflowFiles       map[string][]string // key: "owner/repo"
+	muCloneData         sync.RWMutex
+	cloneData           map[string]*gitCloneData // key: "owner/repo" — data from bare git clone
 }
 
 func newRepoCache() *repoCache {
@@ -134,6 +149,8 @@ func newRepoCache() *repoCache {
 		repoInfo:          make(map[string]*models.RepositoryInfo),
 		releases:          make(map[string][]GitHubRelease),
 		fileExists:        make(map[string]bool),
+		identity:          make(map[string]*cachedIdentity),
+		orgInfo:           make(map[string]*cachedOrgInfo),
 		tags:              make(map[string][]string),
 		commitStats:       make(map[string]*CommitStats),
 		commitAuthors:     make(map[string]*CommitAuthorStats),
@@ -147,145 +164,171 @@ func newRepoCache() *repoCache {
 }
 
 func (rc *repoCache) getRepoInfo(key string) (*models.RepositoryInfo, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muRepoInfo.RLock()
+	defer rc.muRepoInfo.RUnlock()
 	v, ok := rc.repoInfo[key]
 	return v, ok
 }
 
 func (rc *repoCache) setRepoInfo(key string, info *models.RepositoryInfo) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muRepoInfo.Lock()
+	defer rc.muRepoInfo.Unlock()
 	rc.repoInfo[key] = info
 }
 
 func (rc *repoCache) getCachedReleases(key string) ([]GitHubRelease, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muReleases.RLock()
+	defer rc.muReleases.RUnlock()
 	v, ok := rc.releases[key]
 	return v, ok
 }
 
 func (rc *repoCache) setCachedReleases(key string, releases []GitHubRelease) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muReleases.Lock()
+	defer rc.muReleases.Unlock()
 	rc.releases[key] = releases
 }
 
 func (rc *repoCache) getFileExists(key string) (bool, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muFileExists.RLock()
+	defer rc.muFileExists.RUnlock()
 	v, ok := rc.fileExists[key]
 	return v, ok
 }
 
 func (rc *repoCache) setFileExists(key string, exists bool) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muFileExists.Lock()
+	defer rc.muFileExists.Unlock()
 	rc.fileExists[key] = exists
 }
 
+func (rc *repoCache) getIdentity(key string) (*cachedIdentity, bool) {
+	rc.muIdentity.RLock()
+	defer rc.muIdentity.RUnlock()
+	v, ok := rc.identity[key]
+	return v, ok
+}
+
+func (rc *repoCache) setIdentity(key string, id *cachedIdentity) {
+	rc.muIdentity.Lock()
+	defer rc.muIdentity.Unlock()
+	rc.identity[key] = id
+}
+
+func (rc *repoCache) getOrgInfo(key string) (*cachedOrgInfo, bool) {
+	rc.muOrgInfo.RLock()
+	defer rc.muOrgInfo.RUnlock()
+	v, ok := rc.orgInfo[key]
+	return v, ok
+}
+
+func (rc *repoCache) setOrgInfo(key string, info *cachedOrgInfo) {
+	rc.muOrgInfo.Lock()
+	defer rc.muOrgInfo.Unlock()
+	rc.orgInfo[key] = info
+}
+
 func (rc *repoCache) getTagNames(key string) ([]string, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muTags.RLock()
+	defer rc.muTags.RUnlock()
 	v, ok := rc.tags[key]
 	return v, ok
 }
 
 func (rc *repoCache) setTagNames(key string, names []string) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muTags.Lock()
+	defer rc.muTags.Unlock()
 	rc.tags[key] = names
 }
 
 func (rc *repoCache) getCommitStats(key string) (*CommitStats, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muCommitStats.RLock()
+	defer rc.muCommitStats.RUnlock()
 	v, ok := rc.commitStats[key]
 	return v, ok
 }
 
 func (rc *repoCache) setCommitStats(key string, stats *CommitStats) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muCommitStats.Lock()
+	defer rc.muCommitStats.Unlock()
 	rc.commitStats[key] = stats
 }
 
 func (rc *repoCache) getCommitAuthors(key string) (*CommitAuthorStats, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muCommitAuthors.RLock()
+	defer rc.muCommitAuthors.RUnlock()
 	v, ok := rc.commitAuthors[key]
 	return v, ok
 }
 
 func (rc *repoCache) setCommitAuthors(key string, stats *CommitAuthorStats) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muCommitAuthors.Lock()
+	defer rc.muCommitAuthors.Unlock()
 	rc.commitAuthors[key] = stats
 }
 
 func (rc *repoCache) getSignedCommits(key string) (*cachedSignedCommits, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muSignedCommits.RLock()
+	defer rc.muSignedCommits.RUnlock()
 	v, ok := rc.signedCommits[key]
 	return v, ok
 }
 
 func (rc *repoCache) setSignedCommits(key string, sc *cachedSignedCommits) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muSignedCommits.Lock()
+	defer rc.muSignedCommits.Unlock()
 	rc.signedCommits[key] = sc
 }
 
 func (rc *repoCache) getPRStats(key string) (*PRStats, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muPRStats.RLock()
+	defer rc.muPRStats.RUnlock()
 	v, ok := rc.prStats[key]
 	return v, ok
 }
 
 func (rc *repoCache) setPRStats(key string, stats *PRStats) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muPRStats.Lock()
+	defer rc.muPRStats.Unlock()
 	rc.prStats[key] = stats
 }
 
 func (rc *repoCache) getBranchProtectionCached(key string) (*cachedBranchProtection, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muBranchProtection.RLock()
+	defer rc.muBranchProtection.RUnlock()
 	v, ok := rc.branchProtection[key]
 	return v, ok
 }
 
 func (rc *repoCache) setBranchProtectionCached(key string, bp *cachedBranchProtection) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muBranchProtection.Lock()
+	defer rc.muBranchProtection.Unlock()
 	rc.branchProtection[key] = bp
 }
 
 func (rc *repoCache) getIssueResponseTime(key string) (*cachedIssueResponseTime, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muIssueResponseTime.RLock()
+	defer rc.muIssueResponseTime.RUnlock()
 	v, ok := rc.issueResponseTime[key]
 	return v, ok
 }
 
 func (rc *repoCache) setIssueResponseTime(key string, irt *cachedIssueResponseTime) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muIssueResponseTime.Lock()
+	defer rc.muIssueResponseTime.Unlock()
 	rc.issueResponseTime[key] = irt
 }
 
 func (rc *repoCache) getWorkflowFiles(key string) ([]string, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muWorkflowFiles.RLock()
+	defer rc.muWorkflowFiles.RUnlock()
 	v, ok := rc.workflowFiles[key]
 	return v, ok
 }
 
 func (rc *repoCache) setWorkflowFiles(key string, files []string) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muWorkflowFiles.Lock()
+	defer rc.muWorkflowFiles.Unlock()
 	rc.workflowFiles[key] = files
 }
 

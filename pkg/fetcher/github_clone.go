@@ -508,15 +508,15 @@ func dirSizeMB(path string) float64 {
 // repoCache methods for clone data
 
 func (rc *repoCache) getCloneData(key string) (*gitCloneData, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
+	rc.muCloneData.RLock()
+	defer rc.muCloneData.RUnlock()
 	v, ok := rc.cloneData[key]
 	return v, ok
 }
 
 func (rc *repoCache) setCloneData(key string, data *gitCloneData) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
+	rc.muCloneData.Lock()
+	defer rc.muCloneData.Unlock()
 	rc.cloneData[key] = data
 }
 
