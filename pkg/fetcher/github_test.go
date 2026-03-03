@@ -962,6 +962,80 @@ func TestCheckGitTag_PaginatedFallback(t *testing.T) {
 	}
 }
 
+// Test: CheckGitTag caches paginated tag results across calls for the same repo
+// Justification: When scanning a lockfile, multiple dependencies may originate from the
+//                same GitHub repository (e.g. monorepos like Jackson). Without caching,
+//                each CheckGitTag call repeats the same paginated tag listing, wasting
+//                API quota. Caching ensures the expensive pagination happens once per repo.
+// Source: SLSA specification v1.0 – https://slsa.dev/spec/v1.0/
+// Methodology: Mock the GitHub Tags API with a request counter. Call CheckGitTag twice for
+//              the same repo with different versions. Verify the tags endpoint is called
+//              only once (first call), and the second call resolves from cache.
+// Result: Second CheckGitTag call produces zero additional tags API requests.
+func TestCheckGitTag_CachesTagsAcrossCalls(t *testing.T) {
+	var tagsAPIHits atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Direct ref lookups: always 404 (force paginated fallback)
+		if strings.Contains(r.URL.Path, "/git/ref/tags/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		// Paginated tags listing
+		if strings.Contains(r.URL.Path, "/tags") {
+			tagsAPIHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"name":"custom-prefix-2.15.3"},{"name":"custom-prefix-v1.0.0"},{"name":"other-3.0.0"}]`))
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	// First call — should hit the tags API via paginated fallback.
+	found, tagURL, err := client.CheckGitTag("https://github.com/owner/repo", "2.15.3")
+	if err != nil {
+		t.Fatalf("first CheckGitTag() unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("first CheckGitTag() expected found=true")
+	}
+	if tagURL == "" {
+		t.Fatal("first CheckGitTag() expected non-empty tagURL")
+	}
+
+	firstHits := tagsAPIHits.Load()
+	if firstHits == 0 {
+		t.Fatal("expected at least 1 tags API hit on first call")
+	}
+
+	// Second call — same repo, different version. Should resolve from cache.
+	found2, tagURL2, err2 := client.CheckGitTag("https://github.com/owner/repo", "1.0.0")
+	if err2 != nil {
+		t.Fatalf("second CheckGitTag() unexpected error: %v", err2)
+	}
+	if !found2 {
+		t.Fatal("second CheckGitTag() expected found=true (custom-prefix-v1.0.0 in cache)")
+	}
+	if tagURL2 == "" {
+		t.Fatal("second CheckGitTag() expected non-empty tagURL")
+	}
+
+	secondHits := tagsAPIHits.Load()
+	if secondHits != firstHits {
+		t.Errorf("expected 0 additional tags API hits on second call, got %d", secondHits-firstHits)
+	}
+}
+
 // Test: CheckIfOrganization detects whether a GitHub owner is an organization
 // Justification: Packages under organization ownership have different risk profiles
 //                than personal accounts — organizations can enforce MFA, branch protection,
