@@ -6,7 +6,7 @@
 
 <p align="center"><em>Does it pass the snyft test?</em></p>
 
-**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a **20-point risk scoring system** across 10 categories to identify potential compromise risks.
+**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects across **10 risk categories** to identify potential compromise risks.
 
 Unlike vulnerability scanners focused on CVEs, Snyft assesses the **likelihood of supply chain compromise** by analyzing repository metadata, build practices, source code availability, and security signals.
 
@@ -95,10 +95,7 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 | **9. Release Security** | Manual publishing, no branch protection, insecure CI config, undocumented release process |
 | **10. Package Maturity** | New/abandoned package, irregular updates |
 
-**Total Score**: 0-20 points
-- **0-8**: Low risk
-- **9-12**: Medium risk
-- **13+**: High risk
+Each category is scored independently (0 = low risk, 1 = moderate, 2 = high risk).
 
 ## Supported Ecosystems
 
