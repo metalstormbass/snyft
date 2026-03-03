@@ -8,6 +8,221 @@ import (
 	"time"
 )
 
+// Test: extractPyPIMaintainers extracts maintainers from all PyPI info fields
+// Justification: Single-maintainer detection is the #1 supply chain risk signal.
+//                Modern packages using pyproject.toml populate author_email instead of
+//                author, causing 0 maintainers and missed single-maintainer detection.
+// Source: PyPI JSON API docs; PEP 621 (pyproject.toml metadata)
+// Methodology: Test with real-world PyPI field combinations (author, author_email,
+//              maintainer, maintainer_email) including comma-separated lists
+// Result: Correct maintainer count for all field combinations
+func TestExtractPyPIMaintainers(t *testing.T) {
+	tests := []struct {
+		name      string
+		info      PyPIInfo
+		wantCount int
+		wantFirst string
+	}{
+		{
+			name: "author field only (legacy format, e.g. requests)",
+			info: PyPIInfo{
+				Author: "Kenneth Reitz",
+			},
+			wantCount: 1,
+			wantFirst: "Kenneth Reitz",
+		},
+		{
+			name: "author_email only (pyproject.toml format, e.g. colorama)",
+			info: PyPIInfo{
+				AuthorEmail: "Jonathan Hartley <tartley@tartley.com>",
+			},
+			wantCount: 1,
+			wantFirst: "Jonathan Hartley <tartley@tartley.com>",
+		},
+		{
+			name: "multiple authors in author_email (e.g. pydantic)",
+			info: PyPIInfo{
+				AuthorEmail: "Samuel Colvin <s@muelcolvin.com>, Eric Jolibois <em.jolibois@gmail.com>, Hasan Ramezani <hasan.r67@gmail.com>",
+			},
+			wantCount: 3,
+			wantFirst: "Samuel Colvin <s@muelcolvin.com>",
+		},
+		{
+			name: "maintainer_email only (e.g. flask)",
+			info: PyPIInfo{
+				MaintainerEmail: "Pallets <contact@palletsprojects.com>",
+			},
+			wantCount: 1,
+			wantFirst: "Pallets <contact@palletsprojects.com>",
+		},
+		{
+			name: "author_email without angle brackets (bare email)",
+			info: PyPIInfo{
+				AuthorEmail: "tom@example.com",
+			},
+			wantCount: 1,
+			wantFirst: "tom@example.com",
+		},
+		{
+			name: "both author and author_email (dedup by name)",
+			info: PyPIInfo{
+				Author:      "Tom Christie",
+				AuthorEmail: "Tom Christie <tom@example.com>",
+			},
+			wantCount: 1,
+			wantFirst: "Tom Christie",
+		},
+		{
+			name: "maintainer takes priority, author adds extras",
+			info: PyPIInfo{
+				Maintainer:  "Maintainer One",
+				AuthorEmail: "Author Two <a@b.com>",
+			},
+			wantCount: 2,
+			wantFirst: "Maintainer One",
+		},
+		{
+			name: "all fields empty",
+			info: PyPIInfo{},
+			wantCount: 0,
+		},
+		{
+			name: "author_email with Django-style org email",
+			info: PyPIInfo{
+				AuthorEmail: "Django Software Foundation <foundation@djangoproject.com>",
+			},
+			wantCount: 1,
+			wantFirst: "Django Software Foundation <foundation@djangoproject.com>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractPyPIMaintainers(tt.info)
+			if len(result) != tt.wantCount {
+				t.Errorf("extractPyPIMaintainers() count = %d, want %d; got %v", len(result), tt.wantCount, result)
+			}
+			if tt.wantCount > 0 && len(result) > 0 && result[0] != tt.wantFirst {
+				t.Errorf("extractPyPIMaintainers()[0] = %q, want %q", result[0], tt.wantFirst)
+			}
+		})
+	}
+}
+
+// Test: splitEmailList correctly handles comma-separated email entries
+// Justification: pyproject.toml author lists are serialized as comma-separated
+//                "Name <email>, Name2 <email2>" strings in the PyPI JSON API.
+//                Incorrect splitting would merge/lose maintainer entries.
+// Source: PEP 621 (pyproject.toml authors format); PyPI JSON API response
+// Methodology: Test various email list formats including edge cases
+// Result: Each author correctly split into separate entries
+func TestSplitEmailList(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{"single entry", "Tom <t@x.com>", 1},
+		{"two entries", "Tom <t@x.com>, Jane <j@x.com>", 2},
+		{"bare email", "tom@example.com", 1},
+		{"mixed format", "Tom <t@x.com>, bob@y.com", 2},
+		{"empty", "", 0},
+		{"thirteen entries (pydantic-style)", "A <a@b.com>, B <b@c.com>, C <c@d.com>, D <d@e.com>, E <e@f.com>, F <f@g.com>, G <g@h.com>, H <h@i.com>, I <i@j.com>, J <j@k.com>, K <k@l.com>, L <l@m.com>, M <m@n.com>", 13},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := splitEmailList(tt.input)
+			if len(result) != tt.want {
+				t.Errorf("splitEmailList(%q) = %d entries, want %d; got %v", tt.input, len(result), tt.want, result)
+			}
+		})
+	}
+}
+
+// Test: PyPI GetPackageInfo correctly populates maintainers from author_email
+// Justification: End-to-end validation that the new extractPyPIMaintainers function
+//                is correctly integrated into the PyPI data flow, so packages using
+//                pyproject.toml (author_email) are correctly flagged for single-maintainer risk
+// Source: Real-world PyPI API response formats (colorama, flask, pydantic)
+// Methodology: Mock PyPI API with author_email instead of author field
+// Result: Package metadata correctly reports maintainers from author_email
+func TestGetPackageInfo_PyPI_AuthorEmail(t *testing.T) {
+	response := PyPIResponse{
+		Info: PyPIInfo{
+			Name:        "colorama",
+			Version:     "0.4.6",
+			Author:      "", // Empty author (modern pyproject.toml format)
+			AuthorEmail: "Jonathan Hartley <tartley@tartley.com>",
+			License:     "BSD",
+			ProjectURLs: map[string]string{
+				"Source": "https://github.com/tartley/colorama",
+			},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	pkg, err := client.GetPackageInfo("colorama")
+	if err != nil {
+		t.Fatalf("GetPackageInfo() error = %v", err)
+	}
+
+	if len(pkg.Maintainers) != 1 {
+		t.Errorf("GetPackageInfo() maintainers count = %d, want 1; got %v", len(pkg.Maintainers), pkg.Maintainers)
+	}
+
+	if len(pkg.Maintainers) > 0 && pkg.Maintainers[0] != "Jonathan Hartley <tartley@tartley.com>" {
+		t.Errorf("GetPackageInfo() maintainer = %q, want %q", pkg.Maintainers[0], "Jonathan Hartley <tartley@tartley.com>")
+	}
+}
+
+// Test: PyPI GetPackageInfo with multiple authors from author_email
+// Justification: Multi-author packages (e.g., pydantic with 13 authors) must correctly
+//                count all maintainers to avoid false single-maintainer risk signals
+// Source: Real-world PyPI response for pydantic (author_email with comma-separated list)
+// Methodology: Mock PyPI API with multiple comma-separated author_email entries
+// Result: All authors correctly counted as maintainers
+func TestGetPackageInfo_PyPI_MultipleAuthorEmail(t *testing.T) {
+	response := PyPIResponse{
+		Info: PyPIInfo{
+			Name:        "pydantic",
+			Version:     "2.10.6",
+			Author:      "", // Empty author
+			AuthorEmail: "Samuel Colvin <s@muelcolvin.com>, Eric Jolibois <em.jolibois@gmail.com>, Hasan Ramezani <hasan.r67@gmail.com>",
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := &PyPIClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+	}
+
+	pkg, err := client.GetPackageInfo("pydantic")
+	if err != nil {
+		t.Fatalf("GetPackageInfo() error = %v", err)
+	}
+
+	if len(pkg.Maintainers) != 3 {
+		t.Errorf("GetPackageInfo() maintainers count = %d, want 3; got %v", len(pkg.Maintainers), pkg.Maintainers)
+	}
+}
+
 // Test: extractPyPIRepoURL priority order for project_urls keys
 // Justification: Correct repository URL extraction is critical for verifying
 //                source code availability — the wrong URL leads to false
