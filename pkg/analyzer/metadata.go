@@ -609,10 +609,11 @@ func packageMetadataFromMaven(pkg *fetcher.MavenPackage) models.PackageMetadata 
 	// This provides a dependency sprawl signal from Maven Central even when no
 	// local pom.xml is available (e.g. scanning by package name via CLI).
 	// analyzeDependencySprawl may override this with local pom.xml data.
-	if pkg.DirectDepCount > 0 {
+	if pkg.DirectDepCount > 0 || pkg.ScopeBreakdown != nil {
 		metadata.DependencyMetrics = &models.DependencyMetrics{
-			DirectCount: pkg.DirectDepCount,
-			Verified:    false, // POM shows only direct deps, not transitive
+			DirectCount:         pkg.DirectDepCount,
+			Verified:            false, // POM shows only direct deps, not transitive
+			MavenScopeBreakdown: pkg.ScopeBreakdown,
 		}
 	}
 
