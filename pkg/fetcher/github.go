@@ -1659,8 +1659,11 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 
 	stats := &PRStats{}
 
-	// Fetch recent merged PRs
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=closed&per_page=100", c.baseURL, owner, repo)
+	// Fetch recent closed PRs. We request 30 to get a sufficient pool of merged PRs
+	// while keeping API usage low. We only check reviews on up to 20 merged PRs –
+	// enough to estimate the project's code review rate without making 100+ API calls.
+	const maxReviewChecks = 20
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=closed&per_page=30", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -1686,22 +1689,28 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 		return stats, nil
 	}
 
-	// Analyze PRs
+	// Analyze PRs – sample up to maxReviewChecks merged PRs for review status
 	for _, pr := range prs {
 		if pr.MergedAt != nil {
 			stats.TotalPRs++
 			stats.MergedPRs++
 
-			// Check if PR has reviews
-			if c.prHasReviews(owner, repo, pr.Number) {
-				stats.PRsWithReviews++
+			if stats.MergedPRs <= maxReviewChecks {
+				// Check if PR has reviews
+				if c.prHasReviews(owner, repo, pr.Number) {
+					stats.PRsWithReviews++
+				}
 			}
 		}
 	}
 
-	// Calculate code review rate
-	if stats.MergedPRs > 0 {
-		stats.CodeReviewRate = float64(stats.PRsWithReviews) / float64(stats.MergedPRs) * 100
+	// Calculate code review rate based on the sampled PRs only
+	sampledPRs := stats.MergedPRs
+	if sampledPRs > maxReviewChecks {
+		sampledPRs = maxReviewChecks
+	}
+	if sampledPRs > 0 {
+		stats.CodeReviewRate = float64(stats.PRsWithReviews) / float64(sampledPRs) * 100
 	}
 
 	// Check branch protection rules
