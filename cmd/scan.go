@@ -245,6 +245,31 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// --- Repo-level grouping optimization ---
+	// Phase 1: Resolve source repo URLs via fast registry lookups (no GitHub API)
+	// Phase 2: Group packages by repo — turns 7,749 packages into ~400 repos
+	// Phase 3: Analysis with repo-level caching (clone + analyze each repo once)
+	if len(dependencies) > 1 {
+		_, _ = fmt.Fprintf(statusOut, "🔗 Resolving source repositories...\n")
+		resolveAnalyzer := analyzer.NewAnalyzer(func() []analyzer.AnalyzerOption {
+			var o []analyzer.AnalyzerOption
+			if len(selectedChecks) > 0 {
+				o = append(o, analyzer.WithCheckFilter(selectedChecks))
+			}
+			return o
+		}()...)
+		resolveRepoURLs(dependencies, resolveAnalyzer, workers, statusOut)
+
+		// Group by repo and print dedup stats
+		groups, _ := groupByRepo(dependencies)
+		printRepoGroupStats(groups, len(dependencies), statusOut)
+
+		// Sort deps by repo group so same-repo packages are adjacent,
+		// maximizing cache hits in the worker pool
+		sortDepsByRepoGroup(dependencies)
+		_, _ = fmt.Fprintln(statusOut)
+	}
+
 	// Analyze dependencies in parallel (with rate limit gate)
 	scanResult := analyzeDependenciesWithGate(dependencies, workers, reporter, selectedChecks, statusOut)
 
