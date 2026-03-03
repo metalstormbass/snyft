@@ -751,10 +751,11 @@ func TestPublisherControl_ZeroMaintainers(t *testing.T) {
 		t.Error("Expected SingleMaintainer to be false for 0 maintainers")
 	}
 
-	// 0 maintainers with only the unknown-data signal (0.3) → LOW risk
-	// The system no longer double-penalises for data loss
-	if analysis.RiskLevel != "LOW" {
-		t.Errorf("Expected LOW risk for zero maintainers (data loss), got %s (evidence: %s)",
+	// 0 maintainers with all signals unknown → MEDIUM risk (not LOW)
+	// When key publisher signals are all unverifiable, the score represents
+	// honest uncertainty, not evidence of safety.
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("Expected MEDIUM risk for zero maintainers (all signals unknown), got %s (evidence: %s)",
 			analysis.RiskLevel, analysis.Evidence)
 	}
 
@@ -1558,8 +1559,8 @@ func TestMFAUnchecked_PersonalAccount_NeutralImpact(t *testing.T) {
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — absence of evidence
 //   is not evidence of absence for maintainer risk assessment
 // Methodology: Call calculateRiskScore with 0 maintainers on npm ecosystem
-// Result: LOW risk (0.3 base score — same as ecosystems without maintainer lists)
-func TestZeroMaintainers_CalculateRiskScore_LowRisk(t *testing.T) {
+// Result: MEDIUM risk — all signals unknown means honest uncertainty, not safety
+func TestZeroMaintainers_CalculateRiskScore_MediumRisk(t *testing.T) {
 	analysis := &PublisherControlAnalysis{
 		MaintainerCount:  0,
 		SingleMaintainer: false,
@@ -1567,13 +1568,15 @@ func TestZeroMaintainers_CalculateRiskScore_LowRisk(t *testing.T) {
 	}
 	analysis.calculateRiskScore()
 
-	// 0.3 (no maintainer data, treated as unknown) → LOW
-	if analysis.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points (LOW) for zero maintainers on npm, got %d (evidence: %s)",
+	// 0.3 (no maintainer data) + all other signals unknown → MEDIUM
+	// When key signals (maintainer count, account type, signing) are all
+	// unverifiable, the score represents uncertainty, not safety.
+	if analysis.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point (MEDIUM) for zero maintainers with all unknown signals, got %d (evidence: %s)",
 			analysis.RiskPoints, analysis.Evidence)
 	}
-	if analysis.RiskLevel != "LOW" {
-		t.Errorf("Expected LOW risk for zero maintainers (data loss), got %s", analysis.RiskLevel)
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("Expected MEDIUM risk for zero maintainers (all signals unknown), got %s", analysis.RiskLevel)
 	}
 
 	// Evidence should mention the ecosystem can expose this data
@@ -1779,9 +1782,9 @@ func TestPublisherControl_MavenEmptyMaintainers_NoDoublePenalty(t *testing.T) {
 		t.Errorf("Maven evidence should indicate data not found, got: %s", mavenAnalysis.Evidence)
 	}
 
-	// Both should be LOW risk (0.3 alone is below MEDIUM threshold of 0.6)
-	if mavenAnalysis.RiskLevel != "LOW" {
-		t.Errorf("Maven with only empty maintainers should be LOW risk, got %s (evidence: %s)",
+	// Both should be MEDIUM risk — all signals unknown means honest uncertainty
+	if mavenAnalysis.RiskLevel != "MEDIUM" {
+		t.Errorf("Maven with all signals unknown should be MEDIUM risk (uncertainty), got %s (evidence: %s)",
 			mavenAnalysis.RiskLevel, mavenAnalysis.Evidence)
 	}
 }
@@ -1801,9 +1804,10 @@ func TestPublisherControl_NpmEmptyMaintainers_NoDoublePenalty(t *testing.T) {
 	}
 	npmAnalysis.calculateRiskScore()
 
-	// npm has HasMaintainerList=true, but zero maintainers should still get 0.3
-	if npmAnalysis.RiskLevel != "LOW" {
-		t.Errorf("npm with zero maintainers (data loss) should be LOW risk, got %s (evidence: %s)",
+	// npm has HasMaintainerList=true, but zero maintainers with all other signals
+	// unknown should get MEDIUM (uncertainty), not LOW (which implies safety)
+	if npmAnalysis.RiskLevel != "MEDIUM" {
+		t.Errorf("npm with zero maintainers (all signals unknown) should be MEDIUM risk, got %s (evidence: %s)",
 			npmAnalysis.RiskLevel, npmAnalysis.Evidence)
 	}
 

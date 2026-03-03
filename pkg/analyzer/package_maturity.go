@@ -167,6 +167,7 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 			Description: "No publish date or commit history available to assess package maturity. Unable to determine package age, staleness, or release cadence.",
 			Evidence:    "No publish date or commit history available",
 			Verified:    false,
+			DataAvailable: false,
 			Methodology: maturityMethodology,
 			ChecksPerformed: maturityChecks,
 		}
@@ -189,6 +190,7 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		Description:     description,
 		Evidence:        strings.Join(evidenceParts, "; "),
 		Verified:        verified,
+		DataAvailable:   verified,
 		Methodology:     maturityMethodology,
 		ChecksPerformed: maturityChecks,
 	}

@@ -3455,3 +3455,154 @@ func TestValidCheckNames_AllPresent(t *testing.T) {
 		}
 	}
 }
+
+// ===== Missing Data Scoring Tests =====
+// These tests verify the fix for the "less data = better score" paradox:
+// when data is genuinely unavailable, categories should score 1 (moderate/unknown)
+// instead of 0 (best), and DataAvailable should be false.
+
+func TestScoreHealth_NoData_ReturnsModerateNotBest(t *testing.T) {
+	// Test: Health scoring with no data at all (no repo, no maintainers, ecosystem doesn't expose data)
+	// Justification: When both bus factor and review oversight data are unavailable,
+	//                "benefit of doubt" on both components previously resulted in 0 risk points.
+	//                This made unknown packages score better than fully-analyzed ones.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	//         https://arxiv.org/abs/2005.09535
+	// Methodology: Create result with no repo URL, no maintainer data, ecosystem that
+	//              doesn't expose maintainer lists. Verify risk = 1 (not 0).
+	// Result: 1 risk point (moderate/unknown) with DataAvailable=false
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Ecosystem: models.EcosystemMaven,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{}, // No maintainer data
+		},
+		RepositoryURL: "", // No repo URL
+	}
+
+	score := analyzer.scoreHealth(result)
+
+	if score.RiskPoints == 0 {
+		t.Errorf("Health with no data should NOT score 0 risk points (best); got %d. "+
+			"Missing data should score 1 (moderate/unknown), not 0 (verified safe)", score.RiskPoints)
+	}
+	if score.RiskPoints != 1 {
+		t.Errorf("Health with no data should score 1 risk point (moderate/unknown), got %d", score.RiskPoints)
+	}
+	if score.DataAvailable {
+		t.Error("Health with no data should have DataAvailable=false")
+	}
+	if score.Verified {
+		t.Error("Health with no data should have Verified=false")
+	}
+}
+
+func TestScorePublisherControl_AllUnknown_ReturnsModerateNotBest(t *testing.T) {
+	// Test: Publisher control with all signals unknown (no maintainers, no repo URL)
+	// Justification: When maintainer count is 0, account type unknown, signing unchecked,
+	//                and MFA unknown, the accumulated 0.3 risk previously mapped to 0 risk
+	//                points (LOW). This made unknown packages score better than analyzed ones.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	//         https://arxiv.org/abs/2005.09535
+	// Methodology: Create result with no maintainer data, no repo URL. Verify risk >= 1.
+	// Result: 1 risk point (moderate/unknown) with DataAvailable=false
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{}, // No maintainer data at all
+		},
+		RepositoryURL: "", // No repo URL
+	}
+
+	score := analyzer.scorePublisherControl(result)
+
+	if score.RiskPoints == 0 {
+		t.Errorf("Publisher control with all signals unknown should NOT score 0 risk points; got %d. "+
+			"Missing data should score >= 1 (moderate/unknown)", score.RiskPoints)
+	}
+	if score.RiskPoints < 1 {
+		t.Errorf("Publisher control with all signals unknown should score >= 1 risk points, got %d", score.RiskPoints)
+	}
+	if score.DataAvailable {
+		t.Error("Publisher control with no data should have DataAvailable=false")
+	}
+}
+
+func TestScoreHealth_WithData_ScoresNormally(t *testing.T) {
+	// Test: Health scoring with actual data still works correctly
+	// Justification: The missing-data fix should not affect packages where data IS available.
+	//                A package with good bus factor and review oversight should still score 0 risk.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	// Methodology: Create result with bus factor >= 2 and branch protection. Verify risk = 0.
+	// Result: 0 risk points (verified safe) with DataAvailable=true
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			BusFactor:            3,
+			HasBranchProtection:  true,
+			RequiredReviewers:    2,
+		},
+		RepositoryURL: "https://github.com/test/repo",
+	}
+
+	score := analyzer.scoreHealth(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Health with good bus factor + review oversight should score 0 risk, got %d", score.RiskPoints)
+	}
+	if !score.DataAvailable {
+		t.Error("Health with verified data should have DataAvailable=true")
+	}
+	if !score.Verified {
+		t.Error("Health with verified data should have Verified=true")
+	}
+}
+
+func TestDataAvailable_SetCorrectly_AcrossCategories(t *testing.T) {
+	// Test: DataAvailable flag is set correctly for categories with/without data
+	// Justification: The report needs to distinguish "Unable to verify" from "Verified safe"
+	//                to avoid misleading users about package safety.
+	// Source: Project requirement — fix the "less data = better score" paradox
+	// Methodology: Check DataAvailable on categories that have known no-data paths
+	// Result: DataAvailable=false when data is missing, true when data is present
+	analyzer := NewAnalyzer()
+
+	// Test with minimal data (no repo URL)
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{},
+	}
+
+	// Categories that require repo URL should have DataAvailable=false
+	govScore := analyzer.scoreGovernance(result)
+	if govScore.DataAvailable {
+		t.Error("Governance with no repo URL should have DataAvailable=false")
+	}
+	if govScore.RiskPoints != 1 {
+		t.Errorf("Governance with no repo URL should score 1 risk (unknown), got %d", govScore.RiskPoints)
+	}
+
+	relSecScore := analyzer.scoreReleaseSecurity(result)
+	if relSecScore.DataAvailable {
+		t.Error("Release Security with no repo URL should have DataAvailable=false")
+	}
+
+	// Install execution always has data (checking for script presence IS data)
+	installScore := analyzer.scoreInstallExecution(result)
+	if !installScore.DataAvailable {
+		t.Error("Install Execution should always have DataAvailable=true (absence of scripts is verified data)")
+	}
+
+	// Dependency sprawl with no data
+	depScore := analyzer.scoreDependencySprawl(result)
+	if depScore.DataAvailable {
+		t.Error("Dependency Sprawl with no lock file or registry data should have DataAvailable=false")
+	}
+}

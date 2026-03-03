@@ -34,6 +34,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 				Description: fmt.Sprintf("Analyzed %d versions from package registry — no dormancy reactivation or unusual release spikes detected. Consistent release patterns indicate normal maintenance.", len(registryReleases)),
 				Evidence:    fmt.Sprintf("Analyzed %d versions from package registry; no dormancy reactivation or unusual spikes detected", len(registryReleases)),
 				Verified:    true,
+				DataAvailable: true,
 				Methodology: "No repository URL available. Used package registry version history as fallback for release pattern analysis.",
 				ChecksPerformed: []models.CheckResult{
 					{Name: "Release pattern analysis", Status: "PASS", Detail: fmt.Sprintf("Analyzed %d registry versions; no anomalies detected (registry fallback)", len(registryReleases))},
@@ -48,6 +49,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			Description: "No commit history or registry version data available to verify release patterns. Unable to check for dormancy reactivation or suspicious release activity.",
 			Evidence:    "No commit history or registry version data available",
 			Verified:    false,
+			DataAvailable: false,
 			Methodology: "No repository URL or commit history available. Registry version history also unavailable. Could not check for release anomalies or dormancy patterns.",
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Dormancy reactivation", Status: "SKIPPED", Detail: "No commit history, repository URL, or registry version data"},
@@ -68,6 +70,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			Description: fmt.Sprintf("No commits in %.0f days (last commit: %s). Dormant packages are attractive targets for account takeover — maintainers may not be monitoring their accounts or credentials.", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
 			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year); last commit: %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: anomalyMethodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Dormancy detection", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (> 365 day threshold); last commit %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02"))},
@@ -129,6 +132,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 		Description:     fmt.Sprintf("Last commit %.0f days ago with no anomalies detected. Regular release activity indicates active, healthy maintenance.", daysSinceLastCommit),
 		Evidence:        fmt.Sprintf("Last commit %.0f days ago, no anomalies detected", daysSinceLastCommit),
 		Verified:        true,
+		DataAvailable:   true,
 		Methodology:     anomalyMethodology,
 		ChecksPerformed: regularChecks,
 	}
@@ -197,6 +201,7 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repo
 			Evidence: fmt.Sprintf("Dormant for %.0f days (%s to %s), recent release %.0f days ago",
 				maxGapDays, gapStartDate.Format("2006-01"), gapEndDate.Format("2006-01"), daysSinceRecentRelease),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: releaseMethodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Dormancy reactivation", Status: "FAIL", Detail: fmt.Sprintf("%.0f day gap between releases (%s to %s), then activity resumed %.0f days ago", maxGapDays, gapStartDate.Format("2006-01-02"), gapEndDate.Format("2006-01-02"), daysSinceRecentRelease)},
@@ -213,6 +218,7 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repo
 			Evidence: fmt.Sprintf("Dormant for %.0f days (%.1fx usual %.0f-day release cadence), recent release %.0f days ago",
 				maxGapDays, maxGapDays/avgDaysBetweenReleases, avgDaysBetweenReleases, daysSinceRecentRelease),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: releaseMethodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Relative dormancy", Status: "FAIL", Detail: fmt.Sprintf("%.0f day gap is %.1fx the average %.0f-day cadence (threshold: 5x)", maxGapDays, maxGapDays/avgDaysBetweenReleases, avgDaysBetweenReleases)},
@@ -232,6 +238,7 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repo
 				Evidence: fmt.Sprintf("Avg release every %.0f days, but recent release only %.0f days after previous (%.0f days ago)",
 					avgDaysBetweenReleases, recentGap, daysSinceRecentRelease),
 				Verified:    true,
+				DataAvailable: true,
 				Methodology: releaseMethodology,
 				ChecksPerformed: []models.CheckResult{
 					{Name: "Release spike detection", Status: "FAIL", Detail: fmt.Sprintf("Recent release gap (%.0f days) is < 10%% of average cadence (%.0f days)", recentGap, avgDaysBetweenReleases)},
@@ -283,6 +290,7 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 			Evidence: fmt.Sprintf("%d commits in last year vs %d in previous year (sudden spike)",
 				recentCount, previousYearCount),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: commitMethodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Commit frequency spike", Status: "FAIL", Detail: fmt.Sprintf("Previous year: %d commits (near-zero), last year: %d commits (sudden spike)", previousYearCount, recentCount)},
@@ -299,6 +307,7 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 			Evidence: fmt.Sprintf("%d commits in last year vs %d in previous year (%.0fx increase)",
 				recentCount, previousYearCount, float64(recentCount)/float64(previousYearCount)),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: commitMethodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Commit frequency spike", Status: "FAIL", Detail: fmt.Sprintf("%.0fx increase (%d vs %d commits) exceeds 10x threshold", float64(recentCount)/float64(previousYearCount), recentCount, previousYearCount)},
@@ -314,6 +323,7 @@ func (a *Analyzer) detectCommitFrequencyAnomaly(recentCommits, olderCommits []fe
 			Description: fmt.Sprintf("0 commits in the previous year, then %d commits in the last year. Moderate reactivation after dormancy — could be legitimate renewed interest or an early sign of account takeover.", recentCount),
 			Evidence:    fmt.Sprintf("0 commits in previous year, %d commits in last year", recentCount),
 			Verified:    true,
+			DataAvailable: true,
 			Methodology: commitMethodology,
 			ChecksPerformed: []models.CheckResult{
 				{Name: "Dormancy reactivation", Status: "FAIL", Detail: fmt.Sprintf("0 commits in prior year, %d in recent year (moderate reactivation)", recentCount)},

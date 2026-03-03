@@ -209,12 +209,18 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		evidenceStr = evidenceStr + "; " + result.Metadata.ProvenanceDetails
 	}
 
+	// DataAvailable is true when we had actual data to assess (source verification
+	// was performed OR attestation checks returned results), false when we couldn't
+	// check anything (SourceVerification nil AND no repo URL AND no attestation data).
+	dataAvailable := sourceAvailable || sourceExplicitlyFailed || provenanceScore > 0
+
 	return models.CategoryScore{
 		Score:           score,
 		RiskPoints:      riskPoints,
 		Description:     description,
 		Evidence:        evidenceStr,
 		Verified:        len(evidence) > 0 || provenanceScore == 0,
+		DataAvailable:   dataAvailable,
 		Methodology:     methodology,
 		ChecksPerformed: checks,
 	}
