@@ -1228,7 +1228,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		return nil, err
 	}
 
-	// Fetch commits from the last 2 years (or up to 500 commits)
+	// Fetch recent commits (up to 300) to determine contributor diversity
 	url := fmt.Sprintf("%s/repos/%s/%s/commits?per_page=100", c.baseURL, owner, repo)
 
 	stats := &CommitAuthorStats{
@@ -1239,8 +1239,8 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		HistoricalAuthors:  []string{},
 	}
 
-	// Fetch multiple pages (up to 5 pages = 500 commits)
-	for page := 1; page <= 5; page++ {
+	// Fetch up to 3 pages (300 commits) — sufficient for bus factor / unique committer count
+	for page := 1; page <= 3; page++ {
 		pageURL := fmt.Sprintf("%s&page=%d", url, page)
 		req, err := http.NewRequest("GET", pageURL, nil)
 		if err != nil {
