@@ -14,10 +14,10 @@ import (
 )
 
 // gitCloneData holds data extracted from a bare git clone.
-// All fields are populated by cloneAndAnalyze and then cached in repoCache
+// All fields are populated by CloneAndAnalyze and then cached in repoCache
 // so that GetCommitAuthors, CheckSignedCommits, GetCommitActivity, fileExists,
-// and GetFileContent can serve data from the local clone instead of making
-// API calls or scraping.
+// and GetFileContent can serve data without the clone directory on disk.
+// The clone directory is deleted immediately after all data extraction completes.
 type gitCloneData struct {
 	// commitAuthors is the extracted CommitAuthorStats from git shortlog + git log.
 	commitAuthors *CommitAuthorStats
@@ -34,16 +34,10 @@ type gitCloneData struct {
 	// fileContentsMu protects concurrent access to fileContents.
 	fileContentsMu sync.RWMutex
 
-	// fileContents caches file content fetched via git show HEAD:<path>.
-	// Only populated on demand via GetCloneFileContent.
+	// fileContents caches file content pre-fetched via git show HEAD:<path> during
+	// CloneAndAnalyze. Populated eagerly for well-known analysis files before the
+	// clone directory is deleted. GetCloneFileContent serves from this cache only.
 	fileContents map[string]string
-
-	// cloneDir is the temp directory holding the bare clone (for on-demand file reads).
-	// Empty after cleanup.
-	cloneDir string
-
-	// diskSizeMB is the size of the clone directory in megabytes.
-	diskSizeMB float64
 
 	// ready indicates that clone data is available for use.
 	ready bool
@@ -52,9 +46,52 @@ type gitCloneData struct {
 // cloneTimeout is the maximum time allowed for a bare clone to complete.
 const cloneTimeout = 60 * time.Second
 
-// CloneAndAnalyze performs a bare git clone and extracts commit data, file tree,
-// and signature information. Results are cached in repoCache so downstream methods
-// (GetCommitAuthors, CheckSignedCommits, etc.) can use local data instead of API calls.
+// filesToPreFetch lists well-known file paths that downstream analysis steps read
+// via GetFileContent → GetCloneFileContent. These are pre-fetched from the bare
+// clone before the clone directory is deleted, so they can be served from the
+// in-memory cache without keeping the clone on disk.
+var filesToPreFetch = []string{
+	// Governance files (release_docs.go, governance.go)
+	"SECURITY.md",
+	".github/SECURITY.md",
+	"CONTRIBUTING.md",
+	"RELEASING.md",
+	"RELEASE.md",
+	".github/CONTRIBUTING.md",
+	"docs/RELEASING.md",
+	"docs/RELEASE.md",
+	"docs/releasing.md",
+	"docs/release.md",
+
+	// CI workflow configs (metadata.go via CIConfigPaths)
+	".github/workflows/release.yml",
+	".github/workflows/publish.yml",
+	".github/workflows/deploy.yml",
+	".github/workflows/ci.yml",
+	".github/workflows/build.yml",
+	".github/workflows/main.yml",
+	".github/workflows/release.yaml",
+	".github/workflows/publish.yaml",
+	".github/workflows/deploy.yaml",
+	".circleci/config.yml",
+	".gitlab-ci.yml",
+	".travis.yml",
+	"azure-pipelines.yml",
+	"Jenkinsfile",
+	".drone.yml",
+	".drone.yaml",
+	".buildkite/pipeline.yml",
+	".buildkite/pipeline.yaml",
+
+	// Package build files (analyzer.go)
+	"setup.py",
+	"pom.xml",
+}
+
+// CloneAndAnalyze performs a bare git clone, extracts all needed data (commit
+// info, file tree, and file contents for well-known paths), caches it, and
+// then deletes the clone directory immediately. This prevents clone directories
+// from accumulating on disk during large scans.
 //
 // The clone runs with --bare --filter=blob:none --depth=500 to minimize bandwidth:
 //   - --bare: no working tree (saves disk)
@@ -110,7 +147,6 @@ func (c *GitHubClient) CloneAndAnalyze(repoURL string) error {
 	// Extract all data in parallel
 	data := &gitCloneData{
 		fileContents: make(map[string]string),
-		cloneDir:     cloneDir,
 	}
 
 	var extractWg sync.WaitGroup
@@ -175,8 +211,14 @@ func (c *GitHubClient) CloneAndAnalyze(repoURL string) error {
 
 	extractWg.Wait()
 
-	// Calculate disk size
-	data.diskSizeMB = dirSizeMB(cloneDir)
+	// 5. Pre-fetch file contents for well-known analysis paths before deleting
+	// the clone directory. Only fetch files that exist in the file tree.
+	if data.fileTree != nil {
+		prefetchFileContents(ctx, cloneDir, data)
+	}
+
+	// Delete the clone directory immediately — all needed data is now in memory.
+	_ = os.RemoveAll(tmpDir)
 
 	// Mark as ready even if some extractions failed — partial data is useful
 	data.ready = true
@@ -198,27 +240,32 @@ func (c *GitHubClient) CloneAndAnalyze(repoURL string) error {
 	return nil
 }
 
-// CleanupClone removes the temp directory for a cloned repo.
-// Should be called after analysis is complete for the repo.
-func (c *GitHubClient) CleanupClone(repoURL string) {
-	owner, repo, err := parseGitHubURL(repoURL)
-	if err != nil {
-		return
-	}
-	cacheKey := owner + "/" + repo
-	if c.cache == nil {
-		return
-	}
-	if data, ok := c.cache.getCloneData(cacheKey); ok && data.cloneDir != "" {
-		// Remove the parent temp dir (snyft-clone-*)
-		parentDir := filepath.Dir(data.cloneDir)
-		_ = os.RemoveAll(parentDir)
-		data.cloneDir = ""
+// prefetchFileContents fetches content for well-known analysis files from the
+// bare clone via git show and stores them in the fileContents cache. Errors for
+// individual files are silently ignored (they may not exist in every repo).
+func prefetchFileContents(ctx context.Context, cloneDir string, data *gitCloneData) {
+	for _, path := range filesToPreFetch {
+		if !data.fileTree[path] {
+			continue
+		}
+		cmd := exec.CommandContext(ctx, "git", "-C", cloneDir, "show", "HEAD:"+path)
+		output, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		data.fileContents[path] = string(output)
 	}
 }
 
-// GetCloneFileContent fetches a file's content from the bare clone via git show.
-// Returns ("", error) if the file doesn't exist or clone data is not available.
+// CleanupClone is a no-op retained for backward compatibility.
+// Clone directories are now deleted immediately after data extraction in
+// CloneAndAnalyze, so there is nothing to clean up here.
+func (c *GitHubClient) CleanupClone(_ string) {}
+
+// GetCloneFileContent returns a file's content from the pre-fetched cache.
+// Files are eagerly fetched during CloneAndAnalyze before the clone directory
+// is deleted. Returns ("", error) if the file was not pre-fetched or clone
+// data is not available. Callers should fall back to API/raw-URL fetching.
 func (c *GitHubClient) GetCloneFileContent(owner, repo, path string) (string, error) {
 	cacheKey := owner + "/" + repo
 	if c.cache == nil {
@@ -226,32 +273,17 @@ func (c *GitHubClient) GetCloneFileContent(owner, repo, path string) (string, er
 	}
 
 	data, ok := c.cache.getCloneData(cacheKey)
-	if !ok || !data.ready || data.cloneDir == "" {
+	if !ok || !data.ready {
 		return "", fmt.Errorf("clone data not available")
 	}
 
-	// Check if already fetched (read lock for cache hit)
 	data.fileContentsMu.RLock()
-	if content, exists := data.fileContents[path]; exists {
-		data.fileContentsMu.RUnlock()
-		return content, nil
-	}
+	content, exists := data.fileContents[path]
 	data.fileContentsMu.RUnlock()
 
-	// Fetch via git show
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", "-C", data.cloneDir, "show", "HEAD:"+path)
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("file not found in clone: %s", path)
+	if !exists {
+		return "", fmt.Errorf("file not in clone cache: %s", path)
 	}
-
-	content := string(output)
-	data.fileContentsMu.Lock()
-	data.fileContents[path] = content
-	data.fileContentsMu.Unlock()
 	return content, nil
 }
 
@@ -268,21 +300,6 @@ func (c *GitHubClient) HasCloneData(repoURL string) bool {
 	return ok && data.ready
 }
 
-// CloneDiskSizeMB returns the size of the clone directory in MB, or 0 if no clone data.
-func (c *GitHubClient) CloneDiskSizeMB(repoURL string) float64 {
-	owner, repo, err := parseGitHubURL(repoURL)
-	if err != nil {
-		return 0
-	}
-	if c.cache == nil {
-		return 0
-	}
-	data, ok := c.cache.getCloneData(owner + "/" + repo)
-	if !ok {
-		return 0
-	}
-	return data.diskSizeMB
-}
 
 // extractCommitAuthors runs git log to extract commit author stats.
 // This provides richer data than git shortlog because we get timestamps.
@@ -490,20 +507,6 @@ func extractFileTree(ctx context.Context, cloneDir string) (map[string]bool, err
 	return tree, nil
 }
 
-// dirSizeMB calculates the total size of a directory in megabytes.
-func dirSizeMB(path string) float64 {
-	var size int64
-	_ = filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !info.IsDir() {
-			size += info.Size()
-		}
-		return nil
-	})
-	return float64(size) / (1024 * 1024)
-}
 
 // repoCache methods for clone data
 
