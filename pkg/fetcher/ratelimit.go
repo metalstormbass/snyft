@@ -80,7 +80,7 @@ func (rl *GitHubRateLimiter) Update(resp *http.Response) {
 		return
 	}
 
-	// Track the last-seen remaining value for ShouldStop() queries.
+	// Track the last-seen remaining value for ShouldFallbackToScraping() queries.
 	rl.mu.Lock()
 	rl.remaining = remaining
 	rl.mu.Unlock()
@@ -148,13 +148,14 @@ func (rl *GitHubRateLimiter) Remaining() int {
 	return rl.remaining
 }
 
-// ShouldStop returns true when the remaining API quota is below the
-// stop threshold (50 calls). This gate allows callers to save progress
-// and exit before exhausting the rate limit entirely.
+// ShouldFallbackToScraping returns true when the remaining API quota is below
+// the given threshold, indicating that callers should switch to scraping-only
+// mode rather than continuing to consume API calls. The scan never stops —
+// it falls back to web scraping for remaining packages.
 //
-// Returns false when remaining is unknown (-1) — we only stop when we
-// have positive evidence that the quota is nearly exhausted.
-func (rl *GitHubRateLimiter) ShouldStop(threshold int) bool {
+// Returns false when remaining is unknown (-1) — we only switch to scraping
+// when we have positive evidence that the quota is nearly exhausted.
+func (rl *GitHubRateLimiter) ShouldFallbackToScraping(threshold int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	return rl.remaining >= 0 && rl.remaining < threshold
