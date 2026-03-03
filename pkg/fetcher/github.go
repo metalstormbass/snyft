@@ -397,9 +397,8 @@ func (c *GitHubClient) doRequest(req *http.Request) (*http.Response, error) {
 // GetRepositoryInfo fetches repository information from GitHub.
 // Web scraping is always tried first to minimize API consumption. The API is
 // used as a fallback when scraping fails, providing richer data (exact dates,
-// issue counts, license, topics). When a token is available and scraping
-// succeeds, the GraphQL batch is still triggered to populate caches for
-// API-only data (signed commits, branch protection).
+// issue counts, license, topics). GraphQL batch calls are only made when
+// scraping fails and a token is available.
 func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo, error) {
 	owner, repo, err := parseGitHubURL(repoURL)
 	if err != nil {
@@ -423,12 +422,6 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		if scrapeErr == nil {
 			if c.cache != nil {
 				c.cache.setRepoInfo(cacheKey, info)
-			}
-			// Trigger GraphQL batch to populate caches for API-only data
-			// (signed commits, branch protection) that scraping cannot provide.
-			// This uses 1 API call to pre-fill caches for later checks.
-			if c.token != "" && !c.preferAPI {
-				c.fetchBatchRepoData(owner, repo)
 			}
 			return info, nil
 		}
@@ -1279,17 +1272,18 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		return exists
 	}
 
-	// Raw-URL-first path: always use raw.githubusercontent.com (CDN, not
-	// subject to API rate limits) as the primary check.
-	if c.shouldPreferScraping() {
-		exists := c.checkFileViaRawURL(owner, repo, path)
+	// Raw-URL-first path: always try raw.githubusercontent.com first (CDN,
+	// not subject to API rate limits). This avoids burning API calls for
+	// simple file existence checks on public repos.
+	if c.checkFileViaRawURL(owner, repo, path) {
 		if c.cache != nil {
-			c.cache.setFileExists(cacheKey, exists)
+			c.cache.setFileExists(cacheKey, true)
 		}
-		return exists
+		return true
 	}
 
-	// API path: fallback (more reliable, handles private repos).
+	// API fallback: raw URL didn't confirm the file. Try the API which is
+	// more reliable (handles private repos, correct branch resolution).
 	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", c.baseURL, owner, repo, path)
 	req, err := http.NewRequest("HEAD", url, nil)
 	if err != nil {
@@ -1313,15 +1307,10 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 		return true
 	}
 
-	// Rate-limited: try raw.githubusercontent.com (not subject to API rate limits).
-	// Do NOT cache false for rate-limited responses — the file may exist but the API
+	// Rate-limited: do NOT cache false — the file may exist but the API
 	// refused to answer. A cached false here would poison subsequent checks.
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		exists := c.checkFileViaRawURL(owner, repo, path)
-		if exists && c.cache != nil {
-			c.cache.setFileExists(cacheKey, true)
-		}
-		return exists
+		return false
 	}
 
 	// File genuinely not found (404) or other client error — safe to cache.
@@ -1333,8 +1322,8 @@ func (c *GitHubClient) fileExists(owner, repo, path string) bool {
 
 // checkFileViaRawURL checks if a file exists by issuing a HEAD request to
 // raw.githubusercontent.com, which is served by a CDN and is not subject to
-// the GitHub API rate limit. This is used as a fallback when the API returns
-// 403/429.
+// the GitHub API rate limit. This is the primary file existence check;
+// the API is used as a fallback when this returns false.
 //
 // When GetRepositoryInfo has already been called (which caches DefaultBranch),
 // we use the known branch name to avoid a redundant HEAD request.
