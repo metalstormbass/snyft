@@ -541,6 +541,486 @@ func TestBatchCachePreventsRESTCalls(t *testing.T) {
 	}
 }
 
+// Test: GraphQL batch includes merged PR review data for code review rate
+// Justification: Code review rate indicates governance maturity — projects with
+//                no code review have higher risk of malicious commits being merged
+//                undetected. Fetching this via GraphQL replaces up to 21 REST calls.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — governance checks
+// Methodology: Mock GraphQL response with merged PRs (some with reviews, some without),
+//              verify PRStats is correctly computed and cached.
+// Result: PRStats reflects correct review rate; cache prevents REST calls.
+func TestBatchPRReviewData(t *testing.T) {
+	graphqlResponse := map[string]interface{}{
+		"data": map[string]interface{}{
+			"repository": buildBaseGraphQLRepo(map[string]interface{}{
+				"pullRequests": map[string]interface{}{
+					"totalCount": 50,
+					"nodes": []interface{}{
+						map[string]interface{}{"reviews": map[string]interface{}{"totalCount": 3}},
+						map[string]interface{}{"reviews": map[string]interface{}{"totalCount": 0}},
+						map[string]interface{}{"reviews": map[string]interface{}{"totalCount": 1}},
+						map[string]interface{}{"reviews": map[string]interface{}{"totalCount": 0}},
+						map[string]interface{}{"reviews": map[string]interface{}{"totalCount": 2}},
+					},
+				},
+			}),
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(graphqlResponse)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		token:      "test-token",
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	batch := client.fetchBatchRepoData("testowner", "test-repo")
+	if batch == nil {
+		t.Fatal("expected batch data, got nil")
+	}
+
+	// Verify PR stats
+	if batch.PRStats == nil {
+		t.Fatal("expected PR stats, got nil")
+	}
+	if batch.PRStats.TotalPRs != 50 {
+		t.Errorf("expected 50 total PRs, got %d", batch.PRStats.TotalPRs)
+	}
+	if batch.PRStats.MergedPRs != 50 {
+		t.Errorf("expected 50 merged PRs, got %d", batch.PRStats.MergedPRs)
+	}
+	if batch.PRStats.PRsWithReviews != 3 {
+		t.Errorf("expected 3 PRs with reviews, got %d", batch.PRStats.PRsWithReviews)
+	}
+	// 3 out of 5 sampled PRs have reviews = 60%
+	expectedRate := 60.0
+	if batch.PRStats.CodeReviewRate != expectedRate {
+		t.Errorf("expected code review rate %.1f%%, got %.1f%%", expectedRate, batch.PRStats.CodeReviewRate)
+	}
+
+	// Verify cache was populated
+	if cached, ok := client.cache.getPRStats("testowner/test-repo"); !ok || cached == nil {
+		t.Error("expected PR stats to be cached")
+	}
+}
+
+// Test: GraphQL batch includes commit author data for bus factor assessment
+// Justification: Single-maintainer packages have higher account takeover risk.
+//                Fetching commit authors via GraphQL replaces 3 REST pagination calls.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) — maintainer risk
+// Methodology: Mock GraphQL response with commits from multiple authors, verify
+//              CommitAuthorStats correctly identifies unique authors and recency.
+// Result: CommitAuthorStats reflects author distribution; cache prevents REST calls.
+func TestBatchCommitAuthorData(t *testing.T) {
+	now := time.Now()
+	recentDate := now.AddDate(0, 0, -30).Format(time.RFC3339)
+	oldDate := now.AddDate(0, 0, -120).Format(time.RFC3339)
+
+	graphqlResponse := map[string]interface{}{
+		"data": map[string]interface{}{
+			"repository": buildBaseGraphQLRepo(map[string]interface{}{
+				"defaultBranchRef": map[string]interface{}{
+					"name": "main",
+					"target": map[string]interface{}{
+						"history": map[string]interface{}{
+							"nodes": []interface{}{
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Alice", "email": "alice@example.com", "date": recentDate},
+									"signature": map[string]interface{}{"isValid": true},
+								},
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Alice", "email": "alice@example.com", "date": recentDate},
+									"signature": map[string]interface{}{"isValid": true},
+								},
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Bob", "email": "bob@example.com", "date": recentDate},
+									"signature": map[string]interface{}{"isValid": false},
+								},
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Charlie", "email": "charlie@example.com", "date": oldDate},
+									"signature": nil,
+								},
+							},
+						},
+					},
+				},
+			}),
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(graphqlResponse)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		token:      "test-token",
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	batch := client.fetchBatchRepoData("testowner", "test-repo")
+	if batch == nil {
+		t.Fatal("expected batch data, got nil")
+	}
+
+	// Verify commit author stats
+	if batch.CommitAuthors == nil {
+		t.Fatal("expected commit authors, got nil")
+	}
+	if batch.CommitAuthors.TotalCommits != 4 {
+		t.Errorf("expected 4 total commits, got %d", batch.CommitAuthors.TotalCommits)
+	}
+	if len(batch.CommitAuthors.UniqueAuthors) != 3 {
+		t.Errorf("expected 3 unique authors, got %d", len(batch.CommitAuthors.UniqueAuthors))
+	}
+	if batch.CommitAuthors.AuthorCommitCounts["alice@example.com"] != 2 {
+		t.Errorf("expected alice to have 2 commits, got %d", batch.CommitAuthors.AuthorCommitCounts["alice@example.com"])
+	}
+	// Alice and Bob are recent (within 90 days), Charlie is historical
+	if len(batch.CommitAuthors.RecentAuthors) != 2 {
+		t.Errorf("expected 2 recent authors, got %d: %v", len(batch.CommitAuthors.RecentAuthors), batch.CommitAuthors.RecentAuthors)
+	}
+	if len(batch.CommitAuthors.HistoricalAuthors) != 1 {
+		t.Errorf("expected 1 historical author, got %d: %v", len(batch.CommitAuthors.HistoricalAuthors), batch.CommitAuthors.HistoricalAuthors)
+	}
+
+	// Verify cache was populated
+	if cached, ok := client.cache.getCommitAuthors("testowner/test-repo"); !ok || cached == nil {
+		t.Error("expected commit authors to be cached")
+	}
+}
+
+// Test: GraphQL batch includes commit signature data for release security
+// Justification: Commit signing indicates build/release integrity practices.
+//                Unsigned commits may indicate a compromised CI/CD pipeline or
+//                lack of provenance controls. Fetching via GraphQL replaces 1 REST call.
+// Source: SLSA specification v1.0 — provenance and build integrity
+// Methodology: Mock GraphQL response with mix of signed and unsigned commits,
+//              verify signed commit detection and caching.
+// Result: Correctly identifies signing rate; cache prevents REST calls.
+func TestBatchSignedCommitData(t *testing.T) {
+	now := time.Now()
+	date := now.AddDate(0, 0, -10).Format(time.RFC3339)
+
+	// 3 out of 4 commits signed = 75% > 50% threshold → hasSigning = true
+	graphqlResponse := map[string]interface{}{
+		"data": map[string]interface{}{
+			"repository": buildBaseGraphQLRepo(map[string]interface{}{
+				"defaultBranchRef": map[string]interface{}{
+					"name": "main",
+					"target": map[string]interface{}{
+						"history": map[string]interface{}{
+							"nodes": []interface{}{
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Dev", "email": "dev@example.com", "date": date},
+									"signature": map[string]interface{}{"isValid": true},
+								},
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Dev", "email": "dev@example.com", "date": date},
+									"signature": map[string]interface{}{"isValid": true},
+								},
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Dev", "email": "dev@example.com", "date": date},
+									"signature": map[string]interface{}{"isValid": true},
+								},
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Dev", "email": "dev@example.com", "date": date},
+									"signature": map[string]interface{}{"isValid": false},
+								},
+							},
+						},
+					},
+				},
+			}),
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(graphqlResponse)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		token:      "test-token",
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	batch := client.fetchBatchRepoData("testowner", "test-repo")
+	if batch == nil {
+		t.Fatal("expected batch data, got nil")
+	}
+
+	if batch.SignedCommits == nil {
+		t.Fatal("expected signed commits data, got nil")
+	}
+	if !batch.SignedCommits.hasSigning {
+		t.Error("expected hasSigning=true (75% > 50% threshold)")
+	}
+	if batch.SignedCommits.verifiedCount != 3 {
+		t.Errorf("expected 3 verified commits, got %d", batch.SignedCommits.verifiedCount)
+	}
+
+	// Verify cache was populated
+	if cached, ok := client.cache.getSignedCommits("testowner/test-repo"); !ok || cached == nil {
+		t.Error("expected signed commits to be cached")
+	}
+}
+
+// Test: GraphQL batch caches prevent PR REST calls
+// Justification: After batch populates PRStats cache, GetPullRequestStats should
+//                return cached data without making any REST calls. This eliminates
+//                the 21 REST calls (1 PR list + 20 per-PR review checks).
+// Source: Rate limit conservation for supply chain scanning at scale
+// Methodology: Fetch via GraphQL batch, then call GetPullRequestStats, verify
+//              no additional HTTP requests are made.
+// Result: GetPullRequestStats returns cached data; zero additional API calls.
+func TestBatchCachePreventsPRRESTCalls(t *testing.T) {
+	requestCount := 0
+
+	graphqlResponse := map[string]interface{}{
+		"data": map[string]interface{}{
+			"repository": buildBaseGraphQLRepo(map[string]interface{}{
+				"pullRequests": map[string]interface{}{
+					"totalCount": 10,
+					"nodes": []interface{}{
+						map[string]interface{}{"reviews": map[string]interface{}{"totalCount": 1}},
+						map[string]interface{}{"reviews": map[string]interface{}{"totalCount": 0}},
+					},
+				},
+			}),
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path == "/graphql" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(graphqlResponse)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		token:      "test-token",
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	// First: GraphQL batch populates cache
+	batch := client.fetchBatchRepoData("testowner", "test-repo")
+	if batch == nil {
+		t.Fatal("expected batch data")
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected 1 request for GraphQL, got %d", requestCount)
+	}
+
+	// Second: GetPullRequestStats should hit cache — no additional requests
+	stats, err := client.GetPullRequestStats("https://github.com/testowner/test-repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats == nil {
+		t.Fatal("expected PR stats")
+	}
+	if stats.TotalPRs != 10 {
+		t.Errorf("expected 10 total PRs, got %d", stats.TotalPRs)
+	}
+	if requestCount != 1 {
+		t.Errorf("expected 1 total request (cache hit), got %d", requestCount)
+	}
+}
+
+// Test: GraphQL batch caches prevent commit REST calls
+// Justification: After batch populates commit caches, GetCommitAuthors and
+//                CheckSignedCommits should return cached data without REST calls.
+//                This eliminates 4 REST calls (3 pages commits + 1 signature check).
+// Source: Rate limit conservation for supply chain scanning at scale
+// Methodology: Fetch via GraphQL batch, then call GetCommitAuthors and
+//              CheckSignedCommits, verify no additional HTTP requests.
+// Result: Both methods return cached data; zero additional API calls.
+func TestBatchCachePreventsCommitRESTCalls(t *testing.T) {
+	requestCount := 0
+	now := time.Now()
+	date := now.AddDate(0, 0, -10).Format(time.RFC3339)
+
+	graphqlResponse := map[string]interface{}{
+		"data": map[string]interface{}{
+			"repository": buildBaseGraphQLRepo(map[string]interface{}{
+				"defaultBranchRef": map[string]interface{}{
+					"name": "main",
+					"target": map[string]interface{}{
+						"history": map[string]interface{}{
+							"nodes": []interface{}{
+								map[string]interface{}{
+									"author":    map[string]interface{}{"name": "Dev", "email": "dev@example.com", "date": date},
+									"signature": map[string]interface{}{"isValid": true},
+								},
+							},
+						},
+					},
+				},
+			}),
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path == "/graphql" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(graphqlResponse)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		token:      "test-token",
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	// First: GraphQL batch
+	batch := client.fetchBatchRepoData("testowner", "test-repo")
+	if batch == nil {
+		t.Fatal("expected batch data")
+	}
+	if requestCount != 1 {
+		t.Fatalf("expected 1 request, got %d", requestCount)
+	}
+
+	// GetCommitAuthors should use cached data
+	authors, err := client.GetCommitAuthors("https://github.com/testowner/test-repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if authors == nil {
+		t.Fatal("expected commit authors")
+	}
+	if requestCount != 1 {
+		t.Errorf("expected 1 total request after GetCommitAuthors (cache hit), got %d", requestCount)
+	}
+
+	// CheckSignedCommits should use cached data
+	hasSigning, verifiedCount, err := client.CheckSignedCommits("https://github.com/testowner/test-repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requestCount != 1 {
+		t.Errorf("expected 1 total request after CheckSignedCommits (cache hit), got %d", requestCount)
+	}
+	if !hasSigning {
+		t.Error("expected hasSigning=true (1 out of 1 commit signed = 100% > 50% threshold)")
+	}
+	if verifiedCount != 1 {
+		t.Errorf("expected 1 verified commit, got %d", verifiedCount)
+	}
+}
+
+// Test: buildBatchQuery includes PR and commit fields
+// Justification: Query must include pullRequests and commit history fields to
+//                eliminate 30+ REST calls per repo for supply chain risk assessment.
+// Source: GitHub GraphQL API schema
+// Methodology: Build query and verify PR and commit fields are present.
+// Result: Query contains all required fields for PR reviews and commit data.
+func TestBuildBatchQueryIncludesPRAndCommits(t *testing.T) {
+	query := buildBatchQuery("owner", "repo")
+
+	// Verify PR query fields
+	for _, field := range []string{
+		"pullRequests(last: 20, states: MERGED)",
+		"totalCount",
+		"reviews(first: 1)",
+	} {
+		if !strings.Contains(query, field) {
+			t.Errorf("query should contain %q", field)
+		}
+	}
+
+	// Verify commit history fields
+	for _, field := range []string{
+		"history(first: 100)",
+		"signature",
+		"isValid",
+	} {
+		if !strings.Contains(query, field) {
+			t.Errorf("query should contain %q", field)
+		}
+	}
+}
+
+// buildBaseGraphQLRepo returns a minimal valid GraphQL repository response
+// with optional field overrides. This reduces boilerplate in tests.
+func buildBaseGraphQLRepo(overrides map[string]interface{}) map[string]interface{} {
+	base := map[string]interface{}{
+		"name":           "test-repo",
+		"description":    "A test repository",
+		"stargazerCount": 100,
+		"forkCount":      10,
+		"watchers":       map[string]interface{}{"totalCount": 5},
+		"openIssues":     map[string]interface{}{"totalCount": 2},
+		"defaultBranchRef": map[string]interface{}{
+			"name":   "main",
+			"target": nil,
+		},
+		"isArchived":       false,
+		"createdAt":        "2023-01-01T00:00:00Z",
+		"updatedAt":        "2024-01-01T00:00:00Z",
+		"pushedAt":         "2024-01-01T00:00:00Z",
+		"licenseInfo":      map[string]interface{}{"name": "MIT License"},
+		"repositoryTopics": map[string]interface{}{"nodes": []interface{}{}},
+		"owner":            map[string]interface{}{"login": "testowner"},
+		"url":              "https://github.com/testowner/test-repo",
+		"releases":         map[string]interface{}{"nodes": []interface{}{}},
+		"pullRequests": map[string]interface{}{
+			"totalCount": 0,
+			"nodes":      []interface{}{},
+		},
+		"securityMd":       nil,
+		"securityMdGh":     nil,
+		"contributingMd":   nil,
+		"contributingMdGh": nil,
+		"codeowners":       nil,
+		"codeownersGh":     nil,
+		"codeOfConduct":    nil,
+		"branchProtectionRules": map[string]interface{}{"nodes": []interface{}{}},
+	}
+
+	for k, v := range overrides {
+		base[k] = v
+	}
+	return base
+}
+
 // Test: GraphQL is not used in preferAPI mode (test mode)
 // Justification: Test servers use preferAPI mode with mock REST endpoints.
 //                GraphQL should be skipped in this mode to keep existing tests working.
