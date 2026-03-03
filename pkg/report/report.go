@@ -353,16 +353,16 @@ func categoryList(scores models.CategoryScores) []categoryEntry {
 // categoryTooltips maps each supply chain risk category to a brief description
 // of what it assesses and why it matters for compromise likelihood.
 var categoryTooltips = map[string]string{
-	"Publisher Control":  "Evaluates maintainer count, 2FA usage, and account security. Single maintainers are a single point of compromise via phishing or credential stuffing.",
-	"Ownership Changes":  "Detects recent transfers of package ownership. Malicious actors acquire dormant or popular packages to inject compromised code.",
-	"Release Anomalies":  "Flags unusual release patterns such as dormant packages suddenly publishing updates, a common indicator of account takeover.",
-	"Install Execution":  "Checks for scripts that run during install (preinstall, postinstall). Install scripts are a primary vector for supply chain attacks.",
-	"Dependency Sprawl":  "Measures the breadth of the dependency tree. More dependencies increase the attack surface for transitive compromise.",
-	"Provenance":         "Verifies build integrity via SLSA attestations, Sigstore signatures, or reproducible builds. Without provenance, artifacts cannot be traced to source.",
-	"Health":             "Assesses project activity, contributor count, and community engagement. Abandoned projects are more vulnerable to takeover.",
-	"Governance":         "Checks for security policies, contribution guidelines, and governance structures that reduce single-point-of-failure risk.",
-	"Release Security":   "Evaluates CI/CD pipeline integrity: branch protection, pinned actions, signed releases, and automated publishing workflows.",
-	"Package Maturity":   "Considers package age, download volume, and version history. New or low-adoption packages carry higher unknown risk.",
+	"Publisher Control": "Checks: maintainer count (single = high risk), org vs personal account, verified org membership, maintainer account age (under 6mo flagged), email domain (personal vs organizational), package concentration (50+ packages = high-value target), commit/release signing, and org-level MFA enforcement.",
+	"Ownership Changes": "Checks: commit author turnover (recent vs historical committers, 80%+ new = high risk), registry ownership transfer history (npm/PyPI), repo creation vs package publication date mismatch (90+ days = transfer signal), and repository age as fallback.",
+	"Release Anomalies": "Checks: dormancy detection (1yr+ with no commits), dormancy reactivation (long gap then sudden release), release cadence spikes (release interval under 10% of average), and commit frequency anomalies (year-over-year comparison, e.g. under 5 commits then 20+).",
+	"Install Execution": "Checks: presence of install-time script hooks (preinstall, install, postinstall for npm; setup.py for PyPI; pom.xml for Maven), and dangerous pattern analysis in scripts (network requests, filesystem modifications, binary execution, credential exfiltration).",
+	"Dependency Sprawl": "Checks: transitive dependency count from lock files (package-lock.json, yarn.lock, poetry.lock) with thresholds at 10 and 50 deps. Falls back to direct dependency count from registry metadata (thresholds at 5 and 15 deps) when no lock file is available.",
+	"Provenance":        "Checks: source code availability (public repo URL or source package in artifact), npm provenance attestations, Maven Central GPG signatures (.asc files), signed GitHub releases, and OSSF Scorecard Signed-Releases score.",
+	"Health":            "Checks: bus factor from commit distribution (how many authors contribute 50% of commits), OSSF Contributors score as fallback, maintainer count as fallback. Also checks review oversight: branch protection with required reviewers, code review rate (75%+), and release documentation.",
+	"Governance":        "Checks: repo archived/abandoned status (180+ days inactive = high risk), presence of SECURITY.md or .github/SECURITY.md, OSSF Security-Policy score, average issue response time (14 days or less = good), and branch protection or documented release process.",
+	"Release Security":  "Checks: CI/CD automated publishing workflow, branch protection on default branch, signed releases, required PR reviews or code review rate, documented release process. Penalizes: CI/CD workflow risks (unpinned actions, dangerous triggers, script injection, excessive permissions, secrets in logs) and self-hosted runners.",
+	"Package Maturity":  "Checks: package age (under 6mo = high risk, 6mo-2yr = moderate, 2yr+ = low), staleness since last commit or registry update (1yr+ = high risk), and release cadence regularity via coefficient of variation (CV over 2.0 = highly irregular, over 1.0 = somewhat irregular). Final score is the worst of all three.",
 }
 
 // riskArea describes one aggregated risk finding across all packages.
