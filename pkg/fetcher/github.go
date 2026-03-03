@@ -320,13 +320,14 @@ func (c *GitHubClient) RateLimitRemaining() int {
 	return c.rateLimiter.Remaining()
 }
 
-// ShouldStopForRateLimit returns true when the GitHub API quota is below the
-// given threshold, indicating the scan should save progress and stop.
-func (c *GitHubClient) ShouldStopForRateLimit(threshold int) bool {
+// ShouldFallbackToScraping returns true when the GitHub API quota is below the
+// given threshold, indicating the scan should switch to scraping-only mode for
+// remaining packages. The scan never stops — it continues with web scraping.
+func (c *GitHubClient) ShouldFallbackToScraping(threshold int) bool {
 	if c.rateLimiter == nil {
 		return false
 	}
-	return c.rateLimiter.ShouldStop(threshold)
+	return c.rateLimiter.ShouldFallbackToScraping(threshold)
 }
 
 // SetScrapingOnlyMode enables or disables scraping-only mode. When enabled,
