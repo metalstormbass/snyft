@@ -55,25 +55,49 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 		}
 	}
 
-	// Path 2: use direct dep count from registry (npm dependencies / PyPI requires_dist).
+	// Path 2: use direct dep count from registry (npm dependencies / PyPI requires_dist / Maven pom).
+	//
+	// Maven projects have fundamentally different dependency models: BOM imports,
+	// dependency management sections, and multi-module aggregation inflate apparent
+	// counts without representing actual attack surface. We apply higher thresholds
+	// for Maven to avoid penalizing its idiomatic patterns.
+	//
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — each direct dep
+	//         carries its own transitive tree, expanding the attack surface multiplicatively.
+	//         Maven-specific adjustment accounts for managed/inherited dependencies that
+	//         don't represent independent supply chain entry points.
 	if result.Metadata.DependencyMetrics != nil && !result.Metadata.DependencyMetrics.Verified {
 		directCount := result.Metadata.DependencyMetrics.DirectCount
-		methodology := "No lock file available. Used direct dependency count from package registry metadata as proxy for transitive exposure. Thresholds: 0-5 low, 6-15 moderate, 16+ high risk."
+
+		// Ecosystem-specific thresholds for direct dependency count.
+		// Maven uses higher thresholds because BOM imports, dependency management
+		// sections, and multi-module aggregation inflate apparent counts without
+		// representing actual attack surface.
+		lowThreshold := 5  // inclusive upper bound for low risk
+		modThreshold := 15 // inclusive upper bound for moderate risk
+		thresholdNote := "0-5 low, 6-15 moderate, 16+ high risk"
+		if result.Dependency.Ecosystem == models.EcosystemMaven {
+			lowThreshold = 12
+			modThreshold = 29
+			thresholdNote = "0-12 low, 13-29 moderate, 30+ high risk (Maven-adjusted: BOM/management imports inflate counts)"
+		}
+
+		methodology := fmt.Sprintf("No lock file available. Used direct dependency count from package registry metadata as proxy for transitive exposure. Thresholds: %s.", thresholdNote)
 		checks := []models.CheckResult{
 			{Name: "Lock file analysis", Status: "UNAVAILABLE", Detail: "No lock file found in project"},
 			{Name: "Registry dependency count", Status: "PASS", Detail: fmt.Sprintf("%d direct dependencies found in registry metadata", directCount)},
 		}
 
-		if directCount <= 5 {
-			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "PASS", Detail: fmt.Sprintf("%d direct deps <= 5 threshold", directCount)})
+		if directCount <= lowThreshold {
+			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "PASS", Detail: fmt.Sprintf("%d direct deps <= %d threshold", directCount, lowThreshold)})
 			return models.CategoryScore{
 				Score: 2, RiskPoints: 0,
 				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (no lock file available). A small dependency count limits the supply chain attack surface.", directCount),
 				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount),
 				Verified: false, Methodology: methodology, ChecksPerformed: checks,
 			}
-		} else if directCount <= 15 {
-			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "FAIL", Detail: fmt.Sprintf("%d direct deps in 6-15 range (moderate)", directCount)})
+		} else if directCount <= modThreshold {
+			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "FAIL", Detail: fmt.Sprintf("%d direct deps in %d-%d range (moderate)", directCount, lowThreshold+1, modThreshold)})
 			return models.CategoryScore{
 				Score: 1, RiskPoints: 1,
 				Description: fmt.Sprintf("%d direct dependencies found in registry metadata. Each direct dependency carries its own transitive tree, expanding the attack surface multiplicatively.", directCount),
@@ -81,10 +105,10 @@ func (a *Analyzer) scoreDependencySprawl(result *models.AnalysisResult) models.C
 				Verified: false, Methodology: methodology, ChecksPerformed: checks,
 			}
 		} else {
-			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "FAIL", Detail: fmt.Sprintf("%d direct deps > 15 threshold (high sprawl)", directCount)})
+			checks = append(checks, models.CheckResult{Name: "Direct dependency threshold", Status: "FAIL", Detail: fmt.Sprintf("%d direct deps > %d threshold (high sprawl)", directCount, modThreshold)})
 			return models.CategoryScore{
 				Score: 0, RiskPoints: 2,
-				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (>15 threshold). A large number of direct dependencies significantly increases the supply chain attack surface.", directCount),
+				Description: fmt.Sprintf("%d direct dependencies found in registry metadata (>%d threshold). A large number of direct dependencies significantly increases the supply chain attack surface.", directCount, modThreshold),
 				Evidence:    fmt.Sprintf("%d direct dependencies (from registry metadata)", directCount),
 				Verified: false, Methodology: methodology, ChecksPerformed: checks,
 			}
