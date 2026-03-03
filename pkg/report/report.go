@@ -346,6 +346,21 @@ func categoryList(scores models.CategoryScores) []categoryEntry {
 	}
 }
 
+// categoryTooltips maps each supply chain risk category to a brief description
+// of what it assesses and why it matters for compromise likelihood.
+var categoryTooltips = map[string]string{
+	"Publisher Control":  "Evaluates maintainer count, 2FA usage, and account security. Single maintainers are a single point of compromise via phishing or credential stuffing.",
+	"Ownership Changes":  "Detects recent transfers of package ownership. Malicious actors acquire dormant or popular packages to inject compromised code.",
+	"Release Anomalies":  "Flags unusual release patterns such as dormant packages suddenly publishing updates, a common indicator of account takeover.",
+	"Install Execution":  "Checks for scripts that run during install (preinstall, postinstall). Install scripts are a primary vector for supply chain attacks.",
+	"Dependency Sprawl":  "Measures the breadth of the dependency tree. More dependencies increase the attack surface for transitive compromise.",
+	"Provenance":         "Verifies build integrity via SLSA attestations, Sigstore signatures, or reproducible builds. Without provenance, artifacts cannot be traced to source.",
+	"Health":             "Assesses project activity, contributor count, and community engagement. Abandoned projects are more vulnerable to takeover.",
+	"Governance":         "Checks for security policies, contribution guidelines, and governance structures that reduce single-point-of-failure risk.",
+	"Release Security":   "Evaluates CI/CD pipeline integrity: branch protection, pinned actions, signed releases, and automated publishing workflows.",
+	"Package Maturity":   "Considers package age, download volume, and version history. New or low-adoption packages carry higher unknown risk.",
+}
+
 // riskArea describes one aggregated risk finding across all packages.
 // It uses plain text (no ANSI) so all formats can consume it directly.
 type riskArea struct {

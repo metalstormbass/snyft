@@ -220,6 +220,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .cat-score{font-weight:700;color:#b0b0b0;font-size:12px}
 .cat-verified{font-size:11px;color:#666666}
 
+/* Category tooltips */
+.cat-item{position:relative;cursor:default}
+.cat-item[data-tooltip]:hover::after{content:attr(data-tooltip);position:absolute;bottom:calc(100%% + 6px);left:50%%;transform:translateX(-50%%);background:#2a2a2a;color:#d0d0d0;font-size:12px;font-weight:400;line-height:1.4;padding:8px 12px;border-radius:6px;border:1px solid #3a3a3a;white-space:normal;width:260px;z-index:10;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
+.cat-item[data-tooltip]:hover::before{content:'';position:absolute;bottom:calc(100%% + 2px);left:50%%;transform:translateX(-50%%);border:5px solid transparent;border-top-color:#3a3a3a;z-index:11;pointer-events:none}
+
 /* Findings */
 .findings-title{font-size:13px;font-weight:700;color:#b0b0b0;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:10px}
 .finding-item{padding:10px 14px;border-radius:8px;margin-bottom:6px;font-size:13px;border:1px solid #1b4332;background:#222222}
@@ -450,9 +455,10 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 	if result.SupplyChainScore != nil {
 		f(w, "<div class=\"cat-grid\">\n")
 		for _, cat := range categoryList(result.SupplyChainScore.CategoryScores) {
+			tooltip := html.EscapeString(categoryTooltips[cat.Name])
 			if cat.Score.Skipped {
-				f(w, "<div class=\"cat-item skipped\"><span class=\"cat-dot dot-skip\"></span><span class=\"cat-name\">%s</span><span class=\"cat-score\">SKIP</span></div>\n",
-					html.EscapeString(cat.Name))
+				f(w, "<div class=\"cat-item skipped\" data-tooltip=\"%s\"><span class=\"cat-dot dot-skip\"></span><span class=\"cat-name\">%s</span><span class=\"cat-score\">SKIP</span></div>\n",
+					tooltip, html.EscapeString(cat.Name))
 				continue
 			}
 			riskCls := fmt.Sprintf("risk-%d", cat.Score.RiskPoints)
@@ -461,8 +467,8 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 			if !cat.Score.Verified {
 				verified = " <span class=\"cat-verified\">?</span>"
 			}
-			f(w, "<div class=\"cat-item %s\"><span class=\"cat-dot %s\"></span><span class=\"cat-name\">%s</span><span class=\"cat-score\">%d/2%s</span></div>\n",
-				riskCls, dotCls, html.EscapeString(cat.Name), cat.Score.Score, verified)
+			f(w, "<div class=\"cat-item %s\" data-tooltip=\"%s\"><span class=\"cat-dot %s\"></span><span class=\"cat-name\">%s</span><span class=\"cat-score\">%d/2%s</span></div>\n",
+				riskCls, tooltip, dotCls, html.EscapeString(cat.Name), cat.Score.Score, verified)
 		}
 		f(w, "</div>\n")
 	}
