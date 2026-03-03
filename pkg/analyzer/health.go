@@ -131,6 +131,14 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 	// 2 points = 0 risk, 1 point = 1 risk, 0 points = 2 risk
 	riskPoints := 2 - points
 
+	// When no data was actually verified, don't let "benefit of doubt" on both
+	// components result in 0 risk points. A completely unverifiable package should
+	// score 1 (unknown/moderate), not 0 (verified safe). This fixes the paradox
+	// where packages with no data score better than fully-analyzed ones.
+	if !verified && riskPoints == 0 {
+		riskPoints = 1
+	}
+
 	// Build description from actual data
 	var description string
 	switch points {
@@ -148,6 +156,7 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 		Description:     description,
 		Evidence:        strings.Join(evidence, "; "),
 		Verified:        verified,
+		DataAvailable:   verified,
 		Methodology:     healthMethodology,
 		ChecksPerformed: healthChecks,
 	}
