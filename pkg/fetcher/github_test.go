@@ -3065,7 +3065,7 @@ func TestGitHubClient_DoRequest_BlockedInScrapingOnlyMode(t *testing.T) {
 	defer server.Close()
 
 	client := NewGitHubClientWithBaseURL(server.URL)
-	client.scrapingOnly = true
+	client.scrapingOnly.Store(true)
 
 	req, err := http.NewRequest("GET", server.URL+"/repos/test/test", nil)
 	if err != nil {
