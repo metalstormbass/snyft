@@ -317,6 +317,35 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 	// Methodology: Fetch CI config file content via git platform API, parse for insecure patterns
 	// Result: Populates CIWorkflowRisks consumed by scoreReleaseSecurity
 	ciConfigPaths := fetcher.CIConfigPaths()
+
+	// Collect all CI config paths to fetch
+	type ciConfigEntry struct {
+		platform string
+		path     string
+	}
+	var allEntries []ciConfigEntry
+	for _, bs := range buildSystems {
+		paths, ok := ciConfigPaths[bs.Platform]
+		if !ok {
+			continue
+		}
+		for _, cfgPath := range paths {
+			allEntries = append(allEntries, ciConfigEntry{platform: bs.Platform, path: cfgPath})
+		}
+	}
+
+	// Parallel clone path: if bare clone data is available, read all files concurrently
+	// via local git show (zero API calls, no rate limiting).
+	var contentMap map[string]string
+	if ghClient, ok := gitClient.(*fetcher.GitHubClient); ok && len(allEntries) > 0 {
+		allPaths := make([]string, len(allEntries))
+		for i, e := range allEntries {
+			allPaths[i] = e.path
+		}
+		contentMap, _ = ghClient.GetMultipleCloneFileContents(repoURL, allPaths)
+	}
+
+	// Process results: use clone content if available, fall back to GetFileContent
 	for _, bs := range buildSystems {
 		paths, ok := ciConfigPaths[bs.Platform]
 		if !ok {
@@ -324,9 +353,17 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 		}
 
 		for _, cfgPath := range paths {
-			content, err := gitClient.GetFileContent(repoURL, cfgPath)
-			if err != nil || content == "" {
-				continue
+			var content string
+			if contentMap != nil {
+				content = contentMap[cfgPath]
+			}
+			if content == "" {
+				// Fallback: fetch individually (scraping/API)
+				c, err := gitClient.GetFileContent(repoURL, cfgPath)
+				if err != nil || c == "" {
+					continue
+				}
+				content = c
 			}
 
 			risk := fetcher.ParseCIWorkflowContent(content, bs.Platform)

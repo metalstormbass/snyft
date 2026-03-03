@@ -2715,6 +2715,14 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 		}
 	}
 
+	// Clone-first path: use cached clone file tree if available (no network call)
+	if workflows, ok := c.getWorkflowFilesFromClone(owner, repo); ok {
+		if c.cache != nil {
+			c.cache.setWorkflowFiles(cacheKey, workflows)
+		}
+		return workflows, nil
+	}
+
 	// Scraping-first path: always try scraping the GitHub tree page first.
 	if c.shouldPreferScraping() {
 		workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)

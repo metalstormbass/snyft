@@ -251,6 +251,63 @@ func (c *GitHubClient) GetCloneFileContent(owner, repo, path string) (string, er
 	return content, nil
 }
 
+// GetMultipleCloneFileContents reads multiple files concurrently from the bare clone.
+// Returns a map of path->content for files that exist. Missing files are silently skipped.
+// Returns (nil, false) if clone data is not available.
+func (c *GitHubClient) GetMultipleCloneFileContents(repoURL string, paths []string) (map[string]string, bool) {
+	owner, repo, err := parseGitHubURL(repoURL)
+	if err != nil {
+		return nil, false
+	}
+	cacheKey := owner + "/" + repo
+	if c.cache == nil {
+		return nil, false
+	}
+
+	data, ok := c.cache.getCloneData(cacheKey)
+	if !ok || !data.ready || data.cloneDir == "" {
+		return nil, false
+	}
+
+	results := make(map[string]string)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, p := range paths {
+		// Check if already cached
+		if content, exists := data.fileContents[p]; exists {
+			mu.Lock()
+			results[p] = content
+			mu.Unlock()
+			continue
+		}
+
+		// Fetch concurrently via git show
+		wg.Add(1)
+		go func(filePath string) {
+			defer wg.Done()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			cmd := exec.CommandContext(ctx, "git", "-C", data.cloneDir, "show", "HEAD:"+filePath)
+			output, err := cmd.Output()
+			if err != nil {
+				return // File doesn't exist, skip
+			}
+
+			content := string(output)
+			mu.Lock()
+			data.fileContents[filePath] = content
+			results[filePath] = content
+			mu.Unlock()
+		}(p)
+	}
+
+	wg.Wait()
+	return results, true
+}
+
 // HasCloneData returns true if clone data is available for the given repo.
 func (c *GitHubClient) HasCloneData(repoURL string) bool {
 	owner, repo, err := parseGitHubURL(repoURL)
@@ -561,6 +618,32 @@ func (c *GitHubClient) getFileTreeFromClone(owner, repo string) (map[string]bool
 		return nil, false
 	}
 	return data.fileTree, true
+}
+
+// getWorkflowFilesFromClone extracts workflow filenames from the clone's file tree.
+// Returns (.yml/.yaml files directly under .github/workflows/, filenames only).
+func (c *GitHubClient) getWorkflowFilesFromClone(owner, repo string) ([]string, bool) {
+	tree, ok := c.getFileTreeFromClone(owner, repo)
+	if !ok {
+		return nil, false
+	}
+
+	const prefix = ".github/workflows/"
+	var workflows []string
+	for path := range tree {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		name := path[len(prefix):]
+		// Only include direct children (not files in subdirectories)
+		if strings.Contains(name, "/") {
+			continue
+		}
+		if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+			workflows = append(workflows, name)
+		}
+	}
+	return workflows, true
 }
 
 // gitAvailable checks if git is available on the system.
