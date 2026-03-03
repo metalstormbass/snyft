@@ -44,6 +44,7 @@ type repoCache struct {
 	fileExists map[string]bool                   // key: "owner/repo/path"
 	identity   map[string]*cachedIdentity        // key: owner (user/org identity)
 	orgInfo    map[string]*cachedOrgInfo          // key: owner (org details)
+	tags       map[string][]string               // key: "owner/repo" → all discovered tag names
 }
 
 func newRepoCache() *repoCache {
@@ -53,6 +54,7 @@ func newRepoCache() *repoCache {
 		fileExists: make(map[string]bool),
 		identity:   make(map[string]*cachedIdentity),
 		orgInfo:    make(map[string]*cachedOrgInfo),
+		tags:       make(map[string][]string),
 	}
 }
 
@@ -119,6 +121,19 @@ func (rc *repoCache) setOrgInfo(key string, info *cachedOrgInfo) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.orgInfo[key] = info
+}
+
+func (rc *repoCache) getTagNames(key string) ([]string, bool) {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+	v, ok := rc.tags[key]
+	return v, ok
+}
+
+func (rc *repoCache) setTagNames(key string, names []string) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.tags[key] = names
 }
 
 // GitHubClient handles interactions with GitHub API and web scraping.
@@ -694,13 +709,16 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 }
 
 // maxTagSearchPages is the upper bound on pages fetched during paginated tag
-// search. At 100 tags per page, this covers repos with up to 1000 tags while
-// keeping API overhead bounded.
-const maxTagSearchPages = 10
+// search. At 100 tags per page, this covers repos with up to 300 tags while
+// keeping API overhead bounded. Most repos have matching tags within the first
+// few hundred entries; 3 pages strikes a good balance between coverage and cost.
+const maxTagSearchPages = 3
 
 // searchTagsPaginated searches through paginated GitHub tags for any tag
 // ending with the target version string. This handles repos with non-standard
 // tag naming where the version appears as a suffix (e.g. "module-name-2.15.3").
+// Results are cached per owner/repo so that multiple dependencies from the same
+// repository resolve instantly without repeating pagination.
 func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, string) {
 	// Build version suffixes to match against — a tag like "foo-2.15.3" or "foo-v2.15.3"
 	versionSuffixes := []string{
@@ -712,6 +730,26 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 		"/v" + version,
 	}
 
+	cacheKey := owner + "/" + repo
+
+	// Check cache first — a previous CheckGitTag call for the same repo may
+	// have already fetched and stored all discovered tag names.
+	if c.cache != nil {
+		if cached, ok := c.cache.getTagNames(cacheKey); ok {
+			for _, name := range cached {
+				for _, suffix := range versionSuffixes {
+					if strings.HasSuffix(name, suffix) {
+						tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, name)
+						return true, tagURL
+					}
+				}
+			}
+			return false, ""
+		}
+	}
+
+	// Cache miss — fetch tags from the API and collect all names.
+	var allTagNames []string
 	nextURL := fmt.Sprintf("%s/repos/%s/%s/tags?per_page=100", c.baseURL, owner, repo)
 
 	for page := 0; page < maxTagSearchPages && nextURL != ""; page++ {
@@ -753,12 +791,7 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 		}
 
 		for _, tag := range tags {
-			for _, suffix := range versionSuffixes {
-				if strings.HasSuffix(tag.Name, suffix) {
-					tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag.Name)
-					return true, tagURL
-				}
-			}
+			allTagNames = append(allTagNames, tag.Name)
 		}
 
 		if len(tags) == 0 {
@@ -766,6 +799,21 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 		}
 
 		nextURL = parseLinkHeaderNextURL(resp.Header.Get("Link"))
+	}
+
+	// Cache all discovered tags so subsequent calls for the same repo skip API calls.
+	if c.cache != nil {
+		c.cache.setTagNames(cacheKey, allTagNames)
+	}
+
+	// Search collected tags for matching version suffix.
+	for _, name := range allTagNames {
+		for _, suffix := range versionSuffixes {
+			if strings.HasSuffix(name, suffix) {
+				tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, name)
+				return true, tagURL
+			}
+		}
 	}
 
 	return false, ""
