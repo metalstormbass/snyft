@@ -2707,3 +2707,104 @@ func TestGetAverageIssueResponseTime_QuotaLow_SkipsAPI(t *testing.T) {
 		t.Errorf("Expected 0 API calls when quota is low, got %d", calls)
 	}
 }
+
+// Test: SetScrapingOnlyMode toggles the scraping-only flag
+// Justification: When the rate limit gate triggers during a scan, the system
+//                switches to scraping-only mode to continue analyzing remaining
+//                packages without consuming API quota. The flag must be correctly
+//                toggled so that all subsequent API calls are blocked.
+// Source: Graceful degradation principle for supply chain analysis tools
+// Methodology: Create a GitHubClient, toggle scraping-only mode on/off, verify state
+// Result: IsScrapingOnly() reflects the last SetScrapingOnlyMode() call
+func TestGitHubClient_SetScrapingOnlyMode(t *testing.T) {
+	client := NewGitHubClient()
+
+	if client.IsScrapingOnly() {
+		t.Error("IsScrapingOnly() = true on fresh client, want false")
+	}
+
+	client.SetScrapingOnlyMode(true)
+	if !client.IsScrapingOnly() {
+		t.Error("IsScrapingOnly() = false after SetScrapingOnlyMode(true), want true")
+	}
+
+	client.SetScrapingOnlyMode(false)
+	if client.IsScrapingOnly() {
+		t.Error("IsScrapingOnly() = true after SetScrapingOnlyMode(false), want false")
+	}
+}
+
+// Test: doRequest returns errScrapingOnly when scraping-only mode is enabled
+// Justification: In scraping-only mode, no GitHub API calls should be made.
+//                doRequest must return an error immediately so that callers
+//                fall through to their scraping fallbacks or handle missing data
+//                gracefully. This preserves the remaining API quota for later scans.
+// Source: Graceful degradation principle; GitHub REST API rate limiting
+// Methodology: Create a mock server, enable scraping-only mode on the client,
+//              attempt a doRequest — verify it returns errScrapingOnly without
+//              hitting the server
+// Result: errScrapingOnly is returned, no HTTP request is made
+func TestGitHubClient_DoRequest_BlockedInScrapingOnlyMode(t *testing.T) {
+	var apiCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewGitHubClientWithBaseURL(server.URL)
+	client.scrapingOnly = true
+
+	req, err := http.NewRequest("GET", server.URL+"/repos/test/test", nil)
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	resp, err := client.doRequest(req)
+	if resp != nil {
+		t.Error("doRequest() returned non-nil response in scraping-only mode")
+	}
+	if !errors.Is(err, errScrapingOnly) {
+		t.Errorf("doRequest() error = %v, want errScrapingOnly", err)
+	}
+	if calls := apiCalls.Load(); calls > 0 {
+		t.Errorf("Expected 0 API calls in scraping-only mode, got %d", calls)
+	}
+}
+
+// Test: shouldPreferScrapingForQuota returns true in scraping-only mode
+// Justification: When scraping-only mode is enabled, all methods that check
+//                shouldPreferScrapingForQuota() must take the scraping path,
+//                even if the client has a token and the quota is healthy.
+//                This ensures consistent behavior when the rate limit gate fires.
+// Source: Graceful degradation for supply chain analysis
+// Methodology: Create an authenticated client with healthy quota, enable scraping-only
+//              mode, verify shouldPreferScrapingForQuota() returns true
+// Result: Returns true regardless of token/quota state
+func TestGitHubClient_ShouldPreferScraping_TrueInScrapingOnlyMode(t *testing.T) {
+	client := &GitHubClient{
+		token:       "test-token",
+		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		baseURL:     "https://api.github.com",
+		cache:       newRepoCache(),
+		rateLimiter: NewGitHubRateLimiter(true),
+	}
+
+	// With healthy quota, scraping should NOT be preferred
+	resp := &http.Response{
+		Header: http.Header{
+			"X-Ratelimit-Remaining": []string{"4000"},
+		},
+	}
+	client.rateLimiter.Update(resp)
+
+	if client.shouldPreferScrapingForQuota() {
+		t.Error("shouldPreferScrapingForQuota() = true with healthy quota, want false")
+	}
+
+	// Enable scraping-only mode — should now prefer scraping regardless
+	client.SetScrapingOnlyMode(true)
+	if !client.shouldPreferScrapingForQuota() {
+		t.Error("shouldPreferScrapingForQuota() = false in scraping-only mode, want true")
+	}
+}

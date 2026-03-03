@@ -69,7 +69,13 @@ func (r *Reporter) printSummaryLine(w io.Writer) {
 		f(w, "  %s●%s %d low", ColorGreen, ColorReset, r.stats.LowRisk)
 	}
 
-	f(w, "  %s%s%s\n\n", ColorDim, formatDuration(duration), ColorReset)
+	f(w, "  %s%s%s\n", ColorDim, formatDuration(duration), ColorReset)
+
+	if r.stats.ScrapingOnlyPkgs > 0 {
+		f(w, "  %s⚠  %d package%s analyzed via scraping only (GitHub API rate limit reached)%s\n",
+			ColorYellow, r.stats.ScrapingOnlyPkgs, pluralize(r.stats.ScrapingOnlyPkgs), ColorReset)
+	}
+	p(w, "")
 }
 
 func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult) {
@@ -94,10 +100,16 @@ func (r *Reporter) printPackageResult(w io.Writer, result models.AnalysisResult)
 		transitive = fmt.Sprintf(" %s(transitive)%s", ColorDim, ColorReset)
 	}
 
+	// Scraping-only label
+	scrapingLabel := ""
+	if result.DataMode == models.DataModeScrapingOnly {
+		scrapingLabel = fmt.Sprintf(" %s(scraping-only)%s", ColorYellow, ColorReset)
+	}
+
 	// Package header line: icon name@version  ecosystem  score  RISK
-	f(w, "  %s %s%-35s%s  %-5s  %s  %s%s%s%s\n",
+	f(w, "  %s %s%-35s%s  %-5s  %s  %s%s%s%s%s\n",
 		icon, ColorBold, nameVer, ColorReset, eco,
-		scoreStr, rc+ColorBold, result.RiskLevel, ColorReset, transitive)
+		scoreStr, rc+ColorBold, result.RiskLevel, ColorReset, transitive, scrapingLabel)
 
 	// OpenSSF Scorecard link (dimmed/gray)
 	if result.ScorecardURL != "" {
