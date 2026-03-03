@@ -77,8 +77,10 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 	}
 
 	// For packages with recent activity, fetch detailed release and commit history
-	// to detect suspicious reactivation patterns
-	if daysSinceCreated > 365 {
+	// to detect suspicious reactivation patterns.
+	// Require 2+ years of history: repos under 2 years old naturally have zero activity
+	// in the "previous year" window, which mimics dormancy reactivation but is just a new project.
+	if daysSinceCreated > 730 {
 		// Try to get release history from Git platform first, fall back to registry
 		var registryReleases []fetcher.RegistryRelease
 		gitClient := a.getGitClient(result.RepositoryURL)
@@ -117,11 +119,11 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 	regularChecks := []models.CheckResult{
 		{Name: "Dormancy detection", Status: "PASS", Detail: fmt.Sprintf("Last commit %.0f days ago (within 1 year)", daysSinceLastCommit)},
 	}
-	if daysSinceCreated > 365 {
+	if daysSinceCreated > 730 {
 		regularChecks = append(regularChecks, models.CheckResult{Name: "Release pattern analysis", Status: "PASS", Detail: "No dormancy reactivation or unusual release spikes detected"})
 		regularChecks = append(regularChecks, models.CheckResult{Name: "Commit frequency analysis", Status: "PASS", Detail: "No suspicious year-over-year commit frequency changes"})
 	} else {
-		regularChecks = append(regularChecks, models.CheckResult{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "Repository < 1 year old; insufficient history for anomaly detection"})
+		regularChecks = append(regularChecks, models.CheckResult{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "Repository < 2 years old; insufficient history for anomaly detection"})
 	}
 	return models.CategoryScore{
 		Score:           2,
@@ -158,6 +160,14 @@ func (a *Analyzer) detectReleaseAnomaly(releases []fetcher.RegistryRelease, repo
 	}
 
 	if len(validReleases) < 2 {
+		return nil
+	}
+
+	// Repos under 2 years old naturally show patterns that look like dormancy reactivation
+	// (e.g., all activity in the last year, none before) but are actually just new projects.
+	// Only flag dormancy reactivation when the repo existed long enough to have meaningful history.
+	repoAgeYears := time.Since(repoCreatedAt).Hours() / 24 / 365
+	if repoAgeYears < 2 {
 		return nil
 	}
 

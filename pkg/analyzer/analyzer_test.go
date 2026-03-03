@@ -1845,12 +1845,90 @@ func TestScoreOwnershipChanges_ScoreFieldConsistency(t *testing.T) {
 
 // ===== Release Anomalies Additional Coverage Tests =====
 
+func TestScoreReleaseAnomalies_NewRepo_BetweenOneAndTwoYears(t *testing.T) {
+	// Test: Repo created 14 months ago with all activity in the last year — should NOT trigger dormancy
+	// Justification: A repo under 2 years old naturally has zero activity in the "previous year"
+	//                window, which mimics dormancy reactivation but is actually just a new project.
+	//                This was a known false positive: new repos flagged as dormancy reactivation.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — dormancy detection must
+	//         distinguish between genuinely abandoned repos and repos that simply didn't exist yet.
+	// Methodology: Pure unit test — daysSinceCreated < 730 skips anomaly detection entirely
+	// Result: 0 risk points, consistent activity
+	analyzer := NewAnalyzer()
+	result := models.AnalysisResult{
+		Metadata: models.PackageMetadata{
+			RepoLastCommit: time.Now().AddDate(0, -1, 0),  // 1 month ago
+			RepoCreatedAt:  time.Now().AddDate(-1, -2, 0), // 14 months old (between 1-2 years)
+		},
+		RepositoryURL: "https://github.com/example/new-but-active-repo",
+	}
+
+	score := analyzer.scoreReleaseAnomalies(&result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for repo between 1-2 years old, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	}
+	if score.Score != 2 {
+		t.Errorf("Expected score 2, got %d", score.Score)
+	}
+	if !score.Verified {
+		t.Error("Expected verified score for active repo")
+	}
+}
+
+func TestDetectReleaseAnomaly_NewRepo_NoFalsePositive(t *testing.T) {
+	// Test: detectReleaseAnomaly should return nil for repos under 2 years old even with
+	//       release patterns that look like dormancy reactivation
+	// Justification: A repo created 18 months ago with a first release at creation and a
+	//                second release recently has a >12-month gap, but this is expected for a
+	//                new project — not dormancy reactivation.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — only repos with meaningful
+	//         prior existence should be flagged for dormancy patterns.
+	// Methodology: Pass releases with a 16-month gap to detectReleaseAnomaly with a young repo
+	// Result: nil (no anomaly)
+	analyzer := NewAnalyzer()
+	repoCreatedAt := time.Now().AddDate(-1, -6, 0) // 18 months old
+
+	releases := []fetcher.RegistryRelease{
+		{PublishedAt: time.Now().AddDate(0, -1, 0)},   // 1 month ago
+		{PublishedAt: time.Now().AddDate(-1, -5, 0)},   // 17 months ago (16-month gap)
+	}
+
+	score := analyzer.detectReleaseAnomaly(releases, repoCreatedAt)
+	if score != nil {
+		t.Errorf("Expected no anomaly for repo under 2 years old, but got RiskPoints=%d (desc: %s)", score.RiskPoints, score.Description)
+	}
+}
+
+func TestDetectReleaseAnomaly_OldRepo_StillFlags(t *testing.T) {
+	// Test: detectReleaseAnomaly should still flag dormancy reactivation for repos 2+ years old
+	// Justification: The repo age guard must only protect young repos, not suppress detection
+	//                for established repos with genuine dormancy patterns.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	// Methodology: Same release pattern as above but with a 3-year-old repo
+	// Result: RiskPoints=2 (dormancy reactivation flagged)
+	analyzer := NewAnalyzer()
+	repoCreatedAt := time.Now().AddDate(-3, 0, 0) // 3 years old
+
+	releases := []fetcher.RegistryRelease{
+		{PublishedAt: time.Now().AddDate(0, -1, 0)},   // 1 month ago
+		{PublishedAt: time.Now().AddDate(-1, -5, 0)},   // 17 months ago (16-month gap)
+	}
+
+	score := analyzer.detectReleaseAnomaly(releases, repoCreatedAt)
+	if score == nil {
+		t.Error("Expected dormancy reactivation anomaly for 3-year-old repo, but got nil")
+	} else if score.RiskPoints != 2 {
+		t.Errorf("Expected RiskPoints=2, got %d", score.RiskPoints)
+	}
+}
+
 func TestScoreReleaseAnomalies_RecentActivity_YoungPackage(t *testing.T) {
 	// Test: Package with recent activity and less than 1 year old — skips release/commit fetch
 	// Justification: Young packages (<1 year) don't have enough history to detect anomalies,
 	//                so the function should return "consistent activity" without making API calls
 	// Source: OSSF Scorecard methodology — new packages are scored based on available data
-	// Methodology: Pure unit test — daysSinceCreated < 365 skips GitHub API calls
+	// Methodology: Pure unit test — daysSinceCreated < 730 skips GitHub API calls
 	// Result: 0 risk points, "Regular, consistent releases"
 	analyzer := NewAnalyzer()
 	result := models.AnalysisResult{
