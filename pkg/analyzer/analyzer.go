@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metalstormbass/snyft/pkg/fetcher"
@@ -271,21 +272,44 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	result.ScorecardURL = ossfScorecardURL(repoURL)
 	result.Metadata = metadata
 
-	// Enrich with Libraries.io data (if API key is available)
-	a.enrichWithLibrariesIO(&result)
+	// Run data collection steps concurrently. Each method writes to non-overlapping
+	// metadata fields on result. Methods that also append to result.Findings or
+	// result.RiskFactors use the shared mutex for thread-safe access.
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
-	// PRIMARY CHECK: Verify source code availability for the EXACT version
-	// This MUST be the first check before any other scoring
-	a.verifySourceCode(&result, dep, repoURL)
+	// --- Independent steps (no inter-dependencies) ---
 
-	// Analyze dependency sprawl from lock files
-	a.analyzeDependencySprawl(&result, dep)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Enrich with Libraries.io data (if API key is available)
+		a.enrichWithLibrariesIO(&result)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// PRIMARY CHECK: Verify source code availability for the EXACT version
+		a.verifySourceCode(&result, dep, repoURL, &mu)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Analyze dependency sprawl from lock files
+		a.analyzeDependencySprawl(&result, dep)
+	}()
 
 	// Analyze repository if URL is available
 	if repoURL != "" {
-		a.analyzeRepository(&result, repoURL)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.analyzeRepository(&result, repoURL, &mu)
+		}()
 	} else {
-		result.Findings = append(result.Findings, models.Finding{
+		addFindingSafe(&mu, &result, models.Finding{
 			Severity:    "HIGH",
 			Category:    "Missing Source Code",
 			Description: "No repository URL found in package metadata",
@@ -293,32 +317,42 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 			SourceURL:   registryURL(dep),
 		})
 		result.SourceCodeAvailable = false
-		result.RiskFactors = append(result.RiskFactors, "No public source code repository")
+		addRiskFactorSafe(&mu, &result, "No public source code repository")
 	}
 
-	// Analyze build infrastructure
-	a.analyzeBuildInfrastructure(&result, repoURL)
+	// analyzeBuildInfrastructure + analyzeHealthMetrics form a dependency chain:
+	// analyzeHealthMetrics reads CISystems populated by analyzeBuildInfrastructure.
+	// Run them sequentially in a single goroutine, parallel with other steps.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.analyzeBuildInfrastructure(&result, repoURL, &mu)
+		if repoURL != "" {
+			a.analyzeHealthMetrics(&result, repoURL)
+		}
+	}()
 
-	// Analyze repository health metrics (for Category 7)
 	if repoURL != "" {
-		a.analyzeHealthMetrics(&result, repoURL)
-	}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Analyze release documentation (CONTRIBUTING.md, RELEASING.md, etc.)
+			a.analyzeReleaseDocumentation(&result, repoURL)
+		}()
 
-	// Analyze release documentation (CONTRIBUTING.md, RELEASING.md, etc.)
-	if repoURL != "" {
-		a.analyzeReleaseDocumentation(&result, repoURL)
-	}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Get OSSF Scorecard (if available)
+			a.analyzeOSSFScorecard(&result, repoURL, &mu)
+		}()
 
-	// Get OSSF Scorecard (if available)
-	if repoURL != "" {
-		a.analyzeOSSFScorecard(&result, repoURL)
-	}
-
-	// Analyze provenance (if available).
-	// For Maven, GPG signature data is already populated from Maven Central
-	// in packageMetadataFromMaven, so provenance scoring works even without a repo URL.
-	if repoURL != "" {
-		a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Analyze provenance (if available)
+			a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
+		}()
 	} else if dep.Ecosystem == models.EcosystemMaven {
 		// Maven GPG signature data was already set during metadata extraction;
 		// no additional API calls needed. ProvenanceDetails can note this.
@@ -326,6 +360,9 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 			result.Metadata.ProvenanceDetails = "Maven Central GPG signature verified (no source repository available)"
 		}
 	}
+
+	// Wait for all data collection steps to complete before scoring
+	wg.Wait()
 
 	// Calculate supply chain score (0-20 point rubric, 10 categories)
 	a.calculateSupplyChainScore(&result)
@@ -410,75 +447,44 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		Description: "Skipped (not selected via --check flag)",
 	}
 
-	// Category 1: Publisher Control (2FA/signing/multi-maintainer)
-	if a.isCheckEnabled("publisher-control") {
-		score.CategoryScores.PublisherControl = a.scorePublisherControl(result)
-	} else {
-		score.CategoryScores.PublisherControl = skippedScore
+	// Score all 10 categories concurrently. Each scoring function only reads
+	// from result (no writes) and returns a CategoryScore value that is assigned
+	// to a separate struct field — no data races possible.
+	var scoreWg sync.WaitGroup
+
+	type scoringTask struct {
+		name   string
+		target *models.CategoryScore
+		fn     func(*models.AnalysisResult) models.CategoryScore
 	}
 
-	// Category 2: Ownership Changes/Transfers
-	if a.isCheckEnabled("ownership-changes") {
-		score.CategoryScores.OwnershipChanges = a.scoreOwnershipChanges(result)
-	} else {
-		score.CategoryScores.OwnershipChanges = skippedScore
+	tasks := []scoringTask{
+		{"publisher-control", &score.CategoryScores.PublisherControl, a.scorePublisherControl},
+		{"ownership-changes", &score.CategoryScores.OwnershipChanges, a.scoreOwnershipChanges},
+		{"release-anomalies", &score.CategoryScores.ReleaseAnomalies, a.scoreReleaseAnomalies},
+		{"install-execution", &score.CategoryScores.InstallExecution, a.scoreInstallExecution},
+		{"dependency-sprawl", &score.CategoryScores.DependencySprawl, a.scoreDependencySprawl},
+		{"provenance", &score.CategoryScores.Provenance, a.scoreProvenance},
+		{"health", &score.CategoryScores.Health, a.scoreHealth},
+		{"governance", &score.CategoryScores.Governance, a.scoreGovernance},
+		{"release-security", &score.CategoryScores.ReleaseSecurity, a.scoreReleaseSecurity},
+		{"package-maturity", &score.CategoryScores.PackageMaturity, a.scorePackageMaturity},
 	}
 
-	// Category 3: Release Anomalies (dormant→sudden activity)
-	if a.isCheckEnabled("release-anomalies") {
-		score.CategoryScores.ReleaseAnomalies = a.scoreReleaseAnomalies(result)
-	} else {
-		score.CategoryScores.ReleaseAnomalies = skippedScore
+	for i := range tasks {
+		task := tasks[i]
+		if !a.isCheckEnabled(task.name) {
+			*task.target = skippedScore
+			continue
+		}
+		scoreWg.Add(1)
+		go func() {
+			defer scoreWg.Done()
+			*task.target = task.fn(result)
+		}()
 	}
 
-	// Category 4: Install-time Execution (postinstall scripts)
-	if a.isCheckEnabled("install-execution") {
-		score.CategoryScores.InstallExecution = a.scoreInstallExecution(result)
-	} else {
-		score.CategoryScores.InstallExecution = skippedScore
-	}
-
-	// Category 5: Dependency Sprawl (transitive dependencies)
-	if a.isCheckEnabled("dependency-sprawl") {
-		score.CategoryScores.DependencySprawl = a.scoreDependencySprawl(result)
-	} else {
-		score.CategoryScores.DependencySprawl = skippedScore
-	}
-
-	// Category 6: Provenance (reproducible/signed builds)
-	if a.isCheckEnabled("provenance") {
-		score.CategoryScores.Provenance = a.scoreProvenance(result)
-	} else {
-		score.CategoryScores.Provenance = skippedScore
-	}
-
-	// Category 7: Health (bus factor/review process/CI)
-	if a.isCheckEnabled("health") {
-		score.CategoryScores.Health = a.scoreHealth(result)
-	} else {
-		score.CategoryScores.Health = skippedScore
-	}
-
-	// Category 8: Governance (documentation/responsiveness)
-	if a.isCheckEnabled("governance") {
-		score.CategoryScores.Governance = a.scoreGovernance(result)
-	} else {
-		score.CategoryScores.Governance = skippedScore
-	}
-
-	// Category 9: Release Security (CI publishing/branch protection/signed tags)
-	if a.isCheckEnabled("release-security") {
-		score.CategoryScores.ReleaseSecurity = a.scoreReleaseSecurity(result)
-	} else {
-		score.CategoryScores.ReleaseSecurity = skippedScore
-	}
-
-	// Category 10: Package Maturity (age/update frequency/staleness)
-	if a.isCheckEnabled("package-maturity") {
-		score.CategoryScores.PackageMaturity = a.scorePackageMaturity(result)
-	} else {
-		score.CategoryScores.PackageMaturity = skippedScore
-	}
+	scoreWg.Wait()
 
 	// Set source URLs for each category so findings link to the data source
 	categoryNames := []struct {
