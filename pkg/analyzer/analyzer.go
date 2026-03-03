@@ -285,6 +285,20 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 	result.ScorecardURL = ossfScorecardURL(repoURL)
 	result.Metadata = metadata
 
+	// Trigger bare git clone early for GitHub repos. This runs concurrently with
+	// all other data collection. The clone populates caches for commit authors,
+	// signed commits, commit activity, file tree, and file content — eliminating
+	// API calls for that data. Git clone is not subject to API rate limits.
+	var cloneDone chan struct{}
+	if repoURL != "" && fetcher.DetectPlatform(repoURL) == fetcher.PlatformGitHub {
+		cloneDone = make(chan struct{})
+		go func() {
+			defer close(cloneDone)
+			_ = a.githubClient.CloneAndAnalyze(repoURL)
+			// Clone cleanup is deferred to after analysis completes
+		}()
+	}
+
 	// Run data collection steps concurrently. Each method writes to non-overlapping
 	// metadata fields on result. Methods that also append to result.Findings or
 	// result.RiskFactors use the shared mutex for thread-safe access.
@@ -376,6 +390,13 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 
 	// Wait for all data collection steps to complete before scoring
 	wg.Wait()
+
+	// Clean up the bare clone temp directory now that all data has been extracted.
+	// Wait for clone to finish first if it hasn't already.
+	if cloneDone != nil {
+		<-cloneDone
+		a.githubClient.CleanupClone(repoURL)
+	}
 
 	// Calculate supply chain score (0-20 point rubric, 10 categories)
 	a.calculateSupplyChainScore(&result)
