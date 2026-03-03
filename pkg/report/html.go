@@ -222,7 +222,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 
 /* Category tooltips */
 .cat-item{position:relative;cursor:default}
-.cat-item[data-tooltip]:hover::after{content:attr(data-tooltip);position:absolute;bottom:calc(100%% + 6px);left:50%%;transform:translateX(-50%%);background:#2a2a2a;color:#d0d0d0;font-size:12px;font-weight:400;line-height:1.4;padding:8px 12px;border-radius:6px;border:1px solid #3a3a3a;white-space:normal;width:260px;z-index:10;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
+.cat-item[data-tooltip]:hover::after{content:attr(data-tooltip);position:absolute;bottom:calc(100%% + 6px);left:50%%;transform:translateX(-50%%);background:#2a2a2a;color:#d0d0d0;font-size:12px;font-weight:400;line-height:1.4;padding:8px 12px;border-radius:6px;border:1px solid #3a3a3a;white-space:normal;width:320px;z-index:10;pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
 .cat-item[data-tooltip]:hover::before{content:'';position:absolute;bottom:calc(100%% + 2px);left:50%%;transform:translateX(-50%%);border:5px solid transparent;border-top-color:#3a3a3a;z-index:11;pointer-events:none}
 
 /* Findings */
