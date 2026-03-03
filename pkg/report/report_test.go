@@ -26,7 +26,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 				Version:   "4.17.1",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "HIGH",
 			Findings: []models.Finding{
 				{
 					Severity:    "HIGH",
@@ -35,7 +35,10 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 					Evidence:    "Package maintained by single developer 'john-smith' without two-factor authentication",
 				},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 10,
+				RiskLevel:  "HIGH",
+			},
 		},
 		{
 			Dependency: models.Dependency{
@@ -43,7 +46,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 				Version:   "4.17.21",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "MEDIUM",
 			Findings: []models.Finding{
 				{
 					Severity:    "MEDIUM",
@@ -52,7 +55,10 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 					Evidence:    "No SLSA attestation or Sigstore signature found",
 				},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 6,
+				RiskLevel:  "MEDIUM",
+			},
 		},
 		{
 			Dependency: models.Dependency{
@@ -60,7 +66,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 				Version:   "18.2.0",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "LOW",
 			Findings: []models.Finding{
 				{
 					Severity:    "LOW",
@@ -69,7 +75,10 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 					Evidence:    "12 core maintainers, >100 contributors",
 				},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 2,
+				RiskLevel:  "LOW",
+			},
 		},
 	}
 
@@ -94,6 +103,11 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 		// Check summary line with package count
 		if !strings.Contains(output, "packages scanned") {
 			t.Error("Output missing package count in summary line")
+		}
+
+		// Check risk counts in summary
+		if !strings.Contains(output, "high") {
+			t.Error("Output missing high risk count in summary")
 		}
 
 		// Check package listing
@@ -167,7 +181,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 			t.Error("Markdown output missing package count in narrative")
 		}
 
-		if !strings.Contains(output, "supply chain compromise risk") {
+		if !strings.Contains(output, "elevated supply chain risk") {
 			t.Error("Markdown output missing risk posture in narrative")
 		}
 	})
@@ -237,7 +251,7 @@ func TestExecutiveSummaryWithKeyFindings(t *testing.T) {
 			t.Error("HTML output missing package count in narrative")
 		}
 
-		if !strings.Contains(output, "supply chain compromise risk") {
+		if !strings.Contains(output, "elevated supply chain risk") {
 			t.Error("HTML output missing risk posture in narrative")
 		}
 	})
@@ -252,14 +266,17 @@ func TestExtractCriticalIssuesPriority(t *testing.T) {
 	results := []models.AnalysisResult{
 		{
 			Dependency: models.Dependency{Name: "low-pkg", Version: "1.0.0"},
+			RiskLevel:  "LOW",
 			Findings:   []models.Finding{{Severity: "LOW", Description: "Low issue"}},
 		},
 		{
 			Dependency: models.Dependency{Name: "medium-pkg", Version: "2.0.0"},
+			RiskLevel:  "MEDIUM",
 			Findings:   []models.Finding{{Severity: "MEDIUM", Description: "Medium issue"}},
 		},
 		{
 			Dependency: models.Dependency{Name: "high-pkg", Version: "3.0.0"},
+			RiskLevel:  "HIGH",
 			Findings:   []models.Finding{{Severity: "HIGH", Description: "High issue"}},
 		},
 	}
@@ -273,16 +290,16 @@ func TestExtractCriticalIssuesPriority(t *testing.T) {
 		t.Errorf("Expected 2 critical issues, got %d", len(issues))
 	}
 
-	if issues[0].Severity != "HIGH" {
-		t.Errorf("Expected first issue to be HIGH severity, got %s", issues[0].Severity)
+	if issues[0].RiskLevel != "HIGH" {
+		t.Errorf("Expected first issue to be HIGH risk, got %s", issues[0].RiskLevel)
 	}
 
 	if issues[0].PackageName != "high-pkg" {
 		t.Errorf("Expected first package to be 'high-pkg', got %s", issues[0].PackageName)
 	}
 
-	if issues[1].Severity != "MEDIUM" {
-		t.Errorf("Expected second issue to be MEDIUM severity, got %s", issues[1].Severity)
+	if issues[1].RiskLevel != "MEDIUM" {
+		t.Errorf("Expected second issue to be MEDIUM risk, got %s", issues[1].RiskLevel)
 	}
 }
 
@@ -451,7 +468,7 @@ func TestExtractCriticalIssuesLimit(t *testing.T) {
 				Name:    "pkg-" + string(rune('a'+i)),
 				Version: "1.0.0",
 			},
-
+			RiskLevel: "HIGH",
 			Findings: []models.Finding{
 				{Severity: "HIGH", Description: "Issue " + string(rune('a'+i))},
 			},
@@ -524,11 +541,11 @@ func TestHTMLReportPackageDetailIDs(t *testing.T) {
 				Version:   "4.17.1",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "HIGH",
 			Findings: []models.Finding{
 				{Severity: "HIGH", Description: "Single maintainer"},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 10, RiskLevel: "HIGH"},
 		},
 		{
 			Dependency: models.Dependency{
@@ -536,11 +553,11 @@ func TestHTMLReportPackageDetailIDs(t *testing.T) {
 				Version:   "16.0.0",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "MEDIUM",
 			Findings: []models.Finding{
 				{Severity: "MEDIUM", Description: "Missing provenance"},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 6, RiskLevel: "MEDIUM"},
 		},
 		{
 			Dependency: models.Dependency{
@@ -548,11 +565,11 @@ func TestHTMLReportPackageDetailIDs(t *testing.T) {
 				Version:   "18.2.0",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "LOW",
 			Findings: []models.Finding{
 				{Severity: "LOW", Description: "Well maintained"},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 2, RiskLevel: "LOW"},
 		},
 	}
 
@@ -624,12 +641,15 @@ func TestHTMLRiskAreasClickableLinks(t *testing.T) {
 				Version:   "1.0.0",
 				Ecosystem: models.EcosystemNPM,
 			},
+			RiskLevel:           "HIGH",
 			SourceCodeAvailable: false,
 			Metadata:            models.PackageMetadata{HasInstallScripts: true},
 			Findings: []models.Finding{
 				{Severity: "HIGH", Description: "Single maintainer"},
 			},
 			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 14,
+				RiskLevel:  "HIGH",
 				CategoryScores: models.CategoryScores{
 					Provenance:      models.CategoryScore{RiskPoints: 2, Score: 2},
 					ReleaseSecurity: models.CategoryScore{RiskPoints: 2, Score: 2},
@@ -642,12 +662,15 @@ func TestHTMLRiskAreasClickableLinks(t *testing.T) {
 				Version:   "0.1.0",
 				Ecosystem: models.EcosystemNPM,
 			},
+			RiskLevel:           "HIGH",
 			SourceCodeAvailable: false,
 			Metadata:            models.PackageMetadata{HasInstallScripts: true},
 			Findings: []models.Finding{
 				{Severity: "HIGH", Description: "Recent ownership transfer"},
 			},
 			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 12,
+				RiskLevel:  "HIGH",
 				CategoryScores: models.CategoryScores{
 					Provenance:      models.CategoryScore{RiskPoints: 2, Score: 2},
 					ReleaseSecurity: models.CategoryScore{RiskPoints: 2, Score: 2},
@@ -660,11 +683,14 @@ func TestHTMLRiskAreasClickableLinks(t *testing.T) {
 				Version:   "2.0.0",
 				Ecosystem: models.EcosystemNPM,
 			},
+			RiskLevel:           "LOW",
 			SourceCodeAvailable: true,
 			Findings: []models.Finding{
 				{Severity: "LOW", Description: "Well maintained"},
 			},
 			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 1,
+				RiskLevel:  "LOW",
 				CategoryScores: models.CategoryScores{
 					Provenance:      models.CategoryScore{RiskPoints: 0, Score: 0},
 					ReleaseSecurity: models.CategoryScore{RiskPoints: 0, Score: 0},
@@ -743,7 +769,7 @@ func TestHTMLExecutiveNarrative(t *testing.T) {
 				Version:   "3.3.6",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "HIGH",
 			Findings: []models.Finding{
 				{
 					Severity:    "HIGH",
@@ -752,7 +778,7 @@ func TestHTMLExecutiveNarrative(t *testing.T) {
 					SourceURL:   "https://arxiv.org/abs/2005.09535",
 				},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 14, RiskLevel: "HIGH"},
 		},
 		{
 			Dependency: models.Dependency{
@@ -760,7 +786,7 @@ func TestHTMLExecutiveNarrative(t *testing.T) {
 				Version:   "20.0.0",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "MEDIUM",
 			Findings: []models.Finding{
 				{
 					Severity:    "MEDIUM",
@@ -768,7 +794,7 @@ func TestHTMLExecutiveNarrative(t *testing.T) {
 					Description: "Single maintainer account",
 				},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 8, RiskLevel: "MEDIUM"},
 		},
 		{
 			Dependency: models.Dependency{
@@ -776,11 +802,11 @@ func TestHTMLExecutiveNarrative(t *testing.T) {
 				Version:   "1.0.0",
 				Ecosystem: models.EcosystemNPM,
 			},
-
+			RiskLevel: "LOW",
 			Findings: []models.Finding{
 				{Severity: "LOW", Description: "Well maintained"},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 2, RiskLevel: "LOW"},
 		},
 	}
 
@@ -809,8 +835,11 @@ func TestHTMLExecutiveNarrative(t *testing.T) {
 	if !strings.Contains(output, "scanned 3 packages") {
 		t.Error("Narrative missing package count")
 	}
-	if !strings.Contains(output, "supply chain compromise risk") {
-		t.Error("Narrative missing risk assessment context")
+	if !strings.Contains(output, "2 of 3 packages show elevated supply chain risk") {
+		t.Error("Narrative missing risk posture")
+	}
+	if !strings.Contains(output, "1 high, 1 medium") {
+		t.Error("Narrative missing risk breakdown")
 	}
 
 	// Verify no alarmist language
@@ -858,35 +887,38 @@ func TestHTMLExecutiveNarrative(t *testing.T) {
 //	report format, verify output order matches risk score descending
 //
 // Result: All formats show highest-risk packages first, highest-severity findings first
-func TestSortedResultsAlphabetically(t *testing.T) {
+func TestSortedResultsByRiskScore(t *testing.T) {
 	results := []models.AnalysisResult{
 		{
-			Dependency: models.Dependency{Name: "zeta-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM},
+			Dependency: models.Dependency{Name: "low-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "LOW",
 			Findings: []models.Finding{
 				{Severity: "LOW", Description: "Well maintained"},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 3, RiskLevel: "LOW"},
 		},
 		{
-			Dependency: models.Dependency{Name: "alpha-pkg", Version: "2.0.0", Ecosystem: models.EcosystemNPM},
+			Dependency: models.Dependency{Name: "high-pkg", Version: "2.0.0", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "HIGH",
 			Findings: []models.Finding{
 				{Severity: "LOW", Description: "Minor issue"},
 				{Severity: "CRITICAL", Description: "Critical compromise vector"},
 				{Severity: "MEDIUM", Description: "Moderate concern"},
 				{Severity: "HIGH", Description: "Significant risk factor"},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 15, RiskLevel: "HIGH"},
 		},
 		{
-			Dependency: models.Dependency{Name: "mid-pkg", Version: "3.0.0", Ecosystem: models.EcosystemNPM},
+			Dependency: models.Dependency{Name: "medium-pkg", Version: "3.0.0", Ecosystem: models.EcosystemNPM},
+			RiskLevel:  "MEDIUM",
 			Findings: []models.Finding{
 				{Severity: "MEDIUM", Description: "Missing provenance"},
 			},
-			SupplyChainScore: &models.SupplyChainScore{},
+			SupplyChainScore: &models.SupplyChainScore{TotalScore: 9, RiskLevel: "MEDIUM"},
 		},
 	}
 
-	t.Run("sortedResults orders alphabetically by name", func(t *testing.T) {
+	t.Run("sortedResults orders by score descending", func(t *testing.T) {
 		reporter := NewReporter(Config{})
 		reporter.AddResults(results)
 
@@ -895,14 +927,14 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 		if len(sorted) != 3 {
 			t.Fatalf("Expected 3 results, got %d", len(sorted))
 		}
-		if sorted[0].Dependency.Name != "alpha-pkg" {
-			t.Errorf("Expected first package to be 'alpha-pkg', got %s", sorted[0].Dependency.Name)
+		if sorted[0].Dependency.Name != "high-pkg" {
+			t.Errorf("Expected first package to be 'high-pkg' (score 15), got %s", sorted[0].Dependency.Name)
 		}
-		if sorted[1].Dependency.Name != "mid-pkg" {
-			t.Errorf("Expected second package to be 'mid-pkg', got %s", sorted[1].Dependency.Name)
+		if sorted[1].Dependency.Name != "medium-pkg" {
+			t.Errorf("Expected second package to be 'medium-pkg' (score 9), got %s", sorted[1].Dependency.Name)
 		}
-		if sorted[2].Dependency.Name != "zeta-pkg" {
-			t.Errorf("Expected third package to be 'zeta-pkg', got %s", sorted[2].Dependency.Name)
+		if sorted[2].Dependency.Name != "low-pkg" {
+			t.Errorf("Expected third package to be 'low-pkg' (score 3), got %s", sorted[2].Dependency.Name)
 		}
 	})
 
@@ -912,12 +944,11 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 
 		sorted := reporter.sortedResults()
 
-		// alpha-pkg has 4 findings in mixed order; should be CRITICAL > HIGH > MEDIUM > LOW
-		alphaPkg := sorted[0]
-		if alphaPkg.Dependency.Name != "alpha-pkg" {
-			t.Fatalf("Expected alpha-pkg first, got %s", alphaPkg.Dependency.Name)
+		// high-pkg has 4 findings in mixed order; should be CRITICAL > HIGH > MEDIUM > LOW
+		highPkg := sorted[0]
+		if highPkg.Dependency.Name != "high-pkg" {
+			t.Fatalf("Expected high-pkg first, got %s", highPkg.Dependency.Name)
 		}
-		highPkg := alphaPkg
 		expectedSeverities := []string{"CRITICAL", "HIGH", "MEDIUM", "LOW"}
 		for i, finding := range highPkg.Findings {
 			if finding.Severity != expectedSeverities[i] {
@@ -933,7 +964,7 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 		_ = reporter.sortedResults()
 
 		// Original order should be preserved
-		if reporter.results[0].Dependency.Name != "zeta-pkg" {
+		if reporter.results[0].Dependency.Name != "low-pkg" {
 			t.Error("sortedResults mutated original results slice")
 		}
 		// Original finding order should be preserved
@@ -942,7 +973,7 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 		}
 	})
 
-	t.Run("Text format shows packages alphabetically", func(t *testing.T) {
+	t.Run("Text format shows highest risk first", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{Format: FormatText, Verbose: false, Writer: buf})
 		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
@@ -954,22 +985,22 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 		}
 
 		output := buf.String()
-		alphaIdx := strings.Index(output, "alpha-pkg@2.0.0")
-		midIdx := strings.Index(output, "mid-pkg@3.0.0")
-		zetaIdx := strings.Index(output, "zeta-pkg@1.0.0")
+		highIdx := strings.Index(output, "high-pkg@2.0.0")
+		medIdx := strings.Index(output, "medium-pkg@3.0.0")
+		lowIdx := strings.Index(output, "low-pkg@1.0.0")
 
-		if alphaIdx == -1 || midIdx == -1 || zetaIdx == -1 {
+		if highIdx == -1 || medIdx == -1 || lowIdx == -1 {
 			t.Fatal("Output missing one or more package names")
 		}
-		if alphaIdx > midIdx {
-			t.Error("Text: alpha-pkg should appear before mid-pkg")
+		if highIdx > medIdx {
+			t.Error("Text: high-pkg should appear before medium-pkg")
 		}
-		if midIdx > zetaIdx {
-			t.Error("Text: mid-pkg should appear before zeta-pkg")
+		if medIdx > lowIdx {
+			t.Error("Text: medium-pkg should appear before low-pkg")
 		}
 	})
 
-	t.Run("Markdown format shows packages alphabetically", func(t *testing.T) {
+	t.Run("Markdown format shows highest risk first", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{Format: FormatMarkdown, Verbose: false, Writer: buf})
 		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
@@ -981,28 +1012,29 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 		}
 
 		output := buf.String()
+		// Find in the "Detailed Findings" section
 		detailedIdx := strings.Index(output, "## Detailed Findings")
 		if detailedIdx == -1 {
 			t.Fatal("Markdown output missing '## Detailed Findings' section")
 		}
 		detailed := output[detailedIdx:]
 
-		alphaIdx := strings.Index(detailed, "alpha-pkg@2.0.0")
-		midIdx := strings.Index(detailed, "mid-pkg@3.0.0")
-		zetaIdx := strings.Index(detailed, "zeta-pkg@1.0.0")
+		highIdx := strings.Index(detailed, "high-pkg@2.0.0")
+		medIdx := strings.Index(detailed, "medium-pkg@3.0.0")
+		lowIdx := strings.Index(detailed, "low-pkg@1.0.0")
 
-		if alphaIdx == -1 || midIdx == -1 || zetaIdx == -1 {
+		if highIdx == -1 || medIdx == -1 || lowIdx == -1 {
 			t.Fatal("Markdown detailed section missing one or more package names")
 		}
-		if alphaIdx > midIdx {
-			t.Error("Markdown: alpha-pkg should appear before mid-pkg")
+		if highIdx > medIdx {
+			t.Error("Markdown: high-pkg should appear before medium-pkg in detailed findings")
 		}
-		if midIdx > zetaIdx {
-			t.Error("Markdown: mid-pkg should appear before zeta-pkg")
+		if medIdx > lowIdx {
+			t.Error("Markdown: medium-pkg should appear before low-pkg in detailed findings")
 		}
 	})
 
-	t.Run("HTML format shows packages alphabetically", func(t *testing.T) {
+	t.Run("HTML format shows highest risk first", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{Format: FormatHTML, Verbose: false, Writer: buf})
 		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
@@ -1014,28 +1046,29 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 		}
 
 		output := buf.String()
+		// Look at "Package Details" section
 		detailsIdx := strings.Index(output, "Package Details")
 		if detailsIdx == -1 {
 			t.Fatal("HTML output missing 'Package Details' section")
 		}
 		details := output[detailsIdx:]
 
-		alphaIdx := strings.Index(details, "alpha-pkg@2.0.0")
-		midIdx := strings.Index(details, "mid-pkg@3.0.0")
-		zetaIdx := strings.Index(details, "zeta-pkg@1.0.0")
+		highIdx := strings.Index(details, "high-pkg@2.0.0")
+		medIdx := strings.Index(details, "medium-pkg@3.0.0")
+		lowIdx := strings.Index(details, "low-pkg@1.0.0")
 
-		if alphaIdx == -1 || midIdx == -1 || zetaIdx == -1 {
+		if highIdx == -1 || medIdx == -1 || lowIdx == -1 {
 			t.Fatal("HTML details section missing one or more package names")
 		}
-		if alphaIdx > midIdx {
-			t.Error("HTML: alpha-pkg should appear before mid-pkg")
+		if highIdx > medIdx {
+			t.Error("HTML: high-pkg should appear before medium-pkg")
 		}
-		if midIdx > zetaIdx {
-			t.Error("HTML: mid-pkg should appear before zeta-pkg")
+		if medIdx > lowIdx {
+			t.Error("HTML: medium-pkg should appear before low-pkg")
 		}
 	})
 
-	t.Run("JSON format shows packages alphabetically", func(t *testing.T) {
+	t.Run("JSON format shows highest risk first", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		reporter := NewReporter(Config{Format: FormatJSON, Verbose: false, Writer: buf})
 		reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
@@ -1047,18 +1080,18 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 		}
 
 		output := buf.String()
-		alphaIdx := strings.Index(output, `"alpha-pkg"`)
-		midIdx := strings.Index(output, `"mid-pkg"`)
-		zetaIdx := strings.Index(output, `"zeta-pkg"`)
+		highIdx := strings.Index(output, `"high-pkg"`)
+		medIdx := strings.Index(output, `"medium-pkg"`)
+		lowIdx := strings.Index(output, `"low-pkg"`)
 
-		if alphaIdx == -1 || midIdx == -1 || zetaIdx == -1 {
+		if highIdx == -1 || medIdx == -1 || lowIdx == -1 {
 			t.Fatal("JSON output missing one or more package names")
 		}
-		if alphaIdx > midIdx {
-			t.Error("JSON: alpha-pkg should appear before mid-pkg")
+		if highIdx > medIdx {
+			t.Error("JSON: high-pkg should appear before medium-pkg in results")
 		}
-		if midIdx > zetaIdx {
-			t.Error("JSON: mid-pkg should appear before zeta-pkg")
+		if medIdx > lowIdx {
+			t.Error("JSON: medium-pkg should appear before low-pkg in results")
 		}
 	})
 
@@ -1087,6 +1120,218 @@ func TestSortedResultsAlphabetically(t *testing.T) {
 	})
 }
 
+// Test: Score gradient produces smooth color transitions across the 0-20 range
+// Justification: A smooth gradient from green to red enables faster visual triage
+//
+//	of supply chain risk — users can instantly gauge relative risk at a
+//	glance rather than mapping discrete buckets mentally.
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — rapid
+//
+//	identification of risky packages is critical for incident response
+//
+// Methodology: Verify gradient interpolation at boundary values and midpoints,
+//
+//	check ANSI truecolor and CSS output formats
+//
+// Result: Score 0 is green, score 20 is red, intermediates smoothly interpolate
+func TestScoreGradientRGB(t *testing.T) {
+	tests := []struct {
+		score      int
+		wantR      int
+		wantG      int
+		wantB      int
+		desc       string
+	}{
+		{0, 82, 183, 136, "score 0 should be forest green"},
+		{5, 132, 204, 22, "score 5 should be lime/yellow-green"},
+		{10, 245, 158, 11, "score 10 should be amber"},
+		{15, 249, 115, 22, "score 15 should be orange"},
+		{20, 239, 68, 68, "score 20 should be red"},
+	}
+
+	for _, tt := range tests {
+		r, g, b := scoreGradientRGB(tt.score)
+		if r != tt.wantR || g != tt.wantG || b != tt.wantB {
+			t.Errorf("scoreGradientRGB(%d): got (%d,%d,%d), want (%d,%d,%d) — %s",
+				tt.score, r, g, b, tt.wantR, tt.wantG, tt.wantB, tt.desc)
+		}
+	}
+}
+
+// Test: Gradient interpolates smoothly between adjacent stops
+// Justification: Intermediate scores (e.g. 3, 7, 12) must produce colors
+//
+//	between adjacent gradient stops, not jump between buckets
+//
+// Source: Visual triage requirement for supply chain risk reports
+// Methodology: Verify midpoint between two stops has intermediate RGB values
+// Result: Score 2-3 produces values between stop 0 and stop 5
+func TestScoreGradientInterpolation(t *testing.T) {
+	// Score 2 should be between green (score 0) and lime (score 5)
+	r, g, _ := scoreGradientRGB(2)
+	if r <= 82 || r >= 132 {
+		t.Errorf("scoreGradientRGB(2): R=%d should be between 82 and 132", r)
+	}
+	if g <= 183 || g >= 204 {
+		t.Errorf("scoreGradientRGB(2): G=%d should be between 183 and 204", g)
+	}
+
+	// Score 12 should be between amber (score 10) and orange (score 15)
+	r, _, _ = scoreGradientRGB(12)
+	if r < 245 || r > 249 {
+		t.Errorf("scoreGradientRGB(12): R=%d should be between 245 and 249", r)
+	}
+}
+
+// Test: Gradient clamps at boundaries
+// Justification: Scores outside the 0-20 range must not cause out-of-bounds
+//
+//	errors or produce unexpected colors
+//
+// Source: Defensive testing for edge cases in risk scoring
+// Methodology: Test scores below 0 and above 20
+// Result: Negative scores match score 0, scores >20 match score 20
+func TestScoreGradientBoundaries(t *testing.T) {
+	r0, g0, b0 := scoreGradientRGB(0)
+	rNeg, gNeg, bNeg := scoreGradientRGB(-5)
+	if r0 != rNeg || g0 != gNeg || b0 != bNeg {
+		t.Errorf("scoreGradientRGB(-5) should equal scoreGradientRGB(0)")
+	}
+
+	r20, g20, b20 := scoreGradientRGB(20)
+	rHigh, gHigh, bHigh := scoreGradientRGB(25)
+	if r20 != rHigh || g20 != gHigh || b20 != bHigh {
+		t.Errorf("scoreGradientRGB(25) should equal scoreGradientRGB(20)")
+	}
+}
+
+// Test: scoreColor returns truecolor ANSI escape codes
+// Justification: Terminal output must use 24-bit color for smooth gradient
+//
+//	display when rendering risk scores
+//
+// Source: ANSI truecolor specification (ISO 8613-6)
+// Methodology: Verify scoreColor returns \033[38;2;R;G;Bm format
+// Result: Output matches expected ANSI truecolor escape format
+func TestScoreColorANSI(t *testing.T) {
+	color := scoreColor(0)
+	expected := "\033[38;2;82;183;136m"
+	if color != expected {
+		t.Errorf("scoreColor(0) = %q, want %q", color, expected)
+	}
+
+	color = scoreColor(20)
+	expected = "\033[38;2;239;68;68m"
+	if color != expected {
+		t.Errorf("scoreColor(20) = %q, want %q", color, expected)
+	}
+}
+
+// Test: scoreColorCSS returns valid CSS rgb() values
+// Justification: HTML reports must use inline CSS colors for gradient score
+//
+//	display to accurately reflect risk levels
+//
+// Source: CSS Color Level 4 specification (W3C)
+// Methodology: Verify scoreColorCSS returns rgb(R,G,B) format
+// Result: Output matches expected CSS color format
+func TestScoreColorCSS(t *testing.T) {
+	css := scoreColorCSS(0)
+	expected := "rgb(82,183,136)"
+	if css != expected {
+		t.Errorf("scoreColorCSS(0) = %q, want %q", css, expected)
+	}
+
+	css = scoreColorCSS(20)
+	expected = "rgb(239,68,68)"
+	if css != expected {
+		t.Errorf("scoreColorCSS(20) = %q, want %q", css, expected)
+	}
+
+	css = scoreColorCSS(10)
+	expected = "rgb(245,158,11)"
+	if css != expected {
+		t.Errorf("scoreColorCSS(10) = %q, want %q", css, expected)
+	}
+}
+
+// Test: HTML report uses gradient colors for package score displays
+// Justification: Score numbers in the HTML report must use gradient colors
+//
+//	to enable visual risk triage at a glance
+//
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — rapid
+//
+//	identification of risky packages is critical for incident response
+//
+// Methodology: Generate HTML report and verify inline style attributes use
+//
+//	the gradient color values on score elements
+//
+// Result: Package scores have inline color styles matching the gradient
+func TestHTMLReportUsesGradientColors(t *testing.T) {
+	results := []models.AnalysisResult{
+		{
+			Dependency: models.Dependency{
+				Name:      "risky-pkg",
+				Version:   "1.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "HIGH",
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 16,
+				RiskLevel:  "HIGH",
+			},
+		},
+		{
+			Dependency: models.Dependency{
+				Name:      "safe-pkg",
+				Version:   "2.0.0",
+				Ecosystem: models.EcosystemNPM,
+			},
+			RiskLevel: "LOW",
+			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 3,
+				RiskLevel:  "LOW",
+			},
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	reporter := NewReporter(Config{
+		Format: FormatHTML,
+		Writer: buf,
+	})
+	reporter.stats.StartTime = time.Now().Add(-2 * time.Second)
+	reporter.stats.EndTime = time.Now()
+	reporter.AddResults(results)
+
+	err := reporter.Generate()
+	if err != nil {
+		t.Fatalf("Generate() failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// High-score package should have inline gradient color on its score
+	highColor := scoreColorCSS(16)
+	if !strings.Contains(output, fmt.Sprintf("style=\"color:%s\"", highColor)) {
+		t.Errorf("HTML output missing gradient color %s for score 16", highColor)
+	}
+
+	// Low-score package should have inline gradient color on its score
+	lowColor := scoreColorCSS(3)
+	if !strings.Contains(output, fmt.Sprintf("style=\"color:%s\"", lowColor)) {
+		t.Errorf("HTML output missing gradient color %s for score 3", lowColor)
+	}
+
+	// The two colors should be different (gradient, not flat)
+	if highColor == lowColor {
+		t.Error("Score 16 and score 3 should have different gradient colors")
+	}
+}
+
 // Test: Category score cards in HTML report include tooltip descriptions
 // Justification: Users need to understand what each supply chain risk category
 //
@@ -1109,7 +1354,10 @@ func TestHTMLCategoryTooltips(t *testing.T) {
 				Version:   "1.0.0",
 				Ecosystem: models.EcosystemNPM,
 			},
+			RiskLevel: "MEDIUM",
 			SupplyChainScore: &models.SupplyChainScore{
+				TotalScore: 8,
+				RiskLevel:  "MEDIUM",
 				CategoryScores: models.CategoryScores{
 					PublisherControl: models.CategoryScore{Score: 2, RiskPoints: 2, Verified: true},
 					OwnershipChanges: models.CategoryScore{Score: 0, RiskPoints: 0, Verified: true},
