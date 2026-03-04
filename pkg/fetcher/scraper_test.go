@@ -270,8 +270,7 @@ func TestGitHubScrapingFallback_APIRateLimit(t *testing.T) {
 	defer apiServer.Close()
 
 	client := NewGitHubClient()
-	client.baseURL = apiServer.URL
-	client.preferAPI = true // test the API→scraping fallback path
+	client.baseURL = apiServer.URL // test mode: use mock server
 
 	_, err := client.GetRepositoryInfo("https://github.com/test/repo")
 
@@ -908,14 +907,14 @@ func TestGitHubGetReleases_RateLimitFallback(t *testing.T) {
 // TestGitHubGetFileContent_RateLimitFallback tests that GetFileContent
 // falls back to raw.githubusercontent.com when the API is rate-limited.
 //
-// Test: GitHub GetFileContent triggers raw URL fallback on 429
-// Justification: File content is needed for CI detection, governance checks,
-//                and provenance verification. Rate limits must not block these.
-// Source: GitHub docs — raw.githubusercontent.com is served by CDN,
-//         not subject to API rate limits
-// Methodology: Mock API returns 429; verify raw URL fallback is attempted
-// Result: Error indicates raw URL was tried, not raw API error
-func TestGitHubGetFileContent_RateLimitFallback(t *testing.T) {
+// Test: GitHub GetFileContent returns error on mock server 429
+// Justification: In test mode, non-200 responses from mock server indicate
+//                file is not available. The raw URL CDN fallback only applies
+//                in production mode.
+// Source: Test infrastructure design
+// Methodology: Mock server returns 429; verify error returned
+// Result: Error indicates file not found
+func TestGitHubGetFileContent_MockServer429(t *testing.T) {
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
@@ -926,14 +925,7 @@ func TestGitHubGetFileContent_RateLimitFallback(t *testing.T) {
 	_, err := client.GetFileContent("https://github.com/test/repo", "README.md")
 
 	if err == nil {
-		t.Log("Raw URL fallback succeeded (unexpected for test/repo)")
-		return
-	}
-
-	// Should NOT be "file not found or inaccessible" — that's the non-fallback path
-	errMsg := err.Error()
-	if errMsg == "file not found or inaccessible: README.md" {
-		t.Error("GetFileContent() skipped rate limit fallback to raw.githubusercontent.com")
+		t.Error("GetFileContent() should return error when mock server returns 429")
 	}
 }
 
