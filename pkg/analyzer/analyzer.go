@@ -121,33 +121,6 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 	return a
 }
 
-// ShouldFallbackToScraping returns true when the GitHub API rate limit remaining
-// count is below the given threshold. The scan command uses this to decide
-// when to switch remaining packages to scraping-only mode. The scan never
-// stops — it continues with web scraping for all remaining packages.
-func (a *Analyzer) ShouldFallbackToScraping(threshold int) bool {
-	return a.githubClient.ShouldFallbackToScraping(threshold)
-}
-
-// RateLimitRemaining returns the last observed GitHub API rate limit remaining count.
-// Returns -1 if no rate limit header has been received yet.
-func (a *Analyzer) RateLimitRemaining() int {
-	return a.githubClient.RateLimitRemaining()
-}
-
-// SetScrapingOnlyMode enables or disables scraping-only mode on the GitHub
-// client. When enabled, all GitHub API calls are skipped and only web scraping
-// is used. This is activated when the rate limit gate triggers during a scan,
-// allowing remaining packages to still be analyzed with reduced data fidelity.
-func (a *Analyzer) SetScrapingOnlyMode(enabled bool) {
-	a.githubClient.SetScrapingOnlyMode(enabled)
-}
-
-// IsScrapingOnly returns true when the GitHub client is in scraping-only mode.
-func (a *Analyzer) IsScrapingOnly() bool {
-	return a.githubClient.IsScrapingOnly()
-}
-
 // ResolveRepoURL performs a lightweight registry lookup to determine the source
 // repository URL for a dependency. This is used during the pre-scan repo
 // resolution phase to group packages by repository before analysis begins.

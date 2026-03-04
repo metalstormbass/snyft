@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -289,29 +288,28 @@ func (rc *repoCache) setWorkflowFiles(key string, files []string) {
 	rc.workflowFiles[key] = files
 }
 
-// GitHubClient handles interactions with GitHub API and web scraping.
-// By default, web scraping is the primary data-fetching method, with API calls
-// used to supplement when a GITHUB_TOKEN is available.
+// GitHubClient handles interactions with GitHub via web scraping and git clone.
+// No GitHub REST API or GraphQL calls are made. GITHUB_TOKEN is used only for
+// git clone authentication to access private repositories and avoid clone
+// rate limits.
 type GitHubClient struct {
-	token        string
-	httpClient   *http.Client
-	baseURL      string
-	cache        *repoCache
-	orgCache     *OrgCache // scan-level shared cache for org identity/info
-	preferAPI    bool      // when true, always try API first (used by test helpers with mock servers)
-	rateLimiter  *GitHubRateLimiter
-	scrapingOnly atomic.Bool // when true, all API calls are skipped; only web scraping is used
+	token      string
+	httpClient *http.Client
+	baseURL    string
+	cache      *repoCache
+	orgCache   *OrgCache // scan-level shared cache for org identity/info
+	preferAPI  bool      // when true, always try API first (used by test helpers with mock servers)
 }
 
-// NewGitHubClient creates a new GitHub client. Web scraping is the primary
-// data-fetching method. When GITHUB_TOKEN is set, API calls supplement
-// scraped data with richer metadata and higher rate limits.
+// NewGitHubClient creates a new GitHub client. Web scraping and git clone are
+// the only data-fetching methods. GITHUB_TOKEN is used only for git clone
+// authentication.
 // GitHubClientOption configures a GitHubClient during construction.
 type GitHubClientOption func(*GitHubClient)
 
 // WithSharedOrgCache injects a scan-level shared OrgCache into the client.
-// All GitHubClient instances that share the same OrgCache will reuse org-level
-// API results (identity, org info) instead of making duplicate requests.
+// All GitHubClient instances that share the same OrgCache will reuse
+// scraped identity/org data instead of making duplicate requests.
 func WithSharedOrgCache(oc *OrgCache) GitHubClientOption {
 	return func(c *GitHubClient) {
 		c.orgCache = oc
@@ -323,14 +321,11 @@ func NewGitHubClient(opts ...GitHubClientOption) *GitHubClient {
 	c := &GitHubClient{
 		token: token,
 		httpClient: &http.Client{
-			// 10s timeout keeps failures fast — both API rate-limit
-			// responses and slow scraping targets are bounded.
 			Timeout: 10 * time.Second,
 		},
-		baseURL:     "https://api.github.com",
-		cache:       newRepoCache(),
-		orgCache:    NewOrgCache(), // default: per-client cache; override with WithSharedOrgCache
-		rateLimiter: NewGitHubRateLimiter(token != ""),
+		baseURL:  "https://api.github.com",
+		cache:    newRepoCache(),
+		orgCache: NewOrgCache(),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -352,88 +347,18 @@ func NewGitHubClientWithBaseURL(baseURL string) *GitHubClient {
 	}
 }
 
-// RateLimitRemaining returns the last observed GitHub API rate limit remaining count.
-// Returns -1 if no rate limit header has been received yet.
-func (c *GitHubClient) RateLimitRemaining() int {
-	if c.rateLimiter == nil {
-		return -1
-	}
-	return c.rateLimiter.Remaining()
+// isTestServer returns true when the client is configured to hit a test mock
+// server instead of real GitHub. In this mode, HTTP requests go directly to
+// the mock server (which serves API-like JSON responses).
+func (c *GitHubClient) isTestServer() bool {
+	return c.preferAPI
 }
 
-// ShouldFallbackToScraping returns true when the GitHub API quota is below the
-// given threshold, indicating the scan should switch to scraping-only mode for
-// remaining packages. The scan never stops — it continues with web scraping.
-func (c *GitHubClient) ShouldFallbackToScraping(threshold int) bool {
-	if c.rateLimiter == nil {
-		return false
-	}
-	return c.rateLimiter.ShouldFallbackToScraping(threshold)
-}
-
-// SetScrapingOnlyMode enables or disables scraping-only mode. When enabled,
-// all GitHub API calls are skipped and only web scraping is used for data
-// collection. This is activated when the rate limit gate triggers, allowing
-// remaining packages to be analyzed with reduced fidelity rather than being
-// skipped entirely.
-func (c *GitHubClient) SetScrapingOnlyMode(enabled bool) {
-	c.scrapingOnly.Store(enabled)
-}
-
-// IsScrapingOnly returns true when the client is in scraping-only mode.
-func (c *GitHubClient) IsScrapingOnly() bool {
-	return c.scrapingOnly.Load()
-}
-
-// shouldPreferScraping returns true when web scraping should be the primary
-// data fetching method. Scraping is always preferred for real GitHub requests
-// to minimize API consumption. API calls are reserved as a fallback when
-// scraping fails, and for checks that genuinely cannot be scraped (signed
-// commits verification, attestations/provenance, branch protection).
-//
-// Returns false only for:
-//   - Test servers (preferAPI flag set) — mock handlers must be exercised
-//   - Custom base URLs — scraping targets real github.com
-func (c *GitHubClient) shouldPreferScraping() bool {
-	if c.preferAPI {
-		return false // test servers always use API
-	}
-	if c.baseURL != "https://api.github.com" {
-		return false // custom base URLs use API (scraping targets real github.com)
-	}
-	return true // always prefer scraping for real GitHub
-}
-
-// errScrapingOnly is returned by doRequest when the client is in scraping-only
-// mode, preventing any GitHub API calls from being made.
-var errScrapingOnly = fmt.Errorf("scraping-only mode: API calls disabled to preserve rate limit")
-
-// doRequest executes an HTTP request with proactive rate limiting for GitHub
-// API calls. It waits for the rate limiter to permit the request, executes it,
-// then updates the limiter based on GitHub's X-RateLimit-* response headers.
-//
-// When scraping-only mode is enabled, doRequest returns errScrapingOnly without
-// making any network call. Methods that call doRequest will then fall through
-// to their scraping fallbacks or return gracefully degraded results.
-//
-// Use this for all requests to c.baseURL (the GitHub API). Do NOT use for
-// requests to raw.githubusercontent.com or github.com web pages, as those
-// have separate (or no) rate limits.
+// doRequest executes an HTTP request against the mock test server.
+// This is only used when preferAPI is true (test servers). Production code
+// paths use scraping and git clone exclusively.
 func (c *GitHubClient) doRequest(req *http.Request) (*http.Response, error) {
-	if c.scrapingOnly.Load() {
-		return nil, errScrapingOnly
-	}
-	if c.rateLimiter != nil {
-		c.rateLimiter.Wait()
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	if c.rateLimiter != nil {
-		c.rateLimiter.Update(resp)
-	}
-	return resp, nil
+	return c.httpClient.Do(req)
 }
 
 // GetRepositoryInfo fetches repository information from GitHub.
@@ -456,10 +381,8 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 		}
 	}
 
-	// Scraping-first path: always try web scraping first to minimize API usage.
-	// API calls are reserved for data that cannot be scraped (signed commits,
-	// branch protection, provenance).
-	if c.shouldPreferScraping() {
+	// Scraping path: web scraping is the only data source for production.
+	if !c.isTestServer() {
 		info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -467,21 +390,10 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 			}
 			return info, nil
 		}
-		// Scraping failed — fall through to try the API
+		return nil, scrapeErr
 	}
 
-	// GraphQL batch path: fallback when scraping fails. Fetches repo info +
-	// releases + governance files + branch protection in a single API call.
-	// Results are cached so subsequent callers get cache hits.
-	if c.token != "" && !c.preferAPI {
-		batch := c.fetchBatchRepoData(owner, repo)
-		if batch != nil && batch.RepoInfo != nil {
-			return batch.RepoInfo, nil
-		}
-		// GraphQL failed — fall through to REST API
-	}
-
-	// REST API path: fallback when both scraping and GraphQL fail.
+	// Test server path: use API-like mock responses.
 	url := fmt.Sprintf("%s/repos/%s/%s", c.baseURL, owner, repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -495,28 +407,12 @@ func (c *GitHubClient) GetRepositoryInfo(repoURL string) (*models.RepositoryInfo
 
 	resp, err := c.doRequest(req)
 	if err != nil {
-		// API unreachable — try scraping if we haven't already
-		if !c.shouldPreferScraping() {
-			info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
-			if scrapeErr == nil && c.cache != nil {
-				c.cache.setRepoInfo(cacheKey, info)
-			}
-			return info, scrapeErr
-		}
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		// Try scraping fallback on rate limit or auth errors (if we haven't already)
-		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
-			info, scrapeErr := c.scrapeRepositoryInfo(repoURL, owner, repo)
-			if scrapeErr == nil && c.cache != nil {
-				c.cache.setRepoInfo(cacheKey, info)
-			}
-			return info, scrapeErr
-		}
 		return nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -735,7 +631,7 @@ func (c *GitHubClient) getRepoTree(owner, repo string) (map[string]bool, bool, b
 		return treePaths, false, true
 	}
 
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		return nil, false, false
 	}
 
@@ -915,7 +811,7 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 	// then try scraping the tags listing page for non-standard naming.
 	// HEAD requests to github.com are served by the web frontend, not the API,
 	// and are not subject to API rate limits.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		for _, tag := range tagVariants {
 			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 			if c.checkTagViaWeb(tagURL) {
@@ -963,7 +859,7 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 	}
 
 	// If the API was rate-limited and we haven't tried scraping yet, try now.
-	if rateLimited && !c.shouldPreferScraping() {
+	if rateLimited && !!c.isTestServer() {
 		for _, tag := range tagVariants {
 			tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
 			if c.checkTagViaWeb(tagURL) {
@@ -979,7 +875,7 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 	// Paginated fallback: when direct lookups fail (non-standard tag naming),
 	// search through the tags listing. searchTagsPaginated uses scraping when
 	// shouldPreferScraping() and API otherwise, with scraping fallback on rate limit.
-	if !rateLimited && !c.shouldPreferScraping() {
+	if !rateLimited && !!c.isTestServer() {
 		if found, tagURL := c.searchTagsPaginated(owner, repo, version); found {
 			return true, tagURL, nil
 		}
@@ -1015,8 +911,12 @@ func (c *GitHubClient) fetchTagNamesViaGitLsRemote(owner, repo string) ([]string
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	repoURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--tags", "--refs", repoURL)
+	// Use GITHUB_TOKEN for authenticated ls-remote when available.
+	gitURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	if c.token != "" {
+		gitURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", c.token, owner, repo)
+	}
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--tags", "--refs", gitURL)
 	// Suppress git credential prompts — if the repo doesn't exist or is
 	// private, we want a fast failure rather than a blocking prompt.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -1104,7 +1004,7 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 	}
 
 	// Scraping-first path: scrape the tags page to avoid API rate limits.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		if scraped, err := c.scrapeTagNames(owner, repo); err == nil {
 			return matchTagVersion(scraped, versionSuffixes, owner, repo)
 		}
@@ -1115,7 +1015,7 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 	allTagNames := c.fetchTagNamesViaAPI(owner, repo)
 
 	// If API returned nothing (rate limited or error) and we haven't scraped yet, try scraping.
-	if len(allTagNames) == 0 && !c.shouldPreferScraping() {
+	if len(allTagNames) == 0 && !!c.isTestServer() {
 		if scraped, err := c.scrapeTagNames(owner, repo); err == nil && len(scraped) > 0 {
 			return matchTagVersion(scraped, versionSuffixes, owner, repo)
 		}
@@ -1598,7 +1498,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 	}
 
 	// Scraping-first path: always try scraping the releases page first.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		releases, scrapeErr := c.scrapeReleases(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -1632,7 +1532,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		resp, err := c.doRequest(req)
 		if err != nil {
 			// Network error — try scraping if we haven't already
-			if page == 0 && !c.shouldPreferScraping() {
+			if page == 0 && !!c.isTestServer() {
 				releases, scrapeErr := c.scrapeReleases(owner, repo)
 				if scrapeErr == nil && c.cache != nil {
 					c.cache.setCachedReleases(cacheKey, releases)
@@ -1645,7 +1545,7 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 		if resp.StatusCode != http.StatusOK {
 			// Rate limit or auth errors — try scraping if we haven't already
 			_ = resp.Body.Close()
-			if page == 0 && !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+			if page == 0 && !!c.isTestServer() && shouldFallbackToScraping(nil, resp.StatusCode) {
 				releases, scrapeErr := c.scrapeReleases(owner, repo)
 				if scrapeErr == nil && c.cache != nil {
 					c.cache.setCachedReleases(cacheKey, releases)
@@ -1790,7 +1690,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 	}
 
 	// Raw-URL-first path: always use CDN (not subject to API rate limits).
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		content, rawErr := c.getFileContentViaRawURL(owner, repo, filePath)
 		if rawErr == nil {
 			return content, nil
@@ -1813,7 +1713,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try raw URL if we haven't already
-		if !c.shouldPreferScraping() {
+		if !!c.isTestServer() {
 			return c.getFileContentViaRawURL(owner, repo, filePath)
 		}
 		return "", err
@@ -1822,7 +1722,7 @@ func (c *GitHubClient) GetFileContent(repoURL, filePath string) (string, error) 
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try raw URL if we haven't already
-		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !!c.isTestServer() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			return c.getFileContentViaRawURL(owner, repo, filePath)
 		}
 		return "", fmt.Errorf("file not found or inaccessible: %s", filePath)
@@ -1889,7 +1789,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 
 	// Scraping-first path: always try scraping contributor data first to
 	// minimize API usage.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		stats, scrapeErr := c.scrapeCommitAuthors(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -1928,7 +1828,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		if err != nil {
 			if page == 1 {
 				// Network error on first page — try scraping if we haven't already
-				if !c.shouldPreferScraping() {
+				if !!c.isTestServer() {
 					if scraped, scrapeErr := c.scrapeCommitAuthors(owner, repo); scrapeErr == nil {
 						if c.cache != nil {
 							c.cache.setCommitAuthors(cacheKey, scraped)
@@ -1945,7 +1845,7 @@ func (c *GitHubClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 			_ = resp.Body.Close()
 			if page == 1 {
 				// Rate limit on first page — try scraping fallback
-				if shouldFallbackToScraping(nil, resp.StatusCode) && !c.shouldPreferScraping() {
+				if shouldFallbackToScraping(nil, resp.StatusCode) && !!c.isTestServer() {
 					if scraped, scrapeErr := c.scrapeCommitAuthors(owner, repo); scrapeErr == nil {
 						if c.cache != nil {
 							c.cache.setCommitAuthors(cacheKey, scraped)
@@ -2303,7 +2203,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	}
 
 	// Scraping-first path: always try scraping contributor data first.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		stats, scrapeErr := c.scrapeCommitStats(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -2329,7 +2229,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScraping() {
+		if !!c.isTestServer() {
 			stats, scrapeErr := c.scrapeCommitStats(owner, repo)
 			if scrapeErr == nil && c.cache != nil {
 				c.cache.setCommitStats(cacheKey, stats)
@@ -2342,7 +2242,7 @@ func (c *GitHubClient) GetCommitStats(repoURL string) (*CommitStats, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try scraping if we haven't already
-		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !!c.isTestServer() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			stats, scrapeErr := c.scrapeCommitStats(owner, repo)
 			if scrapeErr == nil && c.cache != nil {
 				c.cache.setCommitStats(cacheKey, stats)
@@ -2481,7 +2381,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	}
 
 	// Scraping-first path: always try scraping PR data first to minimize API usage.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		stats, scrapeErr := c.scrapePullRequestStats(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -2512,7 +2412,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScraping() {
+		if !!c.isTestServer() {
 			if scraped, scrapeErr := c.scrapePullRequestStats(owner, repo); scrapeErr == nil {
 				if c.cache != nil {
 					c.cache.setPRStats(cacheKey, scraped)
@@ -2526,7 +2426,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try scraping if we haven't already
-		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !!c.isTestServer() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			if scraped, scrapeErr := c.scrapePullRequestStats(owner, repo); scrapeErr == nil {
 				if c.cache != nil {
 					c.cache.setPRStats(cacheKey, scraped)
@@ -2662,30 +2562,16 @@ func (c *GitHubClient) prHasReviews(owner, repo string, prNumber int) bool {
 	return len(reviews) > 0
 }
 
-// batchCheckPRReviews checks review status for multiple PRs efficiently.
-// Uses a single GraphQL query when a token is available (1 API call instead of N).
-// Falls back to individual REST calls with rate limit awareness when GraphQL is
-// unavailable.
+// batchCheckPRReviews checks review status for multiple PRs.
+// Only used in the test server path (API). Production uses scraping which
+// cannot determine per-PR review status.
 func (c *GitHubClient) batchCheckPRReviews(owner, repo string, prNumbers []int) map[int]bool {
 	if len(prNumbers) == 0 {
 		return make(map[int]bool)
 	}
 
-	// Try GraphQL batch first — requires a token but replaces N REST calls with 1
-	if c.token != "" {
-		if result := c.batchCheckPRReviewsGraphQL(owner, repo, prNumbers); result != nil {
-			return result
-		}
-		// GraphQL failed — fall through to individual REST calls
-	}
-
-	// Fallback: individual REST calls with rate limit awareness.
-	// Stop early when API quota drops to preserve calls for critical checks.
 	result := make(map[int]bool)
 	for _, prNum := range prNumbers {
-		if c.rateLimiter != nil && c.rateLimiter.ShouldPreferScraping() {
-			break
-		}
 		result[prNum] = c.prHasReviews(owner, repo, prNum)
 	}
 	return result
@@ -2810,7 +2696,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	}
 
 	// Scraping-first path: always try scraping the GitHub tree page first.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 		if scrapeErr == nil {
 			if c.cache != nil {
@@ -2836,7 +2722,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScraping() {
+		if !!c.isTestServer() {
 			workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 			if scrapeErr == nil {
 				if c.cache != nil {
@@ -2851,7 +2737,7 @@ func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth errors — try scraping if we haven't already
-		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !!c.isTestServer() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			workflows, scrapeErr := c.scrapeWorkflowFiles(owner, repo)
 			if scrapeErr == nil {
 				if c.cache != nil {
@@ -2983,18 +2869,9 @@ func (c *GitHubClient) GetAverageIssueResponseTime(repoURL string) (float64, err
 		}
 	}
 
-	// Skip API call when quota is low — issue response time requires up to
-	// 31 API calls (1 for issue list + 10 for per-issue comments) and has no
-	// scraping alternative. Return 0 with nil error so callers degrade
-	// gracefully rather than wasting precious API quota.
-	if c.shouldPreferScraping() {
-		return 0, nil
-	}
-
-	// Also skip when actual API quota is low — this covers enterprise/custom
-	// base URL setups where shouldPreferScraping() returns false but the rate
-	// limit is nearly exhausted.
-	if c.rateLimiter != nil && c.rateLimiter.ShouldPreferScraping() {
+	// Issue response time has no scraping alternative and requires many API
+	// calls. Only available on test servers. Production returns 0 gracefully.
+	if !c.isTestServer() {
 		return 0, nil
 	}
 
@@ -3160,7 +3037,7 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 	}
 
 	// Scraping-first path: always try scraping the profile page first.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
 			if c.orgCache != nil {
 				c.orgCache.setIdentity(owner, id)
@@ -3184,7 +3061,7 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScraping() {
+		if !!c.isTestServer() {
 			if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
 				if c.orgCache != nil {
 					c.orgCache.setIdentity(owner, id)
@@ -3198,7 +3075,7 @@ func (c *GitHubClient) fetchIdentity(owner string) *cachedIdentity {
 
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit or auth error — try scraping if we haven't already
-		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !!c.isTestServer() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			if id := c.scrapeIdentity(owner); id != nil && id.name != "" {
 				if c.orgCache != nil {
 					c.orgCache.setIdentity(owner, id)
@@ -3287,7 +3164,7 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 
 	// Scraping-first path: always try scraping the org page first to detect
 	// verified badge. MFA requirement cannot be determined via scraping.
-	if c.shouldPreferScraping() {
+	if !c.isTestServer() {
 		info := c.scrapeOrgInfo(owner)
 		if info != nil {
 			if c.orgCache != nil {
@@ -3312,7 +3189,7 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 	resp, err := c.doRequest(req)
 	if err != nil {
 		// Network error — try scraping if we haven't already
-		if !c.shouldPreferScraping() {
+		if !!c.isTestServer() {
 			if info := c.scrapeOrgInfo(owner); info != nil {
 				if c.orgCache != nil {
 					c.orgCache.setOrgInfo(owner, info)
@@ -3327,7 +3204,7 @@ func (c *GitHubClient) fetchOrgInfo(owner string) *cachedOrgInfo {
 	// 404 = owner is a user, not an org; other non-200 = API unavailable
 	if resp.StatusCode != http.StatusOK {
 		// Rate limit — try scraping if we haven't already
-		if !c.shouldPreferScraping() && shouldFallbackToScraping(nil, resp.StatusCode) {
+		if !!c.isTestServer() && shouldFallbackToScraping(nil, resp.StatusCode) {
 			if info := c.scrapeOrgInfo(owner); info != nil {
 				if c.orgCache != nil {
 					c.orgCache.setOrgInfo(owner, info)

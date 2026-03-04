@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -72,6 +71,7 @@ func TestCheckSignedCommits(t *testing.T) {
 			client := &GitHubClient{
 				httpClient: &http.Client{},
 				baseURL:    server.URL,
+    preferAPI:  true,
 			}
 
 			hasSigning, count, err := client.CheckSignedCommits("https://github.com/test/repo")
@@ -255,6 +255,7 @@ func TestCheckSignedReleases(t *testing.T) {
 			client := &GitHubClient{
 				httpClient: &http.Client{},
 				baseURL:    server.URL,
+    preferAPI:  true,
 			}
 
 			hasSigned, err := client.CheckSignedReleases("https://github.com/test/repo")
@@ -293,10 +294,7 @@ func TestGetRepositoryInfo(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &GitHubClient{
-		httpClient: &http.Client{},
-		baseURL:    server.URL,
-	}
+	client := NewGitHubClientWithBaseURL(server.URL)
 
 	info, err := client.GetRepositoryInfo("https://github.com/owner/test-repo")
 	if err != nil {
@@ -521,6 +519,7 @@ func TestCheckSignedCommits_ExactlyHalf(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 	}
 
 	hasSigning, count, err := client.CheckSignedCommits("https://github.com/test/repo")
@@ -579,6 +578,7 @@ func TestGetCommitStats(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -641,6 +641,7 @@ func TestGetCommitStats_ManyContributors(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -687,6 +688,7 @@ func TestGetCommitStats_RateLimitedDoesNotReturnOne(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -757,6 +759,7 @@ func TestCheckGitTag(t *testing.T) {
 			client := &GitHubClient{
 				httpClient: &http.Client{},
 				baseURL:    server.URL,
+    preferAPI:  true,
 				cache:      newRepoCache(),
 			}
 
@@ -834,6 +837,7 @@ func TestCheckGitTag_RepoNamePrefix(t *testing.T) {
 			client := &GitHubClient{
 				httpClient: &http.Client{},
 				baseURL:    server.URL,
+    preferAPI:  true,
 				cache:      newRepoCache(),
 			}
 
@@ -946,6 +950,7 @@ func TestCheckGitTag_PaginatedFallback(t *testing.T) {
 			client := &GitHubClient{
 				httpClient: &http.Client{},
 				baseURL:    server.URL,
+    preferAPI:  true,
 				cache:      newRepoCache(),
 			}
 
@@ -999,6 +1004,7 @@ func TestCheckGitTag_CachesTagsAcrossCalls(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1252,11 +1258,7 @@ func TestCheckIfOrganization(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := &GitHubClient{
-				httpClient: &http.Client{},
-				baseURL:    server.URL,
-				cache:      newRepoCache(),
-			}
+			client := NewGitHubClientWithBaseURL(server.URL)
 
 			isOrg, name := client.CheckIfOrganization("test-owner")
 			if isOrg != tt.wantOrg {
@@ -1322,11 +1324,7 @@ func TestCheckOrgMFARequired(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := &GitHubClient{
-				httpClient: &http.Client{},
-				baseURL:    server.URL,
-				cache:      newRepoCache(),
-			}
+			client := NewGitHubClientWithBaseURL(server.URL)
 
 			required, available := client.CheckOrgMFARequired("test-org")
 			if required != tt.wantRequired {
@@ -1405,6 +1403,7 @@ func TestAnalyzeCIQuality(t *testing.T) {
 			client := &GitHubClient{
 				httpClient: &http.Client{},
 				baseURL:    server.URL,
+    preferAPI:  true,
 				cache:      newRepoCache(),
 			}
 
@@ -1477,6 +1476,7 @@ func TestGetCommitAuthors_RateLimited(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1507,6 +1507,7 @@ func TestGetCommitAuthors_RateLimited429(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1547,11 +1548,7 @@ func TestGetRepositoryInfoCaching(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &GitHubClient{
-		httpClient: &http.Client{},
-		baseURL:    server.URL,
-		cache:      newRepoCache(),
-	}
+	client := NewGitHubClientWithBaseURL(server.URL)
 
 	// First call — hits the server
 	info1, err := client.GetRepositoryInfo("https://github.com/owner/cached-repo")
@@ -1599,6 +1596,7 @@ func TestFileExistsCaching(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1637,6 +1635,7 @@ func TestGetReleasesCaching(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1764,6 +1763,7 @@ func TestGetPullRequestStats(t *testing.T) {
 			client := &GitHubClient{
 				httpClient: &http.Client{},
 				baseURL:    server.URL,
+    preferAPI:  true,
 				cache:      newRepoCache(),
 			}
 
@@ -1855,6 +1855,7 @@ func TestFileExistsInRepo_APISuccess(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1887,6 +1888,7 @@ func TestFileExistsInRepo_FileNotFound(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1923,6 +1925,7 @@ func TestFileExists_DoesNotCacheFalseForRateLimit(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1956,6 +1959,7 @@ func TestFileExists_CachesTrueForSuccess(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -1999,6 +2003,7 @@ func TestCheckFileViaRawURL_FindsFileOnMain(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -2037,6 +2042,7 @@ func TestDetectCISystems_GitHubActionsFileFallback(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -2091,6 +2097,7 @@ func TestDetectCISystems_UsesTreeAPI(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -2174,6 +2181,7 @@ func TestDetectCISystems_TruncatedTreeFallback(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -2240,6 +2248,7 @@ func TestDetectCISystems_FallbackToFileExists(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -2291,6 +2300,7 @@ func TestDetectCISystems_GitHubActionsViaCodeQL(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -2331,6 +2341,7 @@ func TestDetectCISystems_NoDuplicateGitHubActions(t *testing.T) {
 	client := &GitHubClient{
 		httpClient: &http.Client{},
 		baseURL:    server.URL,
+  preferAPI:  true,
 		cache:      newRepoCache(),
 	}
 
@@ -2675,448 +2686,25 @@ func TestCrossPackageDeduplication(t *testing.T) {
 	}
 }
 
-// Test: shouldPreferScraping returns true for real GitHub regardless of quota
-// Justification: Scraping is the primary data fetching method for all GitHub
-//                requests. API calls are reserved as fallback and for checks
-//                that cannot be scraped (signed commits, branch protection).
-// Source: Supply chain analysis design — minimize API dependency
-// Methodology: Create a GitHubClient targeting real github.com with a token,
-//              verify shouldPreferScraping() returns true regardless of quota
-// Result: Returns true (scraping always preferred for real GitHub)
-func TestShouldPreferScraping_AlwaysTrueForRealGitHub(t *testing.T) {
-	rl := NewGitHubRateLimiter(true)
-	resp := &http.Response{
-		Header: http.Header{
-			"X-Ratelimit-Remaining": []string{"200"},
-			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
-		},
+// Test: isTestServer returns false for real GitHub, true for mock servers
+// Justification: Production code uses scraping+clone exclusively. Only test servers
+//                use API-like mock responses.
+// Source: Supply chain analysis design — zero API dependency
+// Methodology: Create clients with real and custom base URLs, verify isTestServer()
+// Result: Returns false for real GitHub, true for test servers
+func TestIsTestServer_RealVsMock(t *testing.T) {
+	realClient := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    "https://api.github.com",
+		cache:      newRepoCache(),
 	}
-	rl.Update(resp)
-
-	client := &GitHubClient{
-		token:       "test-token",
-		httpClient:  &http.Client{},
-		baseURL:     "https://api.github.com",
-		cache:       newRepoCache(),
-		rateLimiter: rl,
+	if realClient.isTestServer() {
+		t.Error("isTestServer() = true for real github.com, want false")
 	}
 
-	if !client.shouldPreferScraping() {
-		t.Error("shouldPreferScraping() = false for real github.com, want true")
-	}
-}
-
-// Test: shouldPreferScraping returns false for test servers
-// Justification: Test servers (custom baseURL) don't support web scraping since
-//                scraping targets real github.com. Forcing API-first for test servers
-//                ensures mock server handlers are actually exercised.
-// Source: Test infrastructure design
-// Methodology: Create a GitHubClient with a custom baseURL and low quota, verify
-//              shouldPreferScraping() returns false
-// Result: Returns false (test servers always use API)
-func TestShouldPreferScrapingForQuota_TestServer(t *testing.T) {
-	rl := NewGitHubRateLimiter(true)
-	resp := &http.Response{
-		Header: http.Header{
-			"X-Ratelimit-Remaining": []string{"50"},
-			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
-		},
-	}
-	rl.Update(resp)
-
-	client := &GitHubClient{
-		token:       "test-token",
-		httpClient:  &http.Client{},
-		baseURL:     "http://localhost:12345",
-		cache:       newRepoCache(),
-		rateLimiter: rl,
-	}
-
-	if client.shouldPreferScraping() {
-		t.Error("shouldPreferScraping() = true for test server, want false")
-	}
-}
-
-// Test: shouldPreferScraping returns true even when quota is healthy
-// Justification: Scraping is always the primary data fetching method for real
-//                GitHub, regardless of API quota level. This minimizes API
-//                consumption and reserves API calls for data that cannot be scraped.
-// Source: Supply chain analysis design — minimize API dependency
-// Methodology: Create a GitHubClient with a token and healthy quota (2000 remaining),
-//              verify shouldPreferScraping() still returns true
-// Result: Returns true (scraping always preferred, quota level irrelevant)
-func TestShouldPreferScraping_TrueEvenWithHealthyQuota(t *testing.T) {
-	rl := NewGitHubRateLimiter(true)
-	resp := &http.Response{
-		Header: http.Header{
-			"X-Ratelimit-Remaining": []string{"2000"},
-		},
-	}
-	rl.Update(resp)
-
-	client := &GitHubClient{
-		token:       "test-token",
-		httpClient:  &http.Client{},
-		baseURL:     "https://api.github.com",
-		cache:       newRepoCache(),
-		rateLimiter: rl,
-	}
-
-	if !client.shouldPreferScraping() {
-		t.Error("shouldPreferScraping() = false with healthy quota, want true (scraping always preferred)")
-	}
-}
-
-// Test: GetCommitAuthors uses scraping as primary method, skipping API
-// Justification: Scraping is always the primary data fetching method. GetCommitAuthors
-//                should try scraping first and only fall back to API when scraping fails.
-//                This minimizes API consumption while still providing contributor data
-//                needed for bus factor assessment.
-// Source: "Small World with High Risks" (Zimmermann et al., 2019) — bus factor
-//         analysis of npm dependency networks
-// Methodology: Set up a GitHubClient targeting real github.com, verify that
-//              GetCommitAuthors takes the scraping path before attempting API calls
-// Result: Scraping path is taken first; API server is not contacted
-func TestGetCommitAuthors_ScrapingFirst_SkipsAPI(t *testing.T) {
-	var apiCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalls.Add(1)
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer server.Close()
-
-	rl := NewGitHubRateLimiter(true)
-	resp := &http.Response{
-		Header: http.Header{
-			"X-Ratelimit-Remaining": []string{"100"},
-			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
-		},
-	}
-	rl.Update(resp)
-
-	// Use real github.com baseURL so shouldPreferScraping() is true,
-	// but the scraping-first path will trigger before any API call
-	client := &GitHubClient{
-		token:       "test-token",
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		baseURL:     "https://api.github.com",
-		cache:       newRepoCache(),
-		rateLimiter: rl,
-	}
-
-	// shouldPreferScraping should be true
-	if !client.shouldPreferScraping() {
-		t.Fatal("shouldPreferScraping() should be true for this test setup")
-	}
-
-	// The scraping-first path will be taken. The API should NOT be called.
-	// Note: scraping may fail for "owner/repo" (non-existent), which is fine —
-	// we verify that the API server was NOT contacted.
-	_, _ = client.GetCommitAuthors("https://github.com/golang/go")
-
-	// Verify the mock API server was NOT called (scraping path was taken)
-	if calls := apiCalls.Load(); calls > 0 {
-		t.Errorf("Expected 0 API calls (scraping-first path), got %d", calls)
-	}
-}
-
-// Test: GetAverageIssueResponseTime skips API when quota is low
-// Justification: Issue response time requires up to 31 API calls and has no
-//                scraping alternative. When quota is low, this expensive check
-//                should be skipped entirely to preserve API calls for more
-//                critical checks like signed commits and attestations.
-// Source: GitHub REST API rate limiting documentation
-// Methodology: Set up a client with low quota, verify GetAverageIssueResponseTime
-//              returns (0, nil) without making any API calls
-// Result: Returns (0, nil) graceful degradation without API calls
-func TestGetAverageIssueResponseTime_QuotaLow_SkipsAPI(t *testing.T) {
-	var apiCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalls.Add(1)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("[]"))
-	}))
-	defer server.Close()
-
-	rl := NewGitHubRateLimiter(true)
-	resp := &http.Response{
-		Header: http.Header{
-			"X-Ratelimit-Remaining": []string{"100"},
-			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
-		},
-	}
-	rl.Update(resp)
-
-	client := &GitHubClient{
-		token:       "test-token",
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		baseURL:     "https://api.github.com",
-		cache:       newRepoCache(),
-		rateLimiter: rl,
-	}
-
-	avgDays, err := client.GetAverageIssueResponseTime("https://github.com/owner/repo")
-	if err != nil {
-		t.Errorf("GetAverageIssueResponseTime() returned error: %v, want nil", err)
-	}
-	if avgDays != 0 {
-		t.Errorf("GetAverageIssueResponseTime() = %f, want 0 (graceful degradation)", avgDays)
-	}
-	if calls := apiCalls.Load(); calls > 0 {
-		t.Errorf("Expected 0 API calls when quota is low, got %d", calls)
-	}
-}
-
-// Test: GetAverageIssueResponseTime skips API on custom baseURL when rate limit low
-// Justification: Enterprise/custom GitHub setups bypass shouldPreferScraping() but
-//                should still skip expensive API calls when quota is nearly exhausted.
-//                Without this check, 11 sequential API calls would waste limited quota.
-// Source: GitHub REST API rate limiting documentation
-// Methodology: Create client with custom baseURL and low rate limit quota, verify
-//              function returns (0, nil) without making any API calls
-// Result: Returns (0, nil) graceful degradation without API calls
-func TestGetAverageIssueResponseTime_RateLimiterLow_SkipsAPI(t *testing.T) {
-	var apiCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalls.Add(1)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("[]"))
-	}))
-	defer server.Close()
-
-	rl := NewGitHubRateLimiter(true) // authenticated
-	resp := &http.Response{
-		Header: http.Header{
-			"X-Ratelimit-Remaining": []string{"100"}, // below 300 threshold
-			"X-Ratelimit-Reset":     []string{strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)},
-		},
-	}
-	rl.Update(resp)
-
-	// Custom baseURL (not api.github.com) so shouldPreferScraping() returns false
-	client := &GitHubClient{
-		token:       "test-token",
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		baseURL:     server.URL,
-		cache:       newRepoCache(),
-		preferAPI:   true,
-		rateLimiter: rl,
-	}
-
-	avgDays, err := client.GetAverageIssueResponseTime("https://github.com/owner/repo")
-	if err != nil {
-		t.Errorf("GetAverageIssueResponseTime() returned error: %v, want nil", err)
-	}
-	if avgDays != 0 {
-		t.Errorf("GetAverageIssueResponseTime() = %f, want 0 (graceful degradation)", avgDays)
-	}
-	if calls := apiCalls.Load(); calls > 0 {
-		t.Errorf("Expected 0 API calls when rate limiter reports low quota, got %d", calls)
-	}
-}
-
-// Test: batchCheckPRReviews uses GraphQL when token available
-// Justification: Checking reviews for 20 individual PRs via REST wastes API quota
-//                (20 calls). A single GraphQL query replaces all of them, preserving
-//                quota for critical checks like signed commits and attestations.
-// Source: GitHub GraphQL API documentation for pullRequest review queries
-// Methodology: Set up mock GraphQL server, call batchCheckPRReviews with token,
-//              verify only 1 API call made and review status correctly parsed.
-// Result: Single GraphQL call returns correct review status for all PRs.
-func TestBatchCheckPRReviews_GraphQL(t *testing.T) {
-	var apiCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-
-		if r.URL.Path == "/graphql" {
-			// Return GraphQL response with review counts
-			resp := `{
-				"data": {
-					"repository": {
-						"pr1": {"reviews": {"totalCount": 2}},
-						"pr3": {"reviews": {"totalCount": 0}},
-						"pr5": {"reviews": {"totalCount": 1}}
-					}
-				}
-			}`
-			_, _ = w.Write([]byte(resp))
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	client := &GitHubClient{
-		token:       "test-token",
-		httpClient:  &http.Client{},
-		baseURL:     server.URL,
-		cache:       newRepoCache(),
-		rateLimiter: NewGitHubRateLimiter(true),
-	}
-
-	result := client.batchCheckPRReviews("owner", "repo", []int{1, 3, 5})
-
-	if !result[1] {
-		t.Error("PR #1 should have reviews (totalCount=2)")
-	}
-	if result[3] {
-		t.Error("PR #3 should NOT have reviews (totalCount=0)")
-	}
-	if !result[5] {
-		t.Error("PR #5 should have reviews (totalCount=1)")
-	}
-
-	if calls := apiCalls.Load(); calls != 1 {
-		t.Errorf("Expected 1 GraphQL call, got %d", calls)
-	}
-}
-
-// Test: batchCheckPRReviews falls back to REST without token
-// Justification: When no GitHub token is available, GraphQL is unavailable.
-//                The batch method must fall back to individual REST calls so
-//                review data is still collected for risk assessment.
-// Source: GitHub API authentication requirements
-// Methodology: Create client without token, verify REST calls are made per PR.
-// Result: Individual REST calls made; review status correctly determined.
-func TestBatchCheckPRReviews_RESTFallback(t *testing.T) {
-	var apiCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-
-		if strings.Contains(r.URL.Path, "/pulls/1/reviews") {
-			_ = json.NewEncoder(w).Encode([]GitHubReview{{ID: 1, State: "APPROVED"}})
-			return
-		}
-		if strings.Contains(r.URL.Path, "/pulls/2/reviews") {
-			_ = json.NewEncoder(w).Encode([]GitHubReview{})
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	client := &GitHubClient{
-		// No token — GraphQL will be skipped
-		httpClient:  &http.Client{},
-		baseURL:     server.URL,
-		cache:       newRepoCache(),
-		rateLimiter: NewGitHubRateLimiter(false),
-	}
-
-	result := client.batchCheckPRReviews("owner", "repo", []int{1, 2})
-
-	if !result[1] {
-		t.Error("PR #1 should have reviews")
-	}
-	if result[2] {
-		t.Error("PR #2 should NOT have reviews")
-	}
-
-	// Should have made 2 individual REST calls (no GraphQL)
-	if calls := apiCalls.Load(); calls != 2 {
-		t.Errorf("Expected 2 REST calls (no token for GraphQL), got %d", calls)
-	}
-}
-
-// Test: SetScrapingOnlyMode toggles the scraping-only flag
-// Justification: When the rate limit gate triggers during a scan, the system
-//                switches to scraping-only mode to continue analyzing remaining
-//                packages without consuming API quota. The flag must be correctly
-//                toggled so that all subsequent API calls are blocked.
-// Source: Graceful degradation principle for supply chain analysis tools
-// Methodology: Create a GitHubClient, toggle scraping-only mode on/off, verify state
-// Result: IsScrapingOnly() reflects the last SetScrapingOnlyMode() call
-func TestGitHubClient_SetScrapingOnlyMode(t *testing.T) {
-	client := NewGitHubClient()
-
-	if client.IsScrapingOnly() {
-		t.Error("IsScrapingOnly() = true on fresh client, want false")
-	}
-
-	client.SetScrapingOnlyMode(true)
-	if !client.IsScrapingOnly() {
-		t.Error("IsScrapingOnly() = false after SetScrapingOnlyMode(true), want true")
-	}
-
-	client.SetScrapingOnlyMode(false)
-	if client.IsScrapingOnly() {
-		t.Error("IsScrapingOnly() = true after SetScrapingOnlyMode(false), want false")
-	}
-}
-
-// Test: doRequest returns errScrapingOnly when scraping-only mode is enabled
-// Justification: In scraping-only mode, no GitHub API calls should be made.
-//                doRequest must return an error immediately so that callers
-//                fall through to their scraping fallbacks or handle missing data
-//                gracefully. This preserves the remaining API quota for later scans.
-// Source: Graceful degradation principle; GitHub REST API rate limiting
-// Methodology: Create a mock server, enable scraping-only mode on the client,
-//              attempt a doRequest — verify it returns errScrapingOnly without
-//              hitting the server
-// Result: errScrapingOnly is returned, no HTTP request is made
-func TestGitHubClient_DoRequest_BlockedInScrapingOnlyMode(t *testing.T) {
-	var apiCalls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalls.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	client := NewGitHubClientWithBaseURL(server.URL)
-	client.scrapingOnly.Store(true)
-
-	req, err := http.NewRequest("GET", server.URL+"/repos/test/test", nil)
-	if err != nil {
-		t.Fatalf("Failed to create request: %v", err)
-	}
-
-	resp, err := client.doRequest(req)
-	if resp != nil {
-		t.Error("doRequest() returned non-nil response in scraping-only mode")
-	}
-	if !errors.Is(err, errScrapingOnly) {
-		t.Errorf("doRequest() error = %v, want errScrapingOnly", err)
-	}
-	if calls := apiCalls.Load(); calls > 0 {
-		t.Errorf("Expected 0 API calls in scraping-only mode, got %d", calls)
-	}
-}
-
-// Test: shouldPreferScraping returns true for real GitHub in all modes
-// Justification: Scraping is always preferred for real GitHub requests. The
-//                function returns true whether quota is healthy, low, or in
-//                scraping-only mode. Only test servers (preferAPI) return false.
-// Source: Supply chain analysis design — minimize API dependency
-// Methodology: Create an authenticated client targeting real github.com, verify
-//              shouldPreferScraping() returns true in normal and scraping-only mode
-// Result: Returns true in all modes for real GitHub
-func TestGitHubClient_ShouldPreferScraping_AlwaysTrueForRealGitHub(t *testing.T) {
-	client := &GitHubClient{
-		token:       "test-token",
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
-		baseURL:     "https://api.github.com",
-		cache:       newRepoCache(),
-		rateLimiter: NewGitHubRateLimiter(true),
-	}
-
-	// With healthy quota, scraping should still be preferred
-	resp := &http.Response{
-		Header: http.Header{
-			"X-Ratelimit-Remaining": []string{"4000"},
-		},
-	}
-	client.rateLimiter.Update(resp)
-
-	if !client.shouldPreferScraping() {
-		t.Error("shouldPreferScraping() = false with healthy quota, want true")
-	}
-
-	// Enable scraping-only mode — should still prefer scraping
-	client.SetScrapingOnlyMode(true)
-	if !client.shouldPreferScraping() {
-		t.Error("shouldPreferScraping() = false in scraping-only mode, want true")
+	mockClient := NewGitHubClientWithBaseURL("http://localhost:12345")
+	if !mockClient.isTestServer() {
+		t.Error("isTestServer() = false for mock server, want true")
 	}
 }
 

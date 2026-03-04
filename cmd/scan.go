@@ -18,14 +18,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// rateLimitScrapingThreshold is the minimum number of GitHub API calls that must
-// remain before the scan switches to scraping-only mode. When the rate limit
-// drops below this value, remaining packages are analyzed using web scraping
-// instead of the GitHub API. The scan NEVER stops — all packages get results.
-// A checkpoint file is saved so users can optionally re-run with full API
-// access later via --resume.
-const rateLimitScrapingThreshold = 50
-
 var (
 	scanPath    string
 	workers     int
@@ -41,9 +33,6 @@ var (
 
 	// All versions flag (skip deduplication)
 	allVersions bool
-
-	// Resume flag
-	resumeScan bool
 )
 
 var scanCmd = &cobra.Command{
@@ -73,9 +62,6 @@ func init() {
   publisher-control, ownership-changes, release-anomalies,
   install-execution, dependency-sprawl, provenance, health,
   governance, release-security, package-maturity`)
-
-	// Resume flag
-	scanCmd.Flags().BoolVar(&resumeScan, "resume", false, "Resume a previously interrupted scan from its checkpoint file")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
@@ -157,11 +143,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	_, _ = fmt.Fprintf(statusOut, "🔍 Scanning directory: %s\n", scanPath)
 
-	// Show GitHub token status before scanning begins
+	// Show GitHub token status (used only for git clone authentication)
 	if os.Getenv("GITHUB_TOKEN") != "" {
-		_, _ = fmt.Fprintln(statusOut, "🔑 GitHub token detected (authenticated API access)")
-	} else {
-		_, _ = fmt.Fprintln(statusOut, "💡 Tip: Set GITHUB_TOKEN for richer data and 5,000 req/hr instead of 60")
+		_, _ = fmt.Fprintln(statusOut, "🔑 GitHub token detected (used for git clone auth)")
 	}
 
 	// Parse manifest files
@@ -206,45 +190,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(statusOut, "📦 Found %d dependencies (%d direct, %d transitive)\n\n", len(dependencies), directCount, transitiveCount)
 	}
 
-	// Load checkpoint if resuming a previous scan
-	var previousResults []models.AnalysisResult
-	if resumeScan {
-		cp, err := loadCheckpoint(scanPath)
-		if err != nil {
-			return fmt.Errorf("failed to load checkpoint: %w", err)
-		}
-		if cp == nil {
-			_, _ = fmt.Fprintln(statusOut, "⚠️  No checkpoint file found, starting fresh scan")
-		} else {
-			// Build set of already-completed package keys
-			completedSet := make(map[string]bool, len(cp.CompletedKeys))
-			for _, key := range cp.CompletedKeys {
-				completedSet[key] = true
-			}
-
-			// Filter out already-completed dependencies
-			var remaining []models.Dependency
-			for _, dep := range dependencies {
-				if !completedSet[dependencyKey(dep)] {
-					remaining = append(remaining, dep)
-				}
-			}
-
-			previousResults = cp.Results
-			_, _ = fmt.Fprintf(statusOut, "📂 Resuming from checkpoint: %d packages already analyzed, %d remaining\n\n",
-				len(cp.Results), len(remaining))
-			dependencies = remaining
-
-			if len(dependencies) == 0 {
-				_, _ = fmt.Fprintln(statusOut, "✅ All packages already analyzed in previous scan")
-				reporter.ClearProgress()
-				reporter.AddResults(previousResults)
-				removeCheckpoint(scanPath)
-				return reporter.Generate()
-			}
-		}
-	}
-
 	// --- Repo-level grouping optimization ---
 	// Phase 1: Resolve source repo URLs via fast registry lookups (no GitHub API)
 	// Phase 2: Group packages by repo — turns 7,749 packages into ~400 repos
@@ -270,44 +215,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintln(statusOut)
 	}
 
-	// Analyze dependencies in parallel (with rate limit gate)
-	scanResult := analyzeDependenciesWithGate(dependencies, workers, reporter, selectedChecks, statusOut)
+	// Analyze dependencies in parallel
+	results := analyzeDependencies(dependencies, workers, reporter, selectedChecks, statusOut)
 
 	// Clear progress line
 	reporter.ClearProgress()
 
-	// Merge with any previously completed results from checkpoint
-	allResults := append(previousResults, scanResult.results...)
-
-	if scanResult.rateLimitFallback {
-		// Save checkpoint so the user can optionally re-run with full API
-		// access later. The scraping-only packages in the checkpoint are
-		// identified by their DataMode field in the saved results.
-		var completedKeys []string
-		for _, r := range allResults {
-			completedKeys = append(completedKeys, dependencyKey(r.Dependency))
-		}
-		cp := &ScanCheckpoint{
-			ScanPath:           scanPath,
-			CreatedAt:          time.Now(),
-			Reason:             "rate_limit_scraping_fallback",
-			RateLimitRemaining: scanResult.rateLimitRemaining,
-			Results:            allResults,
-			CompletedKeys:      completedKeys,
-		}
-		if err := saveCheckpoint(scanPath, cp); err != nil {
-			_, _ = fmt.Fprintf(statusOut, "⚠️  Failed to save checkpoint: %v\n", err)
-		} else {
-			_, _ = fmt.Fprintf(statusOut, "💾 Checkpoint saved (%d packages used scraping-only data)\n", scanResult.scrapingOnlyCount)
-			_, _ = fmt.Fprintf(statusOut, "   To re-analyze with full API data: snyft scan --resume %s\n\n", scanPath)
-		}
-	} else {
-		// Full scan complete — remove any leftover checkpoint file
-		removeCheckpoint(scanPath)
-	}
-
-	// Generate report with all results (both full and scraping-only)
-	reporter.AddResults(allResults)
+	// Generate report
+	reporter.AddResults(results)
 	return reporter.Generate()
 }
 
@@ -407,23 +322,11 @@ func findManifestFiles(dir string) ([]string, error) {
 	return manifestFiles, err
 }
 
-// analysisOutput holds the results from analyzeDependenciesWithGate.
-type analysisOutput struct {
-	results             []models.AnalysisResult
-	rateLimitFallback   bool // true when scraping-only mode was activated due to rate limit
-	rateLimitRemaining  int
-	scrapingOnlyCount   int // number of packages analyzed in scraping-only mode
-}
-
-// analyzeDependenciesWithGate runs dependency analysis with a rate limit gate.
-// When the GitHub API rate limit drops below rateLimitScrapingThreshold, it
-// switches to scraping-only mode for remaining packages. The scan NEVER stops —
-// ALL packages get results. Packages analyzed after the rate limit gate triggers
-// will have reduced data fidelity (marked with DataMode "scraping-only").
-func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, reporter *report.Reporter, selectedChecks []string, statusOut *os.File) analysisOutput {
+// analyzeDependencies runs dependency analysis in parallel. All data is fetched
+// via web scraping and git clone — no GitHub REST API calls are made.
+// The scan always runs to completion.
+func analyzeDependencies(deps []models.Dependency, numWorkers int, reporter *report.Reporter, selectedChecks []string, statusOut *os.File) []models.AnalysisResult {
 	results := make([]models.AnalysisResult, len(deps))
-	completedFlags := make([]bool, len(deps)) // tracks which indices were actually analyzed
-	scrapingOnlyFlags := make([]bool, len(deps)) // tracks which indices were analyzed in scraping-only mode
 	jobs := make(chan int, len(deps))
 	var wg sync.WaitGroup
 	var completed int
@@ -431,7 +334,6 @@ func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, repor
 	var currentPkg string
 
 	startTime := time.Now()
-	_ = startTime // used by reporter internally
 
 	// Create analyzer with optional check filter
 	var opts []analyzer.AnalyzerOption
@@ -470,42 +372,20 @@ func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, repor
 
 				mu.Lock()
 				currentPkg = pkgLabel
-				isScrapingOnly := a.IsScrapingOnly()
 				mu.Unlock()
 
-				result := a.Analyze(dep)
-				if isScrapingOnly {
-					result.DataMode = models.DataModeScrapingOnly
-				}
-				results[idx] = result
+				results[idx] = a.Analyze(dep)
 
 				mu.Lock()
 				completed++
-				completedFlags[idx] = true
-				scrapingOnlyFlags[idx] = isScrapingOnly
 				reporter.ShowProgress(completed, len(deps), pkgLabel)
 				mu.Unlock()
 			}
 		}()
 	}
 
-	// Queue jobs, checking rate limit before each dispatch.
-	// When the gate triggers, switch to scraping-only mode and continue
-	// processing remaining packages instead of stopping.
-	rateLimitTriggered := false
+	// Queue all jobs
 	for i := range deps {
-		if !rateLimitTriggered && a.ShouldFallbackToScraping(rateLimitScrapingThreshold) {
-			rateLimitTriggered = true
-			remaining := a.RateLimitRemaining()
-
-			// Switch to scraping-only mode — all subsequent API calls will be
-			// skipped and only web scraping will be used for data collection.
-			a.SetScrapingOnlyMode(true)
-
-			reporter.ClearProgress()
-			_, _ = fmt.Fprintf(statusOut, "\n⚠️  Rate limit approaching: %d GitHub API calls remaining (threshold: %d)\n", remaining, rateLimitScrapingThreshold)
-			_, _ = fmt.Fprintf(statusOut, "   Switching to scraping-only mode for remaining %d packages (reduced data fidelity)\n", len(deps)-i)
-		}
 		jobs <- i
 	}
 	close(jobs)
@@ -514,33 +394,11 @@ func analyzeDependenciesWithGate(deps []models.Dependency, numWorkers int, repor
 	wg.Wait()
 	close(done)
 
-	// Collect results and count scraping-only packages
-	var completedResults []models.AnalysisResult
-	scrapingOnlyCount := 0
-	for i, flag := range completedFlags {
-		if flag {
-			completedResults = append(completedResults, results[i])
-			if scrapingOnlyFlags[i] {
-				scrapingOnlyCount++
-			}
-		}
-	}
-
 	duration := time.Since(startTime)
 	reporter.ClearProgress()
-	if rateLimitTriggered {
-		_, _ = fmt.Fprintf(statusOut, "✅ Analysis complete in %s (%d full, %d scraping-only)\n\n",
-			formatDuration(duration), len(completedResults)-scrapingOnlyCount, scrapingOnlyCount)
-	} else {
-		_, _ = fmt.Fprintf(statusOut, "✅ Analysis complete in %s\n\n", formatDuration(duration))
-	}
+	_, _ = fmt.Fprintf(statusOut, "✅ Analysis complete in %s\n\n", formatDuration(duration))
 
-	return analysisOutput{
-		results:            completedResults,
-		rateLimitFallback:  rateLimitTriggered,
-		rateLimitRemaining: a.RateLimitRemaining(),
-		scrapingOnlyCount:  scrapingOnlyCount,
-	}
+	return results[:]
 }
 
 // formatDuration formats a duration for display

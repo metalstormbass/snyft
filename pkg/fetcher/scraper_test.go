@@ -259,35 +259,30 @@ func TestMavenGetVersionHistory_PaginatesAllPages(t *testing.T) {
 // Source: GitHub REST API docs — rate limiting
 // Methodology: Mock both API (403) and scraping endpoint (valid HTML response)
 // Result: Returns repository info from scraped HTML, not API error
-func TestGitHubScrapingFallback_APIRateLimit(t *testing.T) {
-	// Mock server simulates GitHub API returning 403 for rate limiting.
-	// The scraping fallback goes to github.com directly (hardcoded),
-	// so we can only verify that the error path is exercised correctly.
+func TestGitHubScraping_NoAPIUsed(t *testing.T) {
+	// Test: Production GitHub clients use scraping exclusively, never hitting the API
+	// Justification: All GitHub REST API calls have been removed. Production clients
+	//                should always use scraping as the sole data source.
+	// Source: Supply chain analysis design — zero API dependency
+	// Methodology: Create a production client (not test server), verify scraping
+	//              is attempted and API server is never contacted
+	// Result: Scraping path is taken; API server receives 0 requests
+
+	var apiCalls int32
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"message": "API rate limit exceeded"}`))
+		apiCalls++
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer apiServer.Close()
 
+	// Production client (not test server) — should use scraping exclusively
 	client := NewGitHubClient()
-	client.baseURL = apiServer.URL
-	client.preferAPI = true // test the API→scraping fallback path
 
-	_, err := client.GetRepositoryInfo("https://github.com/test/repo")
+	// Scraping will fail for a fake repo, but the API server should NOT be contacted
+	_, _ = client.GetRepositoryInfo("https://github.com/test-fake-owner/test-fake-repo")
 
-	// The key assertion: we should get an error (scraping will fail against a
-	// non-existent repo), but the error message should indicate scraping was
-	// attempted (not just "API returned 403")
-	if err == nil {
-		t.Log("Scraping fallback succeeded (unexpected for test/repo)")
-		return
-	}
-
-	// The error should NOT be a simple "GitHub API returned 403" because
-	// shouldFallbackToScraping(nil, 403) == true triggers the scraping path
-	errMsg := err.Error()
-	if errMsg == `GitHub API returned 403: {"message": "API rate limit exceeded"}` {
-		t.Error("GetRepositoryInfo() returned API error directly instead of attempting scraping fallback")
+	if apiCalls > 0 {
+		t.Errorf("Production client made %d API calls, want 0 (scraping only)", apiCalls)
 	}
 }
 

@@ -115,8 +115,12 @@ func (c *GitHubClient) CloneAndAnalyze(repoURL string) error {
 		}
 	}
 
-	// Build clone URL
+	// Build clone URL. When GITHUB_TOKEN is available, embed it in the URL
+	// for authenticated clones (higher rate limits, access to private repos).
 	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	if c.token != "" {
+		cloneURL = fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git", c.token, owner, repo)
+	}
 
 	// Create temp directory
 	tmpDir, err := os.MkdirTemp("", "snyft-clone-*")
