@@ -369,11 +369,20 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 			})
 		}
 
+		// --- Non-clone-dependent steps: run in parallel with clone ---
 		if repoURL != "" {
+			// analyzeRepository scrapes the repo page (stars, forks, etc.) — not from clone
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				a.analyzeRepository(&result, repoURL, &mu)
+			}()
+
+			// OSSF scorecard — external API, not dependent on clone
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				a.analyzeOSSFScorecard(&result, repoURL, &mu)
 			}()
 		} else {
 			addFindingSafe(&mu, &result, models.Finding{
@@ -385,48 +394,59 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 			})
 			result.SourceCodeAvailable = false
 			addRiskFactorSafe(&mu, &result, "No public source code repository")
+
+			if dep.Ecosystem == models.EcosystemMaven {
+				if result.Metadata.HasMavenGPGSignature {
+					result.Metadata.ProvenanceDetails = "Maven Central GPG signature verified (no source repository available)"
+				}
+			}
 		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			a.analyzeBuildInfrastructure(&result, repoURL, &mu)
-			if repoURL != "" {
-				a.analyzeHealthMetrics(&result, repoURL)
-			}
-		}()
-
+		// --- Clone-dependent steps: wait for clone data, then run in parallel ---
+		// By waiting for clone to finish, these functions find data in the clone
+		// cache and skip expensive web scraping (eliminates 8-15 sequential HTTP
+		// requests per package). The clone itself takes ~5-15s but replaces
+		// scraping that would take 20-60s+ sequentially.
 		if repoURL != "" {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				// Wait for clone data to be available
+				if cloneDone != nil {
+					<-cloneDone
+				}
+				// analyzeBuildInfrastructure sets CISystems which analyzeHealthMetrics reads,
+				// so they must run sequentially. But with clone data available, both are fast
+				// (clone file tree + cache hits instead of scraping).
+				a.analyzeBuildInfrastructure(&result, repoURL, &mu)
+				a.analyzeHealthMetrics(&result, repoURL)
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if cloneDone != nil {
+					<-cloneDone
+				}
 				a.analyzeReleaseDocumentation(&result, repoURL)
 			}()
 
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				a.analyzeOSSFScorecard(&result, repoURL, &mu)
-			}()
-
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+				if cloneDone != nil {
+					<-cloneDone
+				}
 				a.analyzeProvenance(&result, repoURL, dep.Ecosystem)
 			}()
-		} else if dep.Ecosystem == models.EcosystemMaven {
-			if result.Metadata.HasMavenGPGSignature {
-				result.Metadata.ProvenanceDetails = "Maven Central GPG signature verified (no source repository available)"
-			}
 		}
 	}
 
 	wg.Wait()
 
-	// Clone cleanup and npm script file analysis
+	// Clone is already done at this point (waited in goroutines above).
+	// npm script file analysis uses clone data.
 	if cloneDone != nil {
-		<-cloneDone
-
 		if dep.Ecosystem == models.EcosystemNPM && result.Metadata.HasInstallScripts && len(result.Metadata.InstallScripts) > 0 {
 			gitClient := a.getGitClient(repoURL)
 			readFile := func(path string) (string, error) {

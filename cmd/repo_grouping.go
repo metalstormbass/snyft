@@ -5,6 +5,8 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/metalstormbass/snyft/pkg/analyzer"
 	"github.com/metalstormbass/snyft/pkg/fetcher"
@@ -39,7 +41,25 @@ func resolveRepoURLs(deps []models.Dependency, a *analyzer.Analyzer, numWorkers 
 	}
 
 	var wg sync.WaitGroup
+	var resolved int32
 	jobs := make(chan int, len(deps))
+	total := len(deps)
+
+	// Print progress updates during resolution
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				cur := atomic.LoadInt32(&resolved)
+				_, _ = fmt.Fprintf(statusOut, "\r\033[K   Resolving repos: %d/%d", cur, total)
+			case <-done:
+				return
+			}
+		}
+	}()
 
 	// Start workers
 	for w := 0; w < numWorkers; w++ {
@@ -49,6 +69,7 @@ func resolveRepoURLs(deps []models.Dependency, a *analyzer.Analyzer, numWorkers 
 			for idx := range jobs {
 				repoURL := a.ResolveRepoURL(deps[idx])
 				deps[idx].ResolvedRepoURL = repoURL
+				atomic.AddInt32(&resolved, 1)
 			}
 		}()
 	}
@@ -60,6 +81,8 @@ func resolveRepoURLs(deps []models.Dependency, a *analyzer.Analyzer, numWorkers 
 	close(jobs)
 
 	wg.Wait()
+	close(done)
+	_, _ = fmt.Fprintf(statusOut, "\r\033[K") // clear progress line
 }
 
 // groupByRepo groups dependencies by their normalized source repository URL.
