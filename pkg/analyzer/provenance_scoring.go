@@ -100,6 +100,20 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 		}
 	}
 
+	// Check for PyPI PEP 740 Trusted Publisher attestations.
+	// PEP 740 (approved 2024) enables verifiable provenance for PyPI packages
+	// published from trusted CI/CD environments (GitHub Actions, GitLab CI, etc.).
+	// This eliminates long-lived API tokens and provides cryptographic proof of
+	// the build environment, similar to npm provenance.
+	// Source: PEP 740 — https://peps.python.org/pep-0740/
+	if result.Metadata.HasPyPIAttestation {
+		provenanceScore += 2
+		evidence = append(evidence, "PyPI PEP 740 Trusted Publisher attestation")
+		checks = append(checks, models.CheckResult{Name: "PyPI attestation", Status: "PASS", Detail: "PEP 740 Trusted Publisher attestation present — package published from verified CI/CD environment"})
+	} else if result.Dependency.Ecosystem == models.EcosystemPyPI {
+		checks = append(checks, models.CheckResult{Name: "PyPI attestation", Status: "FAIL", Detail: "No PEP 740 Trusted Publisher attestation found"})
+	}
+
 	// Check for Maven Central GPG signatures (.asc files)
 	// Maven Central has required GPG signing since 2010. The presence of a .asc
 	// file indicates the publisher followed proper release procedures.
@@ -159,6 +173,9 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	if result.Dependency.Ecosystem == models.EcosystemNPM && !result.Metadata.HasNPMProvenance {
 		attestationDetails = append(attestationDetails, "no npm provenance")
 	}
+	if result.Dependency.Ecosystem == models.EcosystemPyPI && !result.Metadata.HasPyPIAttestation {
+		attestationDetails = append(attestationDetails, "no PyPI Trusted Publisher attestation")
+	}
 	if result.Dependency.Ecosystem == models.EcosystemMaven && !result.Metadata.HasMavenGPGSignature {
 		attestationDetails = append(attestationDetails, "no Maven GPG signature")
 	}
@@ -208,12 +225,19 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 			score = 1
 			description = "Partial provenance signals detected (" + strings.Join(evidence, ", ") + "), but insufficient for full build verification."
 		} else {
-			// SourceVerification is nil — we couldn't check source availability,
-			// not that it was explicitly absent. This is unknown, not worst-case.
-			// Distinguish from sourceExplicitlyFailed which gets 2 risk points.
-			riskPoints = 1
-			score = 1
-			description = "Source availability could not be determined and no build attestations were found (" + strings.Join(attestationDetails, ", ") + "). Cannot verify artifact integrity, but source may still exist."
+			// No source verification, no repo URL, and no attestations at all.
+			// This is the worst case — we have no way to verify what code is in
+			// the published package. Score as 2 risk points (maximum).
+			// If SourceVerification is nil but we reach here with no repo URL,
+			// the package has no discoverable source, which is equivalent to
+			// sourceExplicitlyFailed for scoring purposes.
+			riskPoints = 2
+			score = 0
+			description = "No source code repository found and no build attestations detected"
+			if len(attestationDetails) > 0 {
+				description += " (" + strings.Join(attestationDetails, ", ") + ")"
+			}
+			description += ". Without source access or build provenance, it is impossible to verify what code is in the published package."
 		}
 	}
 

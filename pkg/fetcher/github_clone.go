@@ -28,6 +28,11 @@ type gitCloneData struct {
 	// commitActivity is the list of recent commits (matching GetCommitActivity format).
 	commitActivity []GitHubCommit
 
+	// mergeCommitRate is the percentage of merge commits (0-100). A high rate
+	// (>50%) indicates code review via pull requests is likely happening.
+	// -1 means the data was not extracted (distinct from 0% merge commits).
+	mergeCommitRate float64
+
 	// fileTree is the set of all file paths in HEAD (from git ls-tree -r HEAD --name-only).
 	fileTree map[string]bool
 
@@ -146,7 +151,8 @@ func (c *GitHubClient) CloneAndAnalyze(repoURL string) error {
 
 	// Extract all data in parallel
 	data := &gitCloneData{
-		fileContents: make(map[string]string),
+		fileContents:    make(map[string]string),
+		mergeCommitRate: -1, // -1 = not yet extracted
 	}
 
 	var extractWg sync.WaitGroup
@@ -207,6 +213,20 @@ func (c *GitHubClient) CloneAndAnalyze(repoURL string) error {
 			return
 		}
 		data.fileTree = tree
+	}()
+
+	// 5. Extract merge commit rate (git rev-list --count --merges / total)
+	extractWg.Add(1)
+	go func() {
+		defer extractWg.Done()
+		rate, err := extractMergeCommitRate(ctx, cloneDir)
+		if err != nil {
+			extractMu.Lock()
+			extractErrors = append(extractErrors, fmt.Errorf("merge commit rate: %w", err))
+			extractMu.Unlock()
+			return
+		}
+		data.mergeCommitRate = rate
 	}()
 
 	extractWg.Wait()
@@ -507,6 +527,55 @@ func extractFileTree(ctx context.Context, cloneDir string) (map[string]bool, err
 	return tree, nil
 }
 
+
+// extractMergeCommitRate counts merge commits vs total commits to estimate
+// code review rate. Repositories using PR-based workflows have a high percentage
+// of merge commits, indicating code review is happening.
+//
+// Justification: Pull request workflows produce merge commits when PRs are merged.
+// A merge commit rate >50% strongly indicates a PR-based workflow with code review.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) — projects with
+// PR-based review have significantly lower compromise risk.
+func extractMergeCommitRate(ctx context.Context, cloneDir string) (float64, error) {
+	// Count total commits
+	totalCmd := exec.CommandContext(ctx, "git", "-C", cloneDir, "rev-list", "--count", "HEAD")
+	totalOutput, err := totalCmd.Output()
+	if err != nil {
+		return -1, fmt.Errorf("git rev-list --count failed: %w", err)
+	}
+	totalStr := strings.TrimSpace(string(totalOutput))
+	var totalCommits int
+	if _, err := fmt.Sscanf(totalStr, "%d", &totalCommits); err != nil || totalCommits == 0 {
+		return 0, nil
+	}
+
+	// Count merge commits
+	mergeCmd := exec.CommandContext(ctx, "git", "-C", cloneDir, "rev-list", "--count", "--merges", "HEAD")
+	mergeOutput, err := mergeCmd.Output()
+	if err != nil {
+		return -1, fmt.Errorf("git rev-list --count --merges failed: %w", err)
+	}
+	mergeStr := strings.TrimSpace(string(mergeOutput))
+	var mergeCommits int
+	if _, err := fmt.Sscanf(mergeStr, "%d", &mergeCommits); err != nil {
+		return 0, nil
+	}
+
+	return float64(mergeCommits) / float64(totalCommits) * 100, nil
+}
+
+// getMergeCommitRateFromClone returns the merge commit rate from clone data.
+func (c *GitHubClient) getMergeCommitRateFromClone(owner, repo string) (float64, bool) {
+	cacheKey := owner + "/" + repo
+	if c.cache == nil {
+		return -1, false
+	}
+	data, ok := c.cache.getCloneData(cacheKey)
+	if !ok || !data.ready || data.mergeCommitRate < 0 {
+		return -1, false
+	}
+	return data.mergeCommitRate, true
+}
 
 // repoCache methods for clone data
 

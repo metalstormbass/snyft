@@ -589,6 +589,12 @@ func (a *Analyzer) analyzeProvenance(result *models.AnalysisResult, repoURL stri
 			}
 		}
 
+	case models.EcosystemPyPI:
+		hasAttestation, err := a.pypiClient.CheckPyPIAttestation(result.Dependency.Name)
+		if err == nil && hasAttestation {
+			result.Metadata.HasPyPIAttestation = true
+			result.Metadata.ProvenanceDetails = "PyPI PEP 740 Trusted Publisher attestation"
+		}
 	}
 }
 
