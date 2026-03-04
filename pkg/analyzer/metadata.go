@@ -142,6 +142,7 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 	result.Metadata.RepoUpdatedAt = repoInfo.UpdatedAt
 	result.Metadata.RepoDefaultBranch = repoInfo.DefaultBranch
 	result.Metadata.RepoArchived = repoInfo.Archived
+	result.Metadata.RepoDescription = repoInfo.Description
 
 	// Check for concerning signals
 	if repoInfo.Archived {
