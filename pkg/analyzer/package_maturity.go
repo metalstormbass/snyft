@@ -36,7 +36,7 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 	evidenceParts := []string{}
 	maturityChecks := []models.CheckResult{}
 	verified := false
-	maturityMethodology := "Checked package age (time since first publish), staleness (time since last commit or registry update), and release cadence regularity (coefficient of variation of inter-release intervals). Release cadence uses Git platform releases when available, falling back to registry version history (npm time field, PyPI releases, Maven Central timestamps). Thresholds: age <6mo = high risk, 6mo-2yr = moderate; staleness >1yr = high risk, 6-12mo = moderate; CV > 2.5 = irregular cadence (only flagged when combined with single maintainer)."
+	maturityMethodology := "Checked package age (time since first publish), staleness (time since last commit or registry update), and release cadence regularity (coefficient of variation of inter-release intervals). Release cadence uses Git platform releases when available, falling back to registry version history (npm time field, PyPI releases, Maven Central timestamps). Thresholds: age <6mo = high risk, 6mo-2yr = moderate; staleness >1yr = high risk, 6-12mo = moderate; CV > 2.5 = irregular cadence."
 
 	now := time.Now()
 
@@ -144,14 +144,8 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		verified = true
 		var cadenceEvidence string
 		cadenceRisk, cadenceEvidence = scoreCadenceRegularity(registryReleases)
-		// Only flag irregular cadence when combined with single maintainer.
-		// Irregular cadence alone is common in healthy projects; it becomes a
-		// risk signal only when a single maintainer could be compromised.
-		isSingleMaintainer := len(result.Metadata.Maintainers) == 1
-		if cadenceRisk >= 1 && !isSingleMaintainer {
-			cadenceEvidence = cadenceEvidence + " (not flagged: multiple maintainers)"
-			cadenceRisk = 0
-		}
+		// Cadence risk is scored independently of maintainer count.
+		// Maintainer count is solely assessed by Publisher Control.
 		if cadenceEvidence != "" {
 			evidenceParts = append(evidenceParts, cadenceEvidence)
 		}
@@ -271,8 +265,8 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 // intervals. High CV = highly irregular cadence = elevated risk.
 // A CV > 2.5 indicates releases are clustered or bursty rather than steady,
 // which can indicate sudden reactivation of a dormant package.
-// Note: cadence risk is only applied when combined with single maintainer
-// (checked by caller), since irregular cadence alone is common in healthy projects.
+// Note: cadence risk is applied independently of maintainer count.
+// Maintainer count is assessed solely by Publisher Control.
 func scoreCadenceRegularity(releases []fetcher.RegistryRelease) (int, string) {
 	// Filter to valid, non-prerelease versions with publish dates
 	valid := []fetcher.RegistryRelease{}
