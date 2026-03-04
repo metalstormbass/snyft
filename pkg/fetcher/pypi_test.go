@@ -94,6 +94,31 @@ func TestExtractPyPIMaintainers(t *testing.T) {
 			wantCount: 1,
 			wantFirst: "Django Software Foundation <foundation@djangoproject.com>",
 		},
+		{
+			name: "comma-separated author field (e.g. pytest)",
+			info: PyPIInfo{
+				Author: "Holger Krekel, Bruno Oliveira, Ronny Pfannschmidt, Floris Bruynooghe, Brianna Laugher, Florian Bruhin, Others",
+			},
+			wantCount: 7,
+			wantFirst: "Holger Krekel",
+		},
+		{
+			name: "comma-separated maintainer field",
+			info: PyPIInfo{
+				Maintainer: "Alice, Bob",
+			},
+			wantCount: 2,
+			wantFirst: "Alice",
+		},
+		{
+			name: "comma-separated author with email-style author_email (dedup)",
+			info: PyPIInfo{
+				Author:      "Alice, Bob",
+				AuthorEmail: "Alice <alice@example.com>, Charlie <charlie@example.com>",
+			},
+			wantCount: 3,
+			wantFirst: "Alice",
+		},
 	}
 
 	for _, tt := range tests {
