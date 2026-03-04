@@ -320,7 +320,7 @@ type SupplyChainScore struct {
 	TotalScore         int            `json:"total_score"`                      // 0-20 points (or fewer when --check filters active)
 	MaxScore           int            `json:"max_score"`                        // Maximum possible score (active_checks * 2)
 	ActiveChecks       int            `json:"active_checks"`                    // Number of checks that were run (10 normally, fewer with --check)
-	RiskLevel          string         `json:"risk_level"`                       // LOW (0-8), MEDIUM (9-12), HIGH (13+)
+	RiskLevel          string         `json:"risk_level"`                       // LOW (0-8), MEDIUM (9-10), HIGH (11+)
 	CategoryScores     CategoryScores `json:"category_scores"`
 }
 

@@ -296,12 +296,12 @@ func TestFloorScore_RiskLevelConsistentWithFlooredScore(t *testing.T) {
 	score := result.SupplyChainScore.TotalScore
 	level := result.SupplyChainScore.RiskLevel
 
-	// Verify consistency: if score >= 13, level should be HIGH;
+	// Verify consistency: if score >= 11, level should be HIGH;
 	// if score >= 9, level should be MEDIUM or HIGH; otherwise LOW
-	if score >= 13 && level != "HIGH" {
+	if score >= 11 && level != "HIGH" {
 		t.Errorf("Score %d should map to HIGH risk level, got %s", score, level)
 	}
-	if score >= 9 && score < 13 && level != "MEDIUM" {
+	if score >= 9 && score < 11 && level != "MEDIUM" {
 		t.Errorf("Score %d should map to MEDIUM risk level, got %s", score, level)
 	}
 	if score < 9 && level != "LOW" {
