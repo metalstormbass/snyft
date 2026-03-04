@@ -271,7 +271,6 @@ func TestGitHubScrapingFallback_APIRateLimit(t *testing.T) {
 
 	client := NewGitHubClient()
 	client.baseURL = apiServer.URL
-	client.preferAPI = true // test the API→scraping fallback path
 
 	_, err := client.GetRepositoryInfo("https://github.com/test/repo")
 
