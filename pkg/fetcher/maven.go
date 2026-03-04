@@ -31,9 +31,10 @@ type MavenPackage struct {
 	GroupID         string
 	ArtifactID      string
 	LatestVersion   string
+	OldestVersion   string    // First version from maven-metadata.xml (used for age fallback)
 	RepositoryURL   string
 	License         string
-	PublishedAt     time.Time // First version publish date (from Solr API)
+	PublishedAt     time.Time // First version publish date (oldest available)
 	LastPublishedAt time.Time // Latest version publish date (from Solr API)
 	Developers      []MavenDeveloper // From POM <developers> section
 	VersionCount    int              // Number of versions published (from maven-metadata.xml)
@@ -157,11 +158,18 @@ func (c *MavenClient) getPackageInfoDirect(groupID, artifactID string) (*MavenPa
 		return nil, fmt.Errorf("no version found in maven-metadata.xml")
 	}
 
+	// The first version in maven-metadata.xml is typically the oldest
+	oldestVersion := ""
+	if len(metadata.Versioning.Versions) > 0 {
+		oldestVersion = metadata.Versioning.Versions[0]
+	}
+
 	pkg := &MavenPackage{
-		GroupID:       groupID,
-		ArtifactID:    artifactID,
-		LatestVersion: version,
-		VersionCount:  len(metadata.Versioning.Versions),
+		GroupID:        groupID,
+		ArtifactID:     artifactID,
+		LatestVersion:  version,
+		OldestVersion:  oldestVersion,
+		VersionCount:   len(metadata.Versioning.Versions),
 	}
 
 	// Try to fetch POM to get more metadata (ignore errors and continue with basic info)
@@ -406,6 +414,17 @@ func (c *MavenClient) enrichWithPublishDates(pkg *MavenPackage) error {
 		pkg.PublishedAt = time.Unix(searchResp.Response.Docs[0].Timestamp/1000, 0)
 	}
 
+	// The Solr index timestamp can reflect re-indexing time rather than actual upload time
+	// for very old packages. Cross-check with the HTTP Last-Modified header of the oldest
+	// version's POM file, which reflects the actual upload date on Maven Central.
+	if pkg.OldestVersion != "" {
+		if headDate := c.getArtifactLastModified(pkg.GroupID, pkg.ArtifactID, pkg.OldestVersion); !headDate.IsZero() {
+			if pkg.PublishedAt.IsZero() || headDate.Before(pkg.PublishedAt) {
+				pkg.PublishedAt = headDate
+			}
+		}
+	}
+
 	// Get latest publish date (newest version)
 	newestURL := fmt.Sprintf("%s?q=g:%s+AND+a:%s&rows=1&wt=json&core=gav&sort=timestamp+desc",
 		c.searchURL, url.QueryEscape(groupID), url.QueryEscape(artifactID))
@@ -436,6 +455,40 @@ func (c *MavenClient) enrichWithPublishDates(pkg *MavenPackage) error {
 	}
 
 	return nil
+}
+
+// getArtifactLastModified returns the Last-Modified date of the oldest version's
+// POM file on Maven Central. This reflects the actual upload date, which is more
+// reliable than the Solr index timestamp for very old packages.
+func (c *MavenClient) getArtifactLastModified(groupID, artifactID, version string) time.Time {
+	groupPath := strings.ReplaceAll(groupID, ".", "/")
+	pomURL := fmt.Sprintf("%s/%s/%s/%s/%s-%s.pom",
+		c.baseURL, groupPath, artifactID, version, artifactID, version)
+
+	resp, err := c.httpClient.Head(pomURL)
+	if err != nil {
+		return time.Time{}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return time.Time{}
+	}
+
+	lastModified := resp.Header.Get("Last-Modified")
+	if lastModified == "" {
+		return time.Time{}
+	}
+
+	t, err := time.Parse(time.RFC1123, lastModified)
+	if err != nil {
+		// Try RFC1123Z format as well
+		t, err = time.Parse(time.RFC1123Z, lastModified)
+		if err != nil {
+			return time.Time{}
+		}
+	}
+	return t
 }
 
 // CheckGPGSignature checks whether a GPG signature (.asc file) exists for a
