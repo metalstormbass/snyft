@@ -1816,3 +1816,166 @@ func TestPublisherControl_NpmEmptyMaintainers_NoDoublePenalty(t *testing.T) {
 		t.Errorf("npm evidence should mention ecosystem capability, got: %s", npmAnalysis.Evidence)
 	}
 }
+
+// ============================================================
+// Download volume risk modifier tests
+// These tests verify that high download volume (>1M/week) reduces
+// single-maintainer penalty from HIGH to MEDIUM.
+// ============================================================
+
+// Test: Single maintainer with >1M weekly downloads = MEDIUM (not HIGH)
+// Justification: Packages with >1M weekly downloads have higher community scrutiny.
+//   A compromised publish would be detected faster due to the large user base
+//   monitoring for regressions. This partially mitigates single-maintainer risk
+//   by reducing attacker dwell time — the event-stream attack (2018, ~2M weekly
+//   downloads) was discovered within days.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) — popular
+//   packages have higher monitoring density, reducing dwell time of compromised versions
+// Methodology: Set WeeklyDownloads >1M on single-maintainer profile that would
+//   otherwise score HIGH, verify it scores MEDIUM instead
+// Result: 1 risk point (MEDIUM) — high download volume mitigates single-maintainer penalty
+func TestDownloadVolume_HighDownloads_ReducesSingleMaintainerPenalty(t *testing.T) {
+	// Without high downloads: single maintainer + personal acct + personal email + no signing
+	// Score: 1.0 + 0.15 + 0.15 + 0.3 = 1.6 → HIGH (2 points)
+	withoutDownloads := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+		SigningChecked:      true,
+	}
+	withoutDownloads.calculateRiskScore()
+
+	if withoutDownloads.RiskPoints != 2 {
+		t.Errorf("Without high downloads: Expected 2 risk points (HIGH), got %d (evidence: %s)",
+			withoutDownloads.RiskPoints, withoutDownloads.Evidence)
+	}
+
+	// With high downloads (>1M/week): same profile + download modifier (-0.4)
+	// Score: 1.0 + 0.15 + 0.15 + 0.3 - 0.4 = 1.2 → MEDIUM (1 point)
+	withDownloads := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+		SigningChecked:      true,
+		WeeklyDownloads:     5_000_000,
+		HighDownloadVolume:  true,
+	}
+	withDownloads.calculateRiskScore()
+
+	if withDownloads.RiskPoints != 1 {
+		t.Errorf("With >1M downloads: Expected 1 risk point (MEDIUM), got %d (evidence: %s)",
+			withDownloads.RiskPoints, withDownloads.Evidence)
+	}
+	if withDownloads.RiskLevel != "MEDIUM" {
+		t.Errorf("Expected MEDIUM risk for high-download single maintainer, got %s", withDownloads.RiskLevel)
+	}
+
+	// Verify evidence mentions download volume
+	if !strings.Contains(withDownloads.Evidence, "high download volume") {
+		t.Errorf("Expected download volume in evidence, got: %q", withDownloads.Evidence)
+	}
+}
+
+// Test: Single maintainer with <1M weekly downloads = unchanged behavior
+// Justification: The download volume modifier should only apply to packages with
+//   >1M weekly downloads. Packages below this threshold do not benefit from the
+//   reduced penalty — their lower download count means compromises may go
+//   undetected for longer periods.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Set WeeklyDownloads <1M on single-maintainer profile, verify
+//   scoring is unchanged from pre-modifier behavior
+// Result: 2 risk points (HIGH) — no download volume mitigation
+func TestDownloadVolume_LowDownloads_NoEffect(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:     1,
+		SingleMaintainer:    true,
+		IsPersonalAccount:   true,
+		HasExpirableDomains: true,
+		SigningChecked:      true,
+		WeeklyDownloads:     500_000, // 500K — below 1M threshold
+		HighDownloadVolume:  false,
+	}
+	analysis.calculateRiskScore()
+
+	// Score: 1.0 + 0.15 + 0.15 + 0.3 = 1.6 → HIGH (no modifier applied)
+	if analysis.RiskPoints != 2 {
+		t.Errorf("With <1M downloads: Expected 2 risk points (HIGH), got %d (evidence: %s)",
+			analysis.RiskPoints, analysis.Evidence)
+	}
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("Expected HIGH risk for low-download single maintainer, got %s", analysis.RiskLevel)
+	}
+
+	// Evidence should NOT mention download volume
+	if strings.Contains(analysis.Evidence, "high download volume") {
+		t.Errorf("Should not mention download volume for <1M downloads, got: %q", analysis.Evidence)
+	}
+}
+
+// Test: Download volume modifier only applies to single-maintainer packages
+// Justification: Multi-maintainer packages don't need the download volume modifier
+//   because they already have lower risk from multiple maintainers. The modifier
+//   specifically targets single-maintainer + high-visibility packages where
+//   community scrutiny compensates for the single point of failure.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Set HighDownloadVolume=true on multi-maintainer profile, verify
+//   no download modifier is applied
+// Result: Risk score unchanged — modifier only activates for single maintainers
+func TestDownloadVolume_MultiMaintainer_NoEffect(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:    3,
+		SingleMaintainer:   false,
+		WeeklyDownloads:    10_000_000,
+		HighDownloadVolume: true,
+	}
+	analysis.calculateRiskScore()
+
+	// Score: 0.3 (2-3 maintainers) = 0.3 → LOW
+	// Download modifier should NOT apply (not single maintainer)
+	if analysis.RiskPoints != 0 {
+		t.Errorf("Multi-maintainer with high downloads: Expected 0 risk points (LOW), got %d (evidence: %s)",
+			analysis.RiskPoints, analysis.Evidence)
+	}
+
+	// Evidence should NOT mention download volume mitigation
+	if strings.Contains(analysis.Evidence, "high download volume") {
+		t.Errorf("Should not mention download volume for multi-maintainer, got: %q", analysis.Evidence)
+	}
+}
+
+// Test: AnalyzePublisherControl populates WeeklyDownloads from metadata
+// Justification: The WeeklyDownloads field must flow from PackageMetadata into
+//   the PublisherControlAnalysis struct for the risk modifier to work correctly.
+// Source: npm downloads API (api.npmjs.org/downloads/point/last-week/{package})
+// Methodology: Set WeeklyDownloads in AnalysisResult.Metadata, verify it appears
+//   in the returned PublisherControlAnalysis
+// Result: WeeklyDownloads and HighDownloadVolume are correctly populated
+func TestAnalyzePublisherControl_PopulatesDownloadData(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "popular-package",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers:     []string{"user@gmail.com"},
+			WeeklyDownloads: 2_000_000,
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.WeeklyDownloads != 2_000_000 {
+		t.Errorf("Expected WeeklyDownloads=2000000, got %d", analysis.WeeklyDownloads)
+	}
+	if !analysis.HighDownloadVolume {
+		t.Error("Expected HighDownloadVolume=true for 2M/week")
+	}
+	// Single maintainer + high downloads → should get MEDIUM, not HIGH
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected MEDIUM or lower risk for high-download single maintainer, got HIGH (evidence: %s)", analysis.Evidence)
+	}
+}
