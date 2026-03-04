@@ -454,27 +454,63 @@ func (a *Analyzer) analyzeBuildInfrastructure(result *models.AnalysisResult, rep
 func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL string) {
 	gitClient := a.getGitClient(repoURL)
 
+	// Run all three health metric fetches in parallel.
+	// With clone data available, GetCommitStats and AnalyzeCIQuality use cached
+	// clone data (instant). GetPullRequestStats still scrapes one page.
+	var commitStats *fetcher.CommitStats
+	var prStats *fetcher.PRStats
+	var ciQuality *fetcher.CIQuality
+	var healthWg sync.WaitGroup
+
 	// Get commit statistics for bus factor calculation.
 	// ErrDataUnavailable means the platform cannot provide this data; leave
 	// defaults (zero) so the health scorer falls back to maintainer-count heuristic.
-	commitStats, err := gitClient.GetCommitStats(repoURL)
-	if err == nil && commitStats != nil {
+	healthWg.Add(1)
+	go func() {
+		defer healthWg.Done()
+		cs, err := gitClient.GetCommitStats(repoURL)
+		if err == nil {
+			commitStats = cs
+		}
+	}()
+
+	// Get pull request statistics for code review verification.
+	// ErrDataUnavailable leaves defaults so health scorer treats review data as unknown.
+	healthWg.Add(1)
+	go func() {
+		defer healthWg.Done()
+		ps, err := gitClient.GetPullRequestStats(repoURL)
+		if err == nil {
+			prStats = ps
+		}
+	}()
+
+	// Analyze CI quality.
+	// ErrDataUnavailable leaves defaults so CI quality is treated as unknown.
+	// Reads result.Metadata.CISystems which is set by analyzeBuildInfrastructure
+	// (called before this function in the same goroutine).
+	healthWg.Add(1)
+	go func() {
+		defer healthWg.Done()
+		cq, err := gitClient.AnalyzeCIQuality(repoURL, result.Metadata.CISystems)
+		if err == nil {
+			ciQuality = cq
+		}
+	}()
+
+	healthWg.Wait()
+
+	if commitStats != nil {
 		result.Metadata.BusFactor = commitStats.BusFactor
 		result.Metadata.CommitDistribution = commitStats.AuthorCommits
 		result.Metadata.TopContributorPct = commitStats.TopContributorPct
 	}
 
-	// Get pull request statistics for code review verification.
-	// ErrDataUnavailable leaves defaults so health scorer treats review data as unknown.
-	prStats, err := gitClient.GetPullRequestStats(repoURL)
-	if err == nil && prStats != nil {
+	if prStats != nil {
 		result.Metadata.CodeReviewRate = prStats.CodeReviewRate
 	}
 
-	// Analyze CI quality.
-	// ErrDataUnavailable leaves defaults so CI quality is treated as unknown.
-	ciQuality, err := gitClient.AnalyzeCIQuality(repoURL, result.Metadata.CISystems)
-	if err == nil && ciQuality != nil {
+	if ciQuality != nil {
 		result.Metadata.CIQualityScore = ciQuality.QualityScore
 	}
 }

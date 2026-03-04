@@ -1392,15 +1392,22 @@ func (c *GitHubClient) getReleases(owner, repo string) ([]GitHubRelease, error) 
 	return releases, nil
 }
 
+// maxScrapeReleasePages caps the number of release pages fetched via scraping.
+// Each page requires a full HTTP round-trip; scraping more than 5 pages (typically
+// ~50 releases) adds significant latency with diminishing returns for anomaly
+// detection. The API pagination limit (maxPaginationPages=50) applies only to
+// the mock/API path.
+const maxScrapeReleasePages = 5
+
 // scrapeReleases scrapes release information from the GitHub releases page.
 // This is the primary release data source for all GitHub requests.
-// Paginates through all release pages (up to maxPaginationPages) to get the
-// full release history needed for release anomaly detection.
+// Paginates through release pages (up to maxScrapeReleasePages) to get
+// release history needed for release anomaly detection.
 func (c *GitHubClient) scrapeReleases(owner, repo string) ([]GitHubRelease, error) {
 	var allReleases []GitHubRelease
 	nextPageURL := fmt.Sprintf("https://github.com/%s/%s/releases", owner, repo)
 
-	for page := 0; page < maxPaginationPages && nextPageURL != ""; page++ {
+	for page := 0; page < maxScrapeReleasePages && nextPageURL != ""; page++ {
 		doc, err := scrapeWithUserAgent(nextPageURL)
 		if err != nil {
 			if page == 0 {
@@ -2312,13 +2319,30 @@ func (c *GitHubClient) AnalyzeCIQuality(repoURL string, ciSystems []string) (*CI
 }
 
 // getWorkflowFiles lists workflow filenames in .github/workflows/.
-// Uses web scraping in production. In test mode, uses mock server.
+// Uses clone file tree when available (fastest), web scraping in production,
+// or mock server in tests.
 func (c *GitHubClient) getWorkflowFiles(owner, repo string) ([]string, error) {
 	cacheKey := owner + "/" + repo
 	if c.cache != nil {
 		if cached, ok := c.cache.getWorkflowFiles(cacheKey); ok {
 			return cached, nil
 		}
+	}
+
+	// Clone-first path: extract workflow filenames from the clone file tree
+	if fileTree, ok := c.getFileTreeFromClone(owner, repo); ok {
+		var workflows []string
+		prefix := ".github/workflows/"
+		for path := range fileTree {
+			if strings.HasPrefix(path, prefix) && (strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".yaml")) {
+				// Extract just the filename
+				workflows = append(workflows, strings.TrimPrefix(path, prefix))
+			}
+		}
+		if c.cache != nil {
+			c.cache.setWorkflowFiles(cacheKey, workflows)
+		}
+		return workflows, nil
 	}
 
 	// Test mock server path
