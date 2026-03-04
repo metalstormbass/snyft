@@ -453,6 +453,16 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 	} else {
 		f(w, "<span><span class=\"meta-label\">Source:</span> Unavailable</span>\n")
 	}
+	if result.SupplyChainScore != nil && result.SupplyChainScore.ActiveChecks > 0 {
+		confPct := result.ConfidencePercentage
+		confColor := "#52b788" // green
+		if confPct < 50 {
+			confColor = "#ef4444" // red
+		} else if confPct < 75 {
+			confColor = "#f59e0b" // amber
+		}
+		f(w, "<span><span class=\"meta-label\">Confidence:</span> <span style=\"color:%s\">%.0f%%</span></span>\n", confColor, confPct)
+	}
 	f(w, "</div>\n")
 
 	// Category scores (verbose mode or always if supply chain score exists)
