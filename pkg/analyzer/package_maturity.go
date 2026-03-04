@@ -22,8 +22,8 @@ import (
 //         https://arxiv.org/abs/2005.09535
 //         "Small World with High Risks" (Zimmermann et al., 2019)
 //         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
-// Methodology: Compare PublishedAt, RepoLastCommit, release history cadence
-//              - Package age: time since first publish (PublishedAt)
+// Methodology: Compare RepoCreatedAt/PublishedAt, RepoLastCommit, release history cadence
+//              - Package age: time since repo creation (RepoCreatedAt) or first publish (PublishedAt)
 //              - Staleness: time since last commit (RepoLastCommit)
 //              - Cadence: coefficient of variation of inter-release intervals
 // Result: 0-2 risk points based on age, update recency, and release cadence
@@ -41,29 +41,42 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 	now := time.Now()
 
 	// Sub-check 1: Package age
+	// Use repo creation date (from GitHub/GitLab) as primary age source — it reflects
+	// when the project actually started, not when an artifact was indexed. Fall back to
+	// registry first-publish date if repo creation date is unavailable.
 	ageRisk := 0
-	if !result.Metadata.PublishedAt.IsZero() {
+	var packageAgeDate time.Time
+	var ageSource string
+	if !result.Metadata.RepoCreatedAt.IsZero() {
+		packageAgeDate = result.Metadata.RepoCreatedAt
+		ageSource = "repo created"
+	} else if !result.Metadata.PublishedAt.IsZero() {
+		packageAgeDate = result.Metadata.PublishedAt
+		ageSource = "first published"
+	}
+
+	if !packageAgeDate.IsZero() {
 		verified = true
-		packageAgeDays := now.Sub(result.Metadata.PublishedAt).Hours() / 24
+		packageAgeDays := now.Sub(packageAgeDate).Hours() / 24
 
 		if packageAgeDays < 180 {
 			ageRisk = 2
 			evidenceParts = append(evidenceParts,
 				fmt.Sprintf("Package age: %.0f days (very new, <6 months)", packageAgeDays))
-			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Package age", Status: "FAIL", Detail: fmt.Sprintf("First published %.0f days ago (< 180 day threshold); published %s", packageAgeDays, result.Metadata.PublishedAt.Format("2006-01-02"))})
+			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Package age", Status: "FAIL", Detail: fmt.Sprintf("Project %.0f days old (< 180 day threshold); %s %s", packageAgeDays, ageSource, packageAgeDate.Format("2006-01-02"))})
 		} else if packageAgeDays < 730 {
 			ageRisk = 1
 			evidenceParts = append(evidenceParts,
 				fmt.Sprintf("Package age: %.0f days (maturing, 6mo–2yr)", packageAgeDays))
-			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Package age", Status: "FAIL", Detail: fmt.Sprintf("First published %.0f days ago (< 730 day threshold); published %s", packageAgeDays, result.Metadata.PublishedAt.Format("2006-01-02"))})
+			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Package age", Status: "FAIL", Detail: fmt.Sprintf("Project %.0f days old (< 730 day threshold); %s %s", packageAgeDays, ageSource, packageAgeDate.Format("2006-01-02"))})
 		} else {
 			ageRisk = 0
 			evidenceParts = append(evidenceParts,
 				fmt.Sprintf("Package age: %.0f days (established, >2yr)", packageAgeDays))
-			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Package age", Status: "PASS", Detail: fmt.Sprintf("First published %.0f days ago (> 2 year threshold); published %s", packageAgeDays, result.Metadata.PublishedAt.Format("2006-01-02"))})
+			maturityChecks = append(maturityChecks, models.CheckResult{Name: "Package age", Status: "PASS", Detail: fmt.Sprintf("Project %.0f days old (> 2 year threshold); %s %s", packageAgeDays, ageSource, packageAgeDate.Format("2006-01-02"))})
 		}
 	} else {
-		maturityChecks = append(maturityChecks, models.CheckResult{Name: "Package age", Status: "UNAVAILABLE", Detail: "No publish date available in registry metadata"})
+		maturityChecks = append(maturityChecks, models.CheckResult{Name: "Package age", Status: "UNAVAILABLE", Detail: "No repo creation date or registry publish date available"})
 	}
 
 	// Sub-check 2: Staleness
