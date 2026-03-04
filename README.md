@@ -6,7 +6,7 @@
 
 <p align="center"><em>Does it pass the snyft test?</em></p>
 
-**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a **20-point risk scoring system** across 10 categories to identify potential compromise risks.
+**Snyft** is a supply chain security analyzer that evaluates dependencies from Python, JavaScript, and Java projects using a **19-point risk scoring system** across 10 categories to identify potential compromise risks.
 
 Unlike vulnerability scanners focused on CVEs, Snyft assesses the **likelihood of supply chain compromise** by analyzing repository metadata, build practices, source code availability, and security signals.
 
@@ -80,7 +80,7 @@ No `GITHUB_TOKEN` or API keys are needed. Everything works out of the box.
 
 ## Supply Chain Scoring System
 
-Each dependency is scored across 10 categories (0-2 risk points each):
+Each dependency is scored across 10 categories (0-2 risk points each, except Dependency Sprawl which is 0-1):
 
 | Category | What It Checks |
 |----------|---------------|
@@ -88,21 +88,21 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 | **2. Ownership Changes** | Recent maintainer or owner transitions |
 | **3. Release Anomalies** | Dormancy reactivation (1yr+ gap then sudden release), unusual release spikes, cadence anomalies |
 | **4. Install Execution** | npm install scripts (postinstall/preinstall), dangerous patterns (code injection, network calls, privilege escalation). Analyzes actual script files from cloned repos. |
-| **5. Dependency Sprawl** | Transitive dependency count. Maven uses scope-aware thresholds (12/29) vs npm/PyPI (5/15). |
+| **5. Dependency Sprawl** | Extreme dependency count only (0-1 pts, weak signal). Triggers at 50+ direct deps for npm/PyPI, 100+ for Maven. |
 | **6. Provenance** | SLSA attestation, signed releases, build provenance, source code verification |
 | **7. Health** | Bus factor (git clone), code review rate (scraped PR data), maintainer count |
 | **8. Governance** | SECURITY.md presence (git clone), issue response time (scraped), abandonment detection (180+ days inactive), archived repos |
 | **9. Release Security** | CI/CD automation vs manual publishing (cloned workflow files), signed tags (git clone), code review rate (scraped PR data), CI workflow security (unpinned actions, script injection, excessive permissions). |
 | **10. Package Maturity** | Package age (<6mo = high risk), staleness (>1yr = abandoned), release cadence regularity |
 
-**Total Score**: 0-20 points
+**Total Score**: 0-19 points
 - **0-8**: Low risk
 - **9-10**: Medium risk
 - **11+**: High risk
 
 ### Missing Data & Confidence
 
-When repository data is unavailable (e.g., no repo URL found), snyft applies a **floor score** (8-10/20) instead of defaulting to best-case scores. A **confidence indicator** (0-100%) shows what fraction of checks had real data vs defaults. The HTML report color-codes confidence: green (≥75%), amber (50-74%), red (<50%).
+When repository data is unavailable (e.g., no repo URL found), snyft applies a **floor score** (8-10/19) instead of defaulting to best-case scores. A **confidence indicator** (0-100%) shows what fraction of checks had real data vs defaults. The HTML report color-codes confidence: green (≥75%), amber (50-74%), red (<50%).
 
 ## Supported Ecosystems
 

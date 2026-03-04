@@ -1423,7 +1423,7 @@ func TestTextReport_ScrapingOnlyMarker(t *testing.T) {
 			RiskLevel: "LOW",
 			SupplyChainScore: &models.SupplyChainScore{
 				TotalScore: 3,
-				MaxScore:   20,
+				MaxScore:   19,
 				RiskLevel:  "LOW",
 			},
 		},
@@ -1437,7 +1437,7 @@ func TestTextReport_ScrapingOnlyMarker(t *testing.T) {
 			DataMode:  models.DataModeScrapingOnly,
 			SupplyChainScore: &models.SupplyChainScore{
 				TotalScore: 5,
-				MaxScore:   20,
+				MaxScore:   19,
 				RiskLevel:  "LOW",
 			},
 		},
@@ -1538,7 +1538,7 @@ func TestMarkdownReport_ScrapingOnlyMarker(t *testing.T) {
 			DataMode:  models.DataModeScrapingOnly,
 			SupplyChainScore: &models.SupplyChainScore{
 				TotalScore: 4,
-				MaxScore:   20,
+				MaxScore:   19,
 				RiskLevel:  "LOW",
 			},
 		},

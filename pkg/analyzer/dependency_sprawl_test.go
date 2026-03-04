@@ -8,14 +8,14 @@ import (
 
 // ===== Dependency Sprawl Scoring Tests =====
 //
-// These tests verify that ecosystem-specific thresholds correctly assess
-// supply chain attack surface from dependency counts.
+// These tests verify that dependency sprawl is scored as a weak signal (0-1 pts)
+// with only extreme sprawl triggering 1 risk point.
 
-// Test: npm package with few direct dependencies scores low risk
-// Justification: A small dependency count limits supply chain entry points
+// Test: npm package with few direct dependencies scores 0 risk
+// Justification: Dependency count is a weak signal; normal counts should not add risk
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
 // Methodology: Set DirectCount=3, Verified=false for npm ecosystem
-// Result: 0 risk points (low sprawl)
+// Result: 0 risk points (normal count)
 func TestScoreDependencySprawl_NPM_LowDirectCount(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -34,11 +34,11 @@ func TestScoreDependencySprawl_NPM_LowDirectCount(t *testing.T) {
 	}
 }
 
-// Test: npm package with moderate direct dependencies scores moderate risk
-// Justification: Each direct dependency carries its own transitive tree
+// Test: npm package with moderate direct dependencies still scores 0 risk
+// Justification: Dependency count is a weak signal; only extreme sprawl (50+) triggers risk
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Set DirectCount=10, Verified=false for npm ecosystem
-// Result: 1 risk point (moderate sprawl)
+// Methodology: Set DirectCount=20, Verified=false for npm ecosystem
+// Result: 0 risk points (below 50 threshold)
 func TestScoreDependencySprawl_NPM_ModerateDirectCount(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -46,126 +46,96 @@ func TestScoreDependencySprawl_NPM_ModerateDirectCount(t *testing.T) {
 			Name: "mid-npm-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM,
 		},
 		Metadata: models.PackageMetadata{
-			DependencyMetrics: &models.DependencyMetrics{DirectCount: 10, Verified: false},
-		},
-	}
-
-	score := analyzer.scoreDependencySprawl(result)
-
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for npm with 10 direct deps, got %d", score.RiskPoints)
-	}
-}
-
-// Test: npm package with many direct dependencies scores high risk
-// Justification: >15 direct deps for npm represents high attack surface
-// Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Set DirectCount=20, Verified=false for npm ecosystem
-// Result: 2 risk points (high sprawl)
-func TestScoreDependencySprawl_NPM_HighDirectCount(t *testing.T) {
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Dependency: models.Dependency{
-			Name: "big-npm-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM,
-		},
-		Metadata: models.PackageMetadata{
 			DependencyMetrics: &models.DependencyMetrics{DirectCount: 20, Verified: false},
-		},
-	}
-
-	score := analyzer.scoreDependencySprawl(result)
-
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for npm with 20 direct deps, got %d", score.RiskPoints)
-	}
-}
-
-// Test: Maven package with 20 direct deps scores low risk (Maven-adjusted threshold)
-// Justification: Maven BOM imports, dependency management sections, and multi-module
-//                aggregation inflate apparent counts without representing actual attack
-//                surface. 20 direct deps in Maven is typical for a well-structured
-//                project using managed dependencies, unlike npm where 20 is high sprawl.
-// Source: "Small World with High Risks" (Zimmermann et al., 2019)
-//         Maven-specific adjustment for BOM/managed dependency inflation
-// Methodology: Set DirectCount=10, Verified=false for Maven ecosystem
-// Result: 0 risk points (low sprawl, within Maven-adjusted threshold)
-func TestScoreDependencySprawl_Maven_LowDirectCount(t *testing.T) {
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Dependency: models.Dependency{
-			Name: "com.example:small-maven", Version: "1.0.0", Ecosystem: models.EcosystemMaven,
-		},
-		Metadata: models.PackageMetadata{
-			DependencyMetrics: &models.DependencyMetrics{DirectCount: 10, Verified: false},
 		},
 	}
 
 	score := analyzer.scoreDependencySprawl(result)
 
 	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points for Maven with 10 direct deps (within Maven low threshold of 12), got %d", score.RiskPoints)
+		t.Errorf("Expected 0 risk points for npm with 20 direct deps (below 50 threshold), got %d", score.RiskPoints)
 	}
 }
 
-// Test: Maven package with 20 deps scores moderate (not high) thanks to Maven-adjusted thresholds
-// Justification: 20 direct deps in Maven is moderate due to BOM/management inflation,
-//                whereas the same count in npm would be high risk. Maven's dependency
-//                management model means many declared deps are managed/inherited and
-//                don't represent independent supply chain entry points.
+// Test: npm package with extreme direct dependencies scores 1 risk point
+// Justification: 50+ direct deps for npm represents extreme sprawl worth flagging
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-//         Maven-specific adjustment for BOM/managed dependency inflation
-// Methodology: Set DirectCount=20, Verified=false for Maven ecosystem
-// Result: 1 risk point (moderate sprawl) — same count would be 2 risk points for npm
-func TestScoreDependencySprawl_Maven_ModerateDirectCount(t *testing.T) {
+// Methodology: Set DirectCount=55, Verified=false for npm ecosystem
+// Result: 1 risk point (extreme sprawl, max for this category)
+func TestScoreDependencySprawl_NPM_ExtremeDirectCount(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
-			Name: "com.example:mid-maven", Version: "1.0.0", Ecosystem: models.EcosystemMaven,
+			Name: "big-npm-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM,
 		},
 		Metadata: models.PackageMetadata{
-			DependencyMetrics: &models.DependencyMetrics{DirectCount: 20, Verified: false},
+			DependencyMetrics: &models.DependencyMetrics{DirectCount: 55, Verified: false},
 		},
 	}
 
 	score := analyzer.scoreDependencySprawl(result)
 
 	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for Maven with 20 direct deps (moderate in Maven range 13-29), got %d", score.RiskPoints)
+		t.Errorf("Expected 1 risk point for npm with 55 direct deps (extreme sprawl), got %d", score.RiskPoints)
 	}
 }
 
-// Test: Maven package with 35 deps scores high risk even with Maven-adjusted thresholds
-// Justification: Even accounting for Maven's BOM/management inflation, 35+ direct
-//                dependencies represents genuine sprawl with significant attack surface.
+// Test: Maven package with 50 direct deps scores 0 risk (Maven-adjusted threshold)
+// Justification: Maven BOM imports, dependency management sections, and multi-module
+//                aggregation inflate apparent counts. 50 direct deps in Maven is normal.
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Set DirectCount=35, Verified=false for Maven ecosystem
-// Result: 2 risk points (high sprawl, exceeds Maven threshold of 30)
-func TestScoreDependencySprawl_Maven_HighDirectCount(t *testing.T) {
+// Methodology: Set DirectCount=50, Verified=false for Maven ecosystem
+// Result: 0 risk points (within Maven threshold of 100)
+func TestScoreDependencySprawl_Maven_NormalDirectCount(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name: "com.example:mid-maven", Version: "1.0.0", Ecosystem: models.EcosystemMaven,
+		},
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{DirectCount: 50, Verified: false},
+		},
+	}
+
+	score := analyzer.scoreDependencySprawl(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for Maven with 50 direct deps (within Maven threshold of 100), got %d", score.RiskPoints)
+	}
+}
+
+// Test: Maven package with 105 deps scores 1 risk point (extreme sprawl)
+// Justification: Even accounting for Maven's BOM/management inflation, 100+ direct
+//                dependencies represents extreme sprawl.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Set DirectCount=105, Verified=false for Maven ecosystem
+// Result: 1 risk point (extreme sprawl, exceeds Maven threshold of 100)
+func TestScoreDependencySprawl_Maven_ExtremeDirectCount(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
 			Name: "com.example:big-maven", Version: "1.0.0", Ecosystem: models.EcosystemMaven,
 		},
 		Metadata: models.PackageMetadata{
-			DependencyMetrics: &models.DependencyMetrics{DirectCount: 35, Verified: false},
+			DependencyMetrics: &models.DependencyMetrics{DirectCount: 105, Verified: false},
 		},
 	}
 
 	score := analyzer.scoreDependencySprawl(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for Maven with 35 direct deps (exceeds Maven threshold of 29), got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for Maven with 105 direct deps (exceeds Maven threshold of 100), got %d", score.RiskPoints)
 	}
 }
 
 // Test: Same dependency count scores differently for npm vs Maven
 // Justification: Maven's dependency model inflates counts via BOMs and managed deps.
-//                A count of 16 direct deps represents high sprawl in npm (>15 threshold)
-//                but is moderate in Maven (within 13-29 range). Failing to account for
+//                A count of 55 direct deps represents extreme sprawl in npm (>=50 threshold)
+//                but is normal in Maven (within 100 threshold). Failing to account for
 //                this penalizes Maven projects for idiomatic dependency management.
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Compare scoring for DirectCount=16 across npm and Maven ecosystems
-// Result: npm=2 risk points (high), Maven=1 risk point (moderate)
+// Methodology: Compare scoring for DirectCount=55 across npm and Maven ecosystems
+// Result: npm=1 risk point (extreme), Maven=0 risk points (normal)
 func TestScoreDependencySprawl_SameCount_DifferentEcosystem(t *testing.T) {
 	analyzer := NewAnalyzer()
 
@@ -174,7 +144,7 @@ func TestScoreDependencySprawl_SameCount_DifferentEcosystem(t *testing.T) {
 			Name: "npm-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM,
 		},
 		Metadata: models.PackageMetadata{
-			DependencyMetrics: &models.DependencyMetrics{DirectCount: 16, Verified: false},
+			DependencyMetrics: &models.DependencyMetrics{DirectCount: 55, Verified: false},
 		},
 	}
 
@@ -183,18 +153,18 @@ func TestScoreDependencySprawl_SameCount_DifferentEcosystem(t *testing.T) {
 			Name: "com.example:maven-pkg", Version: "1.0.0", Ecosystem: models.EcosystemMaven,
 		},
 		Metadata: models.PackageMetadata{
-			DependencyMetrics: &models.DependencyMetrics{DirectCount: 16, Verified: false},
+			DependencyMetrics: &models.DependencyMetrics{DirectCount: 55, Verified: false},
 		},
 	}
 
 	npmScore := analyzer.scoreDependencySprawl(npmResult)
 	mavenScore := analyzer.scoreDependencySprawl(mavenResult)
 
-	if npmScore.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for npm with 16 direct deps, got %d", npmScore.RiskPoints)
+	if npmScore.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for npm with 55 direct deps, got %d", npmScore.RiskPoints)
 	}
-	if mavenScore.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for Maven with 16 direct deps (within Maven moderate range), got %d", mavenScore.RiskPoints)
+	if mavenScore.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for Maven with 55 direct deps (within Maven threshold), got %d", mavenScore.RiskPoints)
 	}
 }
 
@@ -202,8 +172,8 @@ func TestScoreDependencySprawl_SameCount_DifferentEcosystem(t *testing.T) {
 // Justification: PyPI's dependency model is similar to npm — requires_dist entries
 //                represent actual transitive exposure. No threshold adjustment needed.
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Set DirectCount=16, Verified=false for PyPI ecosystem
-// Result: 2 risk points (same as npm, default thresholds apply)
+// Methodology: Set DirectCount=55, Verified=false for PyPI ecosystem
+// Result: 1 risk point (same as npm, default thresholds apply)
 func TestScoreDependencySprawl_PyPI_UsesDefaultThresholds(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
@@ -211,24 +181,52 @@ func TestScoreDependencySprawl_PyPI_UsesDefaultThresholds(t *testing.T) {
 			Name: "pypi-pkg", Version: "1.0.0", Ecosystem: models.EcosystemPyPI,
 		},
 		Metadata: models.PackageMetadata{
-			DependencyMetrics: &models.DependencyMetrics{DirectCount: 16, Verified: false},
+			DependencyMetrics: &models.DependencyMetrics{DirectCount: 55, Verified: false},
 		},
 	}
 
 	score := analyzer.scoreDependencySprawl(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for PyPI with 16 direct deps (default thresholds), got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for PyPI with 55 direct deps (default thresholds), got %d", score.RiskPoints)
 	}
 }
 
-// Test: Lock file path is ecosystem-agnostic (not affected by Maven thresholds)
+// Test: Lock file path uses transitive count with extreme threshold
 // Justification: Lock file provides exact transitive counts regardless of ecosystem.
-//                BOM/management inflation is irrelevant when we have actual resolved deps.
+//                Only extreme sprawl (>200 transitive deps) triggers 1 risk point.
 // Source: "Small World with High Risks" (Zimmermann et al., 2019)
-// Methodology: Set TransitiveCount=60, Verified=true for Maven ecosystem
-// Result: 2 risk points (lock file thresholds are ecosystem-agnostic)
-func TestScoreDependencySprawl_LockFile_EcosystemAgnostic(t *testing.T) {
+// Methodology: Set TransitiveCount=250, Verified=true for Maven ecosystem
+// Result: 1 risk point (lock file extreme threshold is ecosystem-agnostic)
+func TestScoreDependencySprawl_LockFile_ExtremeSprawl(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name: "com.example:locked-maven", Version: "1.0.0", Ecosystem: models.EcosystemMaven,
+		},
+		Metadata: models.PackageMetadata{
+			DependencyMetrics: &models.DependencyMetrics{
+				TransitiveCount: 250, DirectCount: 30, MaxDepth: 8, Verified: true,
+			},
+		},
+	}
+
+	score := analyzer.scoreDependencySprawl(result)
+
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for lock file with 250 transitive deps, got %d", score.RiskPoints)
+	}
+	if !score.Verified {
+		t.Error("Expected Verified=true for lock file path")
+	}
+}
+
+// Test: Lock file with normal transitive count scores 0 risk
+// Justification: Lock file with moderate count should not trigger risk for weak signal.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Set TransitiveCount=60, Verified=true
+// Result: 0 risk points (60 is well within 200 threshold)
+func TestScoreDependencySprawl_LockFile_NormalCount(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Dependency: models.Dependency{
@@ -243,11 +241,8 @@ func TestScoreDependencySprawl_LockFile_EcosystemAgnostic(t *testing.T) {
 
 	score := analyzer.scoreDependencySprawl(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for lock file with 60 transitive deps, got %d", score.RiskPoints)
-	}
-	if !score.Verified {
-		t.Error("Expected Verified=true for lock file path")
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for lock file with 60 transitive deps (within 200 threshold), got %d", score.RiskPoints)
 	}
 }
 
@@ -283,7 +278,7 @@ func TestScoreDependencySprawl_Maven_ScopeBreakdownInDescription(t *testing.T) {
 
 	score := analyzer.scoreDependencySprawl(result)
 
-	// 5 compile+runtime deps is well within Maven low threshold (≤12)
+	// 5 compile+runtime deps is well within Maven threshold (≤99)
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points for Maven with 5 compile+runtime deps, got %d", score.RiskPoints)
 	}
@@ -368,3 +363,27 @@ func TestScoreDependencySprawl_NPM_NoScopeBreakdown(t *testing.T) {
 	}
 }
 
+// Test: No data available gives 0 risk (weak signal, don't penalize missing data)
+// Justification: Dependency count is the weakest supply chain signal. Missing data
+//                should not inflate the risk score for this category.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: No DependencyMetrics provided
+// Result: 0 risk points, DataAvailable=false
+func TestScoreDependencySprawl_NoData(t *testing.T) {
+	analyzer := NewAnalyzer()
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name: "unknown-pkg", Version: "1.0.0", Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{},
+	}
+
+	score := analyzer.scoreDependencySprawl(result)
+
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for no data (weak signal), got %d", score.RiskPoints)
+	}
+	if score.DataAvailable {
+		t.Error("Expected DataAvailable=false for no data path")
+	}
+}

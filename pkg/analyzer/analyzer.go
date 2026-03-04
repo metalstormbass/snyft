@@ -494,13 +494,13 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		a.repoCache.set(cacheKey, extractRepoData(&result))
 	}
 
-	// Calculate supply chain score (0-20 point rubric, 10 categories)
+	// Calculate supply chain score (0-19 point rubric, 10 categories)
 	a.calculateSupplyChainScore(&result)
 
 	// Derive legacy RiskLevel/RiskScore from SupplyChainScore
 	if result.SupplyChainScore != nil {
 		result.RiskLevel = result.SupplyChainScore.RiskLevel
-		result.RiskScore = result.SupplyChainScore.TotalScore * 100 / 20 // Map 0-20 to 0-100
+		result.RiskScore = result.SupplyChainScore.TotalScore * 100 / 19 // Map 0-19 to 0-100
 	}
 
 	// Populate Findings from CategoryScores for backward compatibility
@@ -558,8 +558,8 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 	}
 }
 
-// calculateSupplyChainScore implements a 0-20 point supply chain security rubric
-// Each of 10 categories is scored 0-2 points (0=good, 2=high risk)
+// calculateSupplyChainScore implements a 0-19 point supply chain security rubric
+// 9 categories are scored 0-2 points, 1 category (Dependency Sprawl) is scored 0-1
 // Total: 0-8=Low risk, 9-10=Medium risk, 11+=High risk
 func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	score := &models.SupplyChainScore{
@@ -583,30 +583,34 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	var scoreWg sync.WaitGroup
 
 	type scoringTask struct {
-		name   string
-		target *models.CategoryScore
-		fn     func(*models.AnalysisResult) models.CategoryScore
+		name      string
+		target    *models.CategoryScore
+		fn        func(*models.AnalysisResult) models.CategoryScore
+		maxPoints int // maximum risk points for this category
 	}
 
 	tasks := []scoringTask{
-		{"publisher-control", &score.CategoryScores.PublisherControl, a.scorePublisherControl},
-		{"ownership-changes", &score.CategoryScores.OwnershipChanges, a.scoreOwnershipChanges},
-		{"release-anomalies", &score.CategoryScores.ReleaseAnomalies, a.scoreReleaseAnomalies},
-		{"install-execution", &score.CategoryScores.InstallExecution, a.scoreInstallExecution},
-		{"dependency-sprawl", &score.CategoryScores.DependencySprawl, a.scoreDependencySprawl},
-		{"provenance", &score.CategoryScores.Provenance, a.scoreProvenance},
-		{"health", &score.CategoryScores.Health, a.scoreHealth},
-		{"governance", &score.CategoryScores.Governance, a.scoreGovernance},
-		{"release-security", &score.CategoryScores.ReleaseSecurity, a.scoreReleaseSecurity},
-		{"package-maturity", &score.CategoryScores.PackageMaturity, a.scorePackageMaturity},
+		{"publisher-control", &score.CategoryScores.PublisherControl, a.scorePublisherControl, 2},
+		{"ownership-changes", &score.CategoryScores.OwnershipChanges, a.scoreOwnershipChanges, 2},
+		{"release-anomalies", &score.CategoryScores.ReleaseAnomalies, a.scoreReleaseAnomalies, 2},
+		{"install-execution", &score.CategoryScores.InstallExecution, a.scoreInstallExecution, 2},
+		{"dependency-sprawl", &score.CategoryScores.DependencySprawl, a.scoreDependencySprawl, 1},
+		{"provenance", &score.CategoryScores.Provenance, a.scoreProvenance, 2},
+		{"health", &score.CategoryScores.Health, a.scoreHealth, 2},
+		{"governance", &score.CategoryScores.Governance, a.scoreGovernance, 2},
+		{"release-security", &score.CategoryScores.ReleaseSecurity, a.scoreReleaseSecurity, 2},
+		{"package-maturity", &score.CategoryScores.PackageMaturity, a.scorePackageMaturity, 2},
 	}
 
+	// Track per-category max points for active checks (not all categories are 0-2)
+	taskMaxPoints := make(map[string]int)
 	for i := range tasks {
 		task := tasks[i]
 		if !a.isCheckEnabled(task.name) {
 			*task.target = skippedScore
 			continue
 		}
+		taskMaxPoints[task.name] = task.maxPoints
 		scoreWg.Add(1)
 		go func() {
 			defer scoreWg.Done()
@@ -685,7 +689,12 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		}
 	}
 	score.ActiveChecks = activeChecks
-	score.MaxScore = activeChecks * 2
+	// Sum per-category max points (not all categories have the same max)
+	maxScore := 0
+	for _, mp := range taskMaxPoints {
+		maxScore += mp
+	}
+	score.MaxScore = maxScore
 
 	// Calculate confidence percentage: what fraction of active checks had real data
 	if activeChecks > 0 {
