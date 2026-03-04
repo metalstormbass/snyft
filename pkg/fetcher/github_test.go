@@ -2338,13 +2338,13 @@ func TestDetectCISystems_NoDuplicateGitHubActions(t *testing.T) {
 	}
 }
 
-// Test: matchTagVersion finds tags with non-standard naming
-// Justification: Non-standard tag naming (e.g. "module-name-2.15.3") is common
-//                in multi-module repos. If we can't match the tag, we can't verify
-//                provenance (source code → published artifact link is broken).
-// Source: SLSA v1.0 specification — provenance requires linking artifact to source
-// Methodology: Check suffix matching against known version patterns
-// Result: Returns true + URL when a tag ends with the target version suffix
+// Test: matchTagVersion finds tags via suffix, exact, and contains-based matching
+// Justification: Non-standard tag naming conventions (rel/ prefix, bare version,
+//                v-prefix) cause false negatives in tag detection, incorrectly
+//                inflating source verification risk scores.
+// Source: SLSA specification v1.0 – https://slsa.dev/spec/v1.0/
+// Methodology: Provide tag lists with various naming patterns and verify matching.
+// Result: All common tag patterns are correctly matched.
 func TestMatchTagVersion(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -2386,19 +2386,51 @@ func TestMatchTagVersion(t *testing.T) {
 			wantFound: true,
 			wantTag:   "module_1.0.0",
 		},
+		{
+			name:      "exact version tag (psycopg2-style)",
+			tags:      []string{"other-tag", "2.9.9", "old-1.0.0"},
+			version:   "2.9.9",
+			wantFound: true,
+			wantTag:   "2.9.9",
+		},
+		{
+			name:      "v-prefixed exact tag (numpy-style)",
+			tags:      []string{"other-tag", "v1.26.3"},
+			version:   "1.26.3",
+			wantFound: true,
+			wantTag:   "v1.26.3",
+		},
+		{
+			name:      "rel/ prefixed tag (commons-lang3-style)",
+			tags:      []string{"rel/commons-lang-3.13.0", "other-1.0.0"},
+			version:   "3.13.0",
+			wantFound: true,
+			wantTag:   "rel/commons-lang-3.13.0",
+		},
+		{
+			name:      "release/ prefixed tag",
+			tags:      []string{"release/v1.2.3", "other-2.0.0"},
+			version:   "1.2.3",
+			wantFound: true,
+			wantTag:   "release/v1.2.3",
+		},
+		{
+			name:      "no false positive on digit boundary",
+			tags:      []string{"v21.0.0"},
+			version:   "1.0.0",
+			wantFound: false,
+		},
+		{
+			name:      "no false positive on trailing digit",
+			tags:      []string{"v1.0.01"},
+			version:   "1.0.0",
+			wantFound: false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			suffixes := []string{
-				"-" + tt.version,
-				"-v" + tt.version,
-				"_" + tt.version,
-				"_v" + tt.version,
-				"/" + tt.version,
-				"/v" + tt.version,
-			}
-			found, tagURL := matchTagVersion(tt.tags, suffixes, "owner", "repo")
+			found, tagURL := matchTagVersion(tt.tags, tt.version, "owner", "repo")
 			if found != tt.wantFound {
 				t.Errorf("matchTagVersion() found = %v, want %v", found, tt.wantFound)
 			}
