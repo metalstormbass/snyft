@@ -93,20 +93,11 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 	}
 
 	// Component 2: Review Oversight
-	if result.Metadata.HasBranchProtection && result.Metadata.RequiredReviewers > 0 {
-		points++
-		evidence = append(evidence, fmt.Sprintf("%d required reviewers, branch protection enabled", result.Metadata.RequiredReviewers))
-		verified = true
-		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "PASS", Detail: fmt.Sprintf("Branch protection with %d required reviewer(s)", result.Metadata.RequiredReviewers)})
-	} else if result.Metadata.CodeReviewRate >= 75 {
+	if result.Metadata.CodeReviewRate >= 75 {
 		points++
 		evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed", result.Metadata.CodeReviewRate))
 		verified = true
 		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "PASS", Detail: fmt.Sprintf("%.0f%% PRs reviewed (>= 75%% threshold)", result.Metadata.CodeReviewRate)})
-	} else if result.Metadata.HasBranchProtection {
-		evidence = append(evidence, "Branch protection enabled (no required reviewers)")
-		verified = true
-		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "FAIL", Detail: "Branch protection enabled but no required reviewers configured"})
 	} else if result.Metadata.CodeReviewRate > 0 {
 		evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (insufficient)", result.Metadata.CodeReviewRate))
 		verified = true
@@ -116,12 +107,6 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 		points++
 		evidence = append(evidence, "Review oversight unavailable (no repository URL)")
 		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "UNAVAILABLE", Detail: "No repository URL available to check review practices; benefit of doubt awarded"})
-	} else if result.Metadata.BranchProtectionDenied {
-		// API returned 403/404 (admin access required) and we have no code review data.
-		// Cannot determine review oversight — don't penalize for what we can't check.
-		points++
-		evidence = append(evidence, "Review oversight unavailable (branch protection API access denied, no code review data)")
-		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "UNAVAILABLE", Detail: "GitHub API requires admin access to read branch protection rules; no code review data available; benefit of doubt awarded"})
 	} else {
 		evidence = append(evidence, "No review oversight detected")
 		healthChecks = append(healthChecks, models.CheckResult{Name: "Review oversight", Status: "FAIL", Detail: "No branch protection or code review data detected"})

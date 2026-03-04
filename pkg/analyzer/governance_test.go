@@ -603,27 +603,20 @@ func TestScoreGovernance_AbandonedAboveThreshold(t *testing.T) {
 }
 
 // Test: Governance risk assessment - Branch protection as process signal
-// Justification: Branch protection enforces code review and merge policies,
-//
-//	indicating active governance and reducing supply chain attack surface
-//
-// Source: OSSF Scorecard Specification (Branch-Protection check)
-//
-//	"Towards Measuring Supply Chain Attacks" (NDSS 2020)
-//
-// Methodology: Check HasBranchProtection and RequiredReviewers from metadata
-// Result: Branch protection should contribute to process points and reduce risk
-func TestScoreGovernance_BranchProtectionReducesRisk(t *testing.T) {
+// Test: Governance scoring without repo URL returns risk=1
+// Justification: Without a repo URL, governance cannot be verified.
+// Source: OSSF Scorecard Specification
+// Methodology: Pass result without repository URL
+// Result: 1 risk point when no repository URL
+func TestScoreGovernance_NoRepoURL(t *testing.T) {
 	analyzer := NewAnalyzer()
 
-	// Package with 2 governance docs + branch protection → should get 0 risk
+	// Package without repo URL
 	result := &models.AnalysisResult{
 		RepositoryURL: "", // no repo so we return early — test metadata path differently
 		Metadata: models.PackageMetadata{
 			RepoLastCommit:      time.Now().AddDate(0, 0, -5),
 			RepoCreatedAt:       time.Now().AddDate(-2, 0, 0),
-			HasBranchProtection: true,
-			RequiredReviewers:   2,
 		},
 		Dependency: models.Dependency{
 			Name:      "protected-package",
@@ -1071,7 +1064,7 @@ func TestScoreGovernance_MockServer_TwoGovernanceDocs(t *testing.T) {
 	score := analyzer.scoreGovernance(result)
 
 	// Two governance docs (SECURITY.md + CONTRIBUTING.md) → docsPoints=2
-	// No process points (no branch protection, no issue response) → processPoints=0
+	// No process points (no issue response, no release docs) → processPoints=0
 	// Total=2 → 1 risk (moderate governance)
 	if score.RiskPoints != 1 {
 		t.Errorf("Expected 1 risk point for 2 governance docs, got %d (evidence: %s)",
@@ -1087,13 +1080,13 @@ func TestScoreGovernance_MockServer_TwoGovernanceDocs(t *testing.T) {
 	// not CONTRIBUTING.md. CONTRIBUTING.md is not a supply chain security signal.
 }
 
-// Test: Governance scoring with all docs + branch protection → 0 risk
-// Justification: Maximum governance signals (docs + process) should result in 0 risk.
-//                Two+ governance docs = 2 docsPoints, branch protection = 1 processPoint,
-//                total = 3 → 0 risk (strong governance).
-// Source: OSSF Scorecard Specification (Branch-Protection + Security-Policy checks)
-// Methodology: Mock API with governance files + branch protection metadata
-// Result: Strong governance → 0 risk points
+// Test: Governance scoring with governance docs → 1 risk
+// Justification: Two governance docs (SECURITY.md + CONTRIBUTING.md) = 2 docsPoints,
+//                no issue response or release docs → processPoints=0,
+//                total = 2 → 1 risk (moderate governance).
+// Source: OSSF Scorecard Specification (Security-Policy checks)
+// Methodology: Mock API with governance files
+// Result: Moderate governance → 1 risk point
 func TestScoreGovernance_MockServer_StrongGovernance(t *testing.T) {
 	server := newMockGitHubServer(map[string]bool{
 		"SECURITY.md":          true,
@@ -1112,8 +1105,6 @@ func TestScoreGovernance_MockServer_StrongGovernance(t *testing.T) {
 		Metadata: models.PackageMetadata{
 			RepoLastCommit:      time.Now().AddDate(0, 0, -3),
 			RepoCreatedAt:       time.Now().AddDate(-3, 0, 0),
-			HasBranchProtection: true,
-			RequiredReviewers:   1,
 		},
 		Dependency: models.Dependency{
 			Name:      "strong-governance-pkg",
@@ -1124,16 +1115,16 @@ func TestScoreGovernance_MockServer_StrongGovernance(t *testing.T) {
 
 	score := analyzer.scoreGovernance(result)
 
-	// 2 docs → docsPoints=2, branch protection → processPoints=1, total=3 → risk=0
-	if score.RiskPoints != 0 {
-		t.Errorf("Expected 0 risk points for strong governance (2 docs + branch protection), got %d (evidence: %s)",
+	// 2 docs → docsPoints=2, no process signals → processPoints=0, total=2 → risk=1
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for moderate governance (2 docs, no process signals), got %d (evidence: %s)",
 			score.RiskPoints, score.Evidence)
 	}
 	if !score.Verified {
 		t.Error("Expected Verified=true")
 	}
-	if !containsSubstring(score.Description, "SECURITY.md") || !containsSubstring(score.Description, "security disclosure") {
-		t.Errorf("Description should reference SECURITY.md and explain its importance, got: %s", score.Description)
+	if !containsSubstring(score.Description, "SECURITY.md") {
+		t.Errorf("Description should reference SECURITY.md, got: %s", score.Description)
 	}
 }
 

@@ -451,10 +451,10 @@ jobs:
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/test/e2e-scoring",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   1,
+			HasReleaseProcess: true,
+			SignedReleases:    true,
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
 		},
 	}
 

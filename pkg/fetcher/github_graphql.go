@@ -100,16 +100,14 @@ type batchRepoData struct {
 	RepoInfo         *models.RepositoryInfo
 	Releases         []GitHubRelease
 	DefaultBranch    string
-	GovernanceFiles  map[string]bool // path -> exists
-	BranchProtection *GitHubBranchProtection
-	BranchProtectionDenied bool
-	PRStats          *PRStats            // merged PR review stats
+	GovernanceFiles map[string]bool // path -> exists
+	PRStats         *PRStats            // merged PR review stats
 	CommitAuthors    *CommitAuthorStats  // commit author distribution
 	SignedCommits    *cachedSignedCommits // commit signature verification
 }
 
 // buildBatchQuery constructs a GraphQL query that fetches repo metadata,
-// recent releases, governance file existence, branch protection, merged PRs
+// recent releases, governance file existence, merged PRs
 // with review status, and commit history with author/signature data in one call.
 //
 // This replaces 30+ REST API calls:
@@ -200,12 +198,6 @@ func buildBatchQuery(owner, repo string) string {
     codeowners: object(expression: "HEAD:CODEOWNERS") { __typename }
     codeownersGh: object(expression: "HEAD:.github/CODEOWNERS") { __typename }
     codeOfConduct: object(expression: "HEAD:CODE_OF_CONDUCT.md") { __typename }
-    branchProtectionRules(first: 5) {
-      nodes {
-        pattern
-        requiredApprovingReviewCount
-      }
-    }
   }
 }`, owner, repo)
 }
@@ -243,8 +235,6 @@ type graphqlRepository struct {
 	CodeownersGh     *graphqlObject `json:"codeownersGh"`
 	CodeOfConduct    *graphqlObject `json:"codeOfConduct"`
 
-	// Branch protection
-	BranchProtectionRules graphqlBranchProtectionConnection `json:"branchProtectionRules"`
 }
 
 type graphqlTotalCount struct {
@@ -341,15 +331,6 @@ type graphqlReviewConnection struct {
 	TotalCount int `json:"totalCount"`
 }
 
-type graphqlBranchProtectionConnection struct {
-	Nodes []graphqlBranchProtectionRule `json:"nodes"`
-}
-
-type graphqlBranchProtectionRule struct {
-	Pattern                      string `json:"pattern"`
-	RequiredApprovingReviewCount int    `json:"requiredApprovingReviewCount"`
-}
-
 // fetchBatchRepoData executes a single GraphQL query to fetch repository info,
 // releases, governance file existence, and branch protection rules. The results
 // are cached so subsequent REST-based callers (getReleases, fileExists,
@@ -442,22 +423,8 @@ func (c *GitHubClient) fetchBatchRepoData(owner, repo string) *batchRepoData {
 		"CODE_OF_CONDUCT.md":       r.CodeOfConduct != nil,
 	}
 
-	// Build branch protection
-	var branchProtection *GitHubBranchProtection
-	for _, rule := range r.BranchProtectionRules.Nodes {
-		// Match the default branch pattern
-		if rule.Pattern == defaultBranch || rule.Pattern == "*" {
-			branchProtection = &GitHubBranchProtection{
-				RequiredReviews: &GitHubRequiredReviews{
-					RequiredApprovingReviewCount: rule.RequiredApprovingReviewCount,
-				},
-			}
-			break
-		}
-	}
-
 	// Build PR stats from merged PRs with review data
-	prStats := buildPRStatsFromGraphQL(r, branchProtection)
+	prStats := buildPRStatsFromGraphQL(r)
 
 	// Build commit author stats and signed commit data from commit history
 	commitAuthors, signedCommits := buildCommitDataFromGraphQL(r)
@@ -466,10 +433,8 @@ func (c *GitHubClient) fetchBatchRepoData(owner, repo string) *batchRepoData {
 		RepoInfo:               repoInfo,
 		Releases:               releases,
 		DefaultBranch:          defaultBranch,
-		GovernanceFiles:        govFiles,
-		BranchProtection:       branchProtection,
-		BranchProtectionDenied: false,
-		PRStats:                prStats,
+		GovernanceFiles: govFiles,
+		PRStats:         prStats,
 		CommitAuthors:          commitAuthors,
 		SignedCommits:          signedCommits,
 	}
@@ -481,7 +446,7 @@ func (c *GitHubClient) fetchBatchRepoData(owner, repo string) *batchRepoData {
 }
 
 // populateCachesFromBatch stores batch query results in the per-repo caches.
-// This ensures that methods like getReleases, fileExists, and getBranchProtection
+// This ensures that methods like getReleases and fileExists
 // find cached data and skip their own REST API calls.
 func (c *GitHubClient) populateCachesFromBatch(owner, repo string, batch *batchRepoData) {
 	if c.cache == nil {
@@ -523,9 +488,9 @@ func (c *GitHubClient) populateCachesFromBatch(owner, repo string, batch *batchR
 }
 
 // buildPRStatsFromGraphQL constructs PRStats from the GraphQL pullRequests
-// and branchProtectionRules data. This replaces up to 21 REST API calls:
+// data. This replaces up to 21 REST API calls:
 // 1 for the PR list + up to 20 per-PR review checks.
-func buildPRStatsFromGraphQL(r *graphqlRepository, branchProtection *GitHubBranchProtection) *PRStats {
+func buildPRStatsFromGraphQL(r *graphqlRepository) *PRStats {
 	stats := &PRStats{}
 
 	prs := r.PullRequests.Nodes
@@ -543,12 +508,6 @@ func buildPRStatsFromGraphQL(r *graphqlRepository, branchProtection *GitHubBranc
 	sampledPRs := len(prs)
 	if sampledPRs > 0 {
 		stats.CodeReviewRate = float64(stats.PRsWithReviews) / float64(sampledPRs) * 100
-	}
-
-	// Branch protection data (already parsed from the same batch query)
-	stats.HasBranchProtection = branchProtection != nil
-	if branchProtection != nil && branchProtection.RequiredReviews != nil {
-		stats.RequiredReviewers = branchProtection.RequiredReviews.RequiredApprovingReviewCount
 	}
 
 	return stats

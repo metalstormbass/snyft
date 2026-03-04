@@ -302,7 +302,6 @@ func TestScoreGovernance_WithReleaseDocs_ResponsivenessFallback(t *testing.T) {
 		RepositoryURL: "https://github.com/test/repo",
 		Metadata: models.PackageMetadata{
 			RepoLastCommit:      mustParseTime("2025-12-01T00:00:00Z"),
-			HasBranchProtection: false,
 			ReleaseDocumentation: &models.ReleaseDocumentation{
 				HasDocumentedReleaseProcess: true,
 				FilesFound:                  []string{"CONTRIBUTING.md"},
@@ -315,7 +314,6 @@ func TestScoreGovernance_WithReleaseDocs_ResponsivenessFallback(t *testing.T) {
 		RepositoryURL: "https://github.com/test/repo",
 		Metadata: models.PackageMetadata{
 			RepoLastCommit:      mustParseTime("2025-12-01T00:00:00Z"),
-			HasBranchProtection: false,
 		},
 	}
 

@@ -1,7 +1,6 @@
 package analyzer
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -433,27 +432,24 @@ func (analysis *PublisherControlAnalysis) checkPackageConcentration(npmClient *f
 // - Partial signing: MEDIUM RISK (some verification)
 // - All signed: LOW RISK (strong identity verification)
 func (analysis *PublisherControlAnalysis) checkSigningPractices(gitClient fetcher.GitPlatformClient, repoURL string) {
-	// Check signed commits.
-	// ErrDataUnavailable means the platform does not expose signature data;
-	// leave defaults (false/0) so scoring treats signing as unknown rather than absent.
+	// Only GitHub exposes commit/release signature data. GitLab, Bitbucket, and
+	// generic git platforms always return ErrDataUnavailable, so skip them to
+	// avoid unnecessary calls and noise.
+	if gitClient.GetPlatformName() != "GitHub" {
+		return
+	}
+
 	hasSigned, count, err := gitClient.CheckSignedCommits(repoURL)
 	if err == nil {
 		analysis.SigningChecked = true
 		analysis.HasSignedCommits = hasSigned
 		analysis.SignedCommitCount = count
-	} else if !errors.Is(err, fetcher.ErrDataUnavailable) {
-		// Real error (not just platform limitation) - leave defaults
-		_ = err
 	}
 
-	// Check signed releases.
-	// ErrDataUnavailable means the platform does not expose release signature data.
 	hasSignedReleases, err := gitClient.CheckSignedReleases(repoURL)
 	if err == nil {
 		analysis.SigningChecked = true
 		analysis.HasSignedReleases = hasSignedReleases
-	} else if !errors.Is(err, fetcher.ErrDataUnavailable) {
-		_ = err
 	}
 }
 

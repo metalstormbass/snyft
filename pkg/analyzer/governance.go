@@ -233,19 +233,10 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		responsivenessPoints = 1
 		evidenceParts = append(evidenceParts, fmt.Sprintf("Avg issue response: %.1f days", govMetrics.AvgIssueResponseDays))
 		govChecks = append(govChecks, models.CheckResult{Name: "Issue response time", Status: "PASS", Detail: fmt.Sprintf("Average response: %.1f days (<= 14 day threshold)", govMetrics.AvgIssueResponseDays)})
-	} else if result.Metadata.HasBranchProtection {
-		responsivenessPoints = 1
-		if result.Metadata.RequiredReviewers > 0 {
-			evidenceParts = append(evidenceParts, fmt.Sprintf("Branch protection with %d required reviewer(s)", result.Metadata.RequiredReviewers))
-			govChecks = append(govChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: fmt.Sprintf("Branch protection enabled with %d required reviewer(s)", result.Metadata.RequiredReviewers)})
-		} else {
-			evidenceParts = append(evidenceParts, "Branch protection enabled")
-			govChecks = append(govChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: "Branch protection enabled"})
-		}
 	} else if result.Metadata.ReleaseDocumentation != nil && result.Metadata.ReleaseDocumentation.HasDocumentedReleaseProcess {
 		// Documented contributing/release process is a positive governance signal:
 		// it indicates formalized project management even when issue response data
-		// and branch protection status are unavailable.
+		// is unavailable.
 		responsivenessPoints = 1
 		docFiles := strings.Join(result.Metadata.ReleaseDocumentation.FilesFound, ", ")
 		evidenceParts = append(evidenceParts, fmt.Sprintf("Documented release/contributing process (%s)", docFiles))
