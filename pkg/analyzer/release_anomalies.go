@@ -62,25 +62,11 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 	daysSinceLastCommit := time.Since(result.Metadata.RepoLastCommit).Hours() / 24
 	daysSinceCreated := time.Since(result.Metadata.RepoCreatedAt).Hours() / 24
 
-	// Very inactive (dormant for over a year)
-	if daysSinceLastCommit > 365 {
-		return models.CategoryScore{
-			Score:       1,
-			RiskPoints:  1,
-			Description: fmt.Sprintf("No commits in %.0f days (last commit: %s). Dormant packages are attractive targets for account takeover — maintainers may not be monitoring their accounts or credentials.", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
-			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year); last commit: %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
-			Verified:    true,
-			DataAvailable: true,
-			Methodology: anomalyMethodology,
-			ChecksPerformed: []models.CheckResult{
-				{Name: "Dormancy detection", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (> 365 day threshold); last commit %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02"))},
-				{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "Package is dormant; release pattern analysis not applicable"},
-			},
-		}
-	}
+	// Note: pure dormancy (no commits for a long time) is assessed solely by
+	// Package Maturity. Release Anomalies only flags actual reactivation patterns
+	// (dormant-then-burst) to avoid triple-counting the same signal.
 
-	// For packages with recent activity, fetch detailed release and commit history
-	// to detect suspicious reactivation patterns
+	// Fetch detailed release and commit history to detect suspicious reactivation patterns
 	if daysSinceCreated > 365 {
 		// Try to get release history from Git platform first, fall back to registry
 		var registryReleases []fetcher.RegistryRelease
