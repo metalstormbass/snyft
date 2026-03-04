@@ -81,13 +81,17 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	// Source: PyPI JSON API — project_urls is an arbitrary string→URL map.
 	pkg.RepositoryURL = extractPyPIRepoURL(pypiResp.Info)
 
-	// Extract maintainers from all available PyPI metadata fields.
-	// Modern packages using pyproject.toml populate author_email instead of author.
-	// The maintainer/maintainer_email fields are used when a separate maintainer
-	// is designated. We check all fields to avoid missing maintainer data.
-	// Source: PyPI JSON API docs — info.author, info.author_email, info.maintainer,
-	//         info.maintainer_email fields
-	pkg.Maintainers = extractPyPIMaintainers(pypiResp.Info)
+	// Extract maintainers: prefer the PyPI sidebar (shows actual package owners/maintainers
+	// with PyPI accounts) over API metadata fields (which reflect pyproject.toml author
+	// strings that may be inaccurate or comma-separated in unexpected ways).
+	// Source: PyPI sidebar "Maintainers" section lists users with upload permissions
+	sidebarMaintainers := c.scrapePyPISidebarMaintainers(packageName)
+	if len(sidebarMaintainers) > 0 {
+		pkg.Maintainers = sidebarMaintainers
+	} else {
+		// Fallback to API metadata fields when scraping fails or returns empty
+		pkg.Maintainers = extractPyPIMaintainers(pypiResp.Info)
+	}
 
 	// Count direct dependencies from requires_dist, excluding extras-only deps.
 	// requires_dist entries with "; extra ==" are optional extras, not required deps.
@@ -270,16 +274,29 @@ func extractPyPIMaintainers(info PyPIInfo) []string {
 		}
 	}
 
-	// Priority 1: maintainer/maintainer_email (explicitly designated maintainer)
-	if info.Maintainer != "" {
-		addName(info.Maintainer)
+	// Split a plain comma-separated name list (e.g. "Holger Krekel, Bruno Oliveira")
+	// into individual entries. Unlike parseEmailList, this handles names without
+	// angle-bracketed emails — a common format for the author/maintainer fields.
+	parseNameList := func(nameList string) {
+		if nameList == "" {
+			return
+		}
+		// If the field contains angle brackets, it's an email-style list — delegate.
+		if strings.Contains(nameList, "<") {
+			parseEmailList(nameList)
+			return
+		}
+		for _, name := range strings.Split(nameList, ",") {
+			addName(strings.TrimSpace(name))
+		}
 	}
+
+	// Priority 1: maintainer/maintainer_email (explicitly designated maintainer)
+	parseNameList(info.Maintainer)
 	parseEmailList(info.MaintainerEmail)
 
 	// Priority 2: author/author_email (package author)
-	if info.Author != "" {
-		addName(info.Author)
-	}
+	parseNameList(info.Author)
 	parseEmailList(info.AuthorEmail)
 
 	return maintainers
@@ -487,6 +504,31 @@ func (c *PyPIClient) scrapePyPIPackageInfo(packageName string) (*PyPIPackage, er
 	return pkg, nil
 }
 
+
+// scrapePyPISidebarMaintainers scrapes the maintainer/owner list from the PyPI
+// package page sidebar. The sidebar shows users with actual upload permissions,
+// making it the most reliable source for maintainer count.
+// Returns nil on any error (caller should fall back to API metadata).
+func (c *PyPIClient) scrapePyPISidebarMaintainers(packageName string) []string {
+	// Only scrape when using the real PyPI API — test servers don't serve HTML pages
+	if c.baseURL != "https://pypi.org/pypi" {
+		return nil
+	}
+	pageURL := fmt.Sprintf("https://pypi.org/project/%s/", packageName)
+	doc, err := scrapeWithUserAgent(pageURL)
+	if err != nil {
+		return nil
+	}
+
+	var maintainers []string
+	doc.Find("span.sidebar-section__maintainer a").Each(func(i int, s *goquery.Selection) {
+		name := strings.TrimSpace(s.Text())
+		if name != "" {
+			maintainers = append(maintainers, name)
+		}
+	})
+	return maintainers
+}
 
 // GetVersionHistory fetches version publish timestamps from the PyPI registry.
 // The PyPI JSON API includes a "releases" map where each version key maps to an
