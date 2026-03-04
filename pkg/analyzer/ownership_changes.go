@@ -121,11 +121,11 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 			evidenceParts = append(evidenceParts, fmt.Sprintf(
 				"%s: commit author analysis not available", gitClient.GetPlatformName()))
 			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "UNAVAILABLE", Detail: fmt.Sprintf("%s does not support commit author analysis", gitClient.GetPlatformName())})
-		} else if errors.Is(err, fetcher.ErrRateLimited) {
+		} else if err != nil {
 			evidenceParts = append(evidenceParts, fmt.Sprintf(
-				"%s: commit author analysis could not be performed (API rate limited)", gitClient.GetPlatformName()))
-			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "UNAVAILABLE", Detail: "Could not check: API rate limited"})
-		} else if err == nil && commitStats != nil {
+				"%s: commit author analysis could not be performed (%v)", gitClient.GetPlatformName(), err))
+			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: "UNAVAILABLE", Detail: fmt.Sprintf("Could not check: %v", err)})
+		} else if commitStats != nil {
 			verified = true
 			pts, ev := classifyOwnershipFromCommitStats(commitStats)
 			riskPoints = pts
