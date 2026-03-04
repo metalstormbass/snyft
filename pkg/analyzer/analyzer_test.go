@@ -623,26 +623,28 @@ func TestScoreOwnershipChanges_RepoCreatedBeforePublish_NotFlagged(t *testing.T)
 // Source: "Taxonomy of Attacks on Open-Source Software Supply Chains" (2020) - https://arxiv.org/abs/2204.04008
 // "Small World with High Risks" - npm ecosystem study (2019)
 
-func TestScoreReleaseAnomalies_HighRisk_Dormant3Years(t *testing.T) {
-	// Test: Package dormant for 3+ years (>365 days since last commit)
-	// Justification: Extremely inactive packages are prime targets for account takeover attacks
-	// Source: Sonatype 2023 report - 245,000+ malicious packages found, many via abandoned package takeover
-	// Methodology: Pure unit test — RepositoryURL is set (avoids early return) but the dormancy
-	//              check (daysSinceLastCommit > 365) fires before any GitHub API calls.
+func TestScoreReleaseAnomalies_Dormant3Years_NoAnomalyPenalty(t *testing.T) {
+	// Test: Package dormant for 3+ years — no release anomalies (dormancy is Package Maturity's job)
+	// Justification: Pure dormancy without reactivation is not a release anomaly. The dormancy
+	//                signal is assessed solely by Package Maturity to avoid triple-counting.
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — reactivation (not dormancy
+	//         alone) is the attack pattern.
+	// Methodology: Pure unit test — RepositoryURL is set but fake, no release data available.
+	//              Without a reactivation pattern, release anomalies should report 0 risk.
 	analyzer := NewAnalyzer()
 	result := models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			RepoLastCommit: time.Now().AddDate(-3, 0, 0), // 3 years ago → >365 days
+			RepoLastCommit: time.Now().AddDate(-3, 0, 0), // 3 years ago
 			RepoCreatedAt:  time.Now().AddDate(-5, 0, 0), // 5 years old
 		},
-		RepositoryURL: "https://example.com/dormant", // Non-empty to pass early check, but dormancy fires first
+		RepositoryURL: "https://example.com/dormant",
 	}
 
 	score := analyzer.scoreReleaseAnomalies(&result)
 
-	// 3 years since last commit → dormancy check fires → risk=1, "Package appears dormant"
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for 3-year dormancy, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	// Pure dormancy without reactivation → no release anomaly → risk=0
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for pure dormancy (no reactivation pattern), got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 
 	if !score.Verified {
@@ -747,7 +749,7 @@ func TestScoreReleaseAnomalies(t *testing.T) {
 			expectedVerify: false,
 		},
 		{
-			name: "Dormant package (>1 year inactive)",
+			name: "Dormant package (>1 year inactive) — no anomaly, dormancy is Package Maturity's job",
 			result: models.AnalysisResult{
 				Metadata: models.PackageMetadata{
 					RepoLastCommit: time.Now().AddDate(-2, 0, 0), // 2 years ago
@@ -755,8 +757,8 @@ func TestScoreReleaseAnomalies(t *testing.T) {
 				},
 				RepositoryURL: "https://github.com/example/repo",
 			},
-			expectedRisk:   1,
-			expectedDesc:   "Package appears dormant",
+			expectedRisk:   0,
+			expectedDesc:   "no anomalies detected",
 			expectedVerify: true,
 		},
 		{
@@ -1115,7 +1117,7 @@ func TestScoreReleaseAnomalies_ScoreFieldConsistency(t *testing.T) {
 			expectedRisk:  1,
 		},
 		{
-			name: "Dormant package - Score should be 1 (= 2 - RiskPoints)",
+			name: "Dormant package - no anomaly, Score should be 2 (dormancy is Package Maturity's job)",
 			result: models.AnalysisResult{
 				RepositoryURL: "https://github.com/example/old-package",
 				Metadata: models.PackageMetadata{
@@ -1123,8 +1125,8 @@ func TestScoreReleaseAnomalies_ScoreFieldConsistency(t *testing.T) {
 					RepoCreatedAt:  time.Now().AddDate(-4, 0, 0),
 				},
 			},
-			expectedScore: 1,
-			expectedRisk:  1,
+			expectedScore: 2,
+			expectedRisk:  0,
 		},
 		{
 			name: "Active package - Score should be 2 (= 2 - RiskPoints=0)",
