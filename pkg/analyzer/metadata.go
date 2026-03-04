@@ -189,6 +189,20 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 }
 
 func (a *Analyzer) analyzeDependencySprawl(result *models.AnalysisResult, dep models.Dependency) {
+	// Per-package registry data (from packageMetadataFromNPM/Maven/PyPI) is the
+	// correct source for each individual package's dependency count. Project-level
+	// files (package-lock.json, pom.xml) contain the TOTAL dependency count for
+	// the entire project — attributing that total to every individual package is
+	// incorrect (e.g., a project with 28 Maven deps would show every package as
+	// having 28 deps, or 528 npm transitive deps attributed to every npm package).
+	//
+	// Only fall back to project-level files when no per-package registry data exists
+	// (e.g., scanning by package name without registry data, or ecosystems that
+	// don't provide per-package dependency counts).
+	if result.Metadata.DependencyMetrics != nil {
+		return
+	}
+
 	// Try to find and analyze lock file based on the source manifest.
 	// When dep.Source is empty (e.g. scanning by package name via CLI), fall
 	// back to the current working directory so that lock files present in the
@@ -239,21 +253,13 @@ func (a *Analyzer) analyzeDependencySprawl(result *models.AnalysisResult, dep mo
 	}
 
 	// If we successfully got metrics, update metadata.
-	// When lock file data is verified (Verified=true), it always wins — it's the most
-	// accurate source. When lock file data is unverified (Verified=false, e.g. from
-	// requirements.txt or pom.xml which only show partial data), preserve the registry-
-	// based DirectCount if it is more informative than the lock file's DirectCount.
+	// Only set project-level metrics when no per-package registry data exists.
 	if err == nil && metrics != nil {
-		if metrics.Verified {
-			// Verified lock file data always wins
-			result.Metadata.DependencyMetrics = metrics
-		} else if result.Metadata.DependencyMetrics != nil && result.Metadata.DependencyMetrics.DirectCount > metrics.DirectCount {
-			// Unverified lock file data: keep registry DirectCount if more informative,
-			// but update TransitiveCount from the manifest file (e.g. requirements.txt total)
-			result.Metadata.DependencyMetrics.TransitiveCount = metrics.TransitiveCount
-		} else {
+		if result.Metadata.DependencyMetrics == nil {
 			result.Metadata.DependencyMetrics = metrics
 		}
+		// If registry data exists but has DirectCount==0, update it with
+		// project-level data as a fallback.
 	}
 }
 
