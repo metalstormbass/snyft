@@ -20,23 +20,25 @@ import (
 
 // NPMClient handles interactions with npm registry API
 type NPMClient struct {
-	httpClient *http.Client
-	baseURL    string
+	httpClient       *http.Client
+	baseURL          string
+	downloadsBaseURL string // Base URL for npm downloads API (default: https://api.npmjs.org)
 }
 
 // NPMPackage represents package information from npm
 type NPMPackage struct {
-	Name           string
-	Version        string
-	LatestVersion  string
-	RepositoryURL  string
-	Homepage       string
-	License        string
-	Downloads      int64
-	PublishedAt    time.Time
-	Maintainers    []string
-	Scripts        map[string]string // Install-time scripts (postinstall, preinstall, etc.)
-	DirectDepCount int               // Number of direct dependencies declared in the published version
+	Name            string
+	Version         string
+	LatestVersion   string
+	RepositoryURL   string
+	Homepage        string
+	License         string
+	Downloads       int64
+	WeeklyDownloads int64 // Weekly download count from npm downloads API (last-week)
+	PublishedAt     time.Time
+	Maintainers     []string
+	Scripts         map[string]string // Install-time scripts (postinstall, preinstall, etc.)
+	DirectDepCount  int               // Number of direct dependencies declared in the published version
 }
 
 // NewNPMClient creates a new npm registry client
@@ -45,7 +47,8 @@ func NewNPMClient() *NPMClient {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		baseURL: "https://registry.npmjs.org",
+		baseURL:          "https://registry.npmjs.org",
+		downloadsBaseURL: "https://api.npmjs.org",
 	}
 }
 
@@ -122,9 +125,10 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 		}
 	}
 
-	// Fetch download count from the npm downloads API.
+	// Fetch download counts from the npm downloads API.
 	// Errors are handled gracefully: if the request fails, Downloads stays 0.
 	pkg.Downloads = c.fetchDownloadCount(packageName)
+	pkg.WeeklyDownloads = c.fetchWeeklyDownloadCount(packageName)
 
 	return pkg, nil
 }
@@ -133,7 +137,48 @@ func (c *NPMClient) GetPackageInfo(packageName string) (*NPMPackage, error) {
 // the npm downloads API: GET https://api.npmjs.org/downloads/point/last-month/{name}
 // Returns 0 on any error so callers can treat it as a best-effort enrichment.
 func (c *NPMClient) fetchDownloadCount(packageName string) int64 {
-	url := fmt.Sprintf("https://api.npmjs.org/downloads/point/last-month/%s", packageName)
+	dlBase := c.downloadsBaseURL
+	if dlBase == "" {
+		dlBase = "https://api.npmjs.org"
+	}
+	url := fmt.Sprintf("%s/downloads/point/last-month/%s", dlBase, packageName)
+
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+
+	var dlResp struct {
+		Downloads int64  `json:"downloads"`
+		Package   string `json:"package"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&dlResp); err != nil {
+		return 0
+	}
+
+	return dlResp.Downloads
+}
+
+// fetchWeeklyDownloadCount fetches the last-week download count for a package from
+// the npm downloads API: GET https://api.npmjs.org/downloads/point/last-week/{name}
+// Returns 0 on any error so callers can treat it as a best-effort enrichment.
+//
+// Justification: High-download packages (>1M/week) have more community scrutiny,
+// which partially mitigates single-maintainer risk. A compromised publish would be
+// detected faster due to the large user base monitoring for regressions.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) — popular packages
+// have higher monitoring density, reducing dwell time of compromised versions.
+func (c *NPMClient) fetchWeeklyDownloadCount(packageName string) int64 {
+	dlBase := c.downloadsBaseURL
+	if dlBase == "" {
+		dlBase = "https://api.npmjs.org"
+	}
+	url := fmt.Sprintf("%s/downloads/point/last-week/%s", dlBase, packageName)
 
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
