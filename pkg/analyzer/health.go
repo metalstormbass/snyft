@@ -50,9 +50,11 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 			}
 		}
 	} else {
-		// Fallback 1: OSSF Scorecard "Contributors" check (0-10 scale)
+		// Fallback: OSSF Scorecard "Contributors" check (0-10 scale)
 		// A high score indicates diverse organizational contributors, which
 		// directly reduces single-point-of-compromise risk.
+		// Note: We do NOT fall back to maintainer count here — maintainer count
+		// is solely the responsibility of Publisher Control to avoid double-counting.
 		ossfContributorScore, hasOSSFContributors := result.Metadata.OSSFChecks["Contributors"]
 		if hasOSSFContributors && ossfContributorScore >= 5 {
 			points++
@@ -60,35 +62,16 @@ func (a *Analyzer) scoreHealth(result *models.AnalysisResult) models.CategorySco
 			verified = true
 			healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to OSSF Scorecard"})
 			healthChecks = append(healthChecks, models.CheckResult{Name: "OSSF Contributors (fallback)", Status: "PASS", Detail: fmt.Sprintf("OSSF Contributors score %d/10 >= 5 threshold (contributors from multiple organizations reduce single-entity control risk)", ossfContributorScore)})
+		} else if hasOSSFContributors && ossfContributorScore > 0 {
+			// OSSF data present but score < 5 — low organizational diversity
+			evidence = append(evidence, fmt.Sprintf("OSSF Contributors score: %d/10 (low organizational diversity)", ossfContributorScore))
+			verified = true
+			healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to OSSF Scorecard"})
+			healthChecks = append(healthChecks, models.CheckResult{Name: "OSSF Contributors (fallback)", Status: "FAIL", Detail: fmt.Sprintf("OSSF Contributors score %d/10 < 5 threshold (limited organizational diversity — few contributing companies)", ossfContributorScore)})
 		} else {
-			// Fallback 2: Maintainer count from package registry
-			maintainerCount := len(result.Metadata.Maintainers)
-			caps := models.GetEcosystemCapabilities(result.Dependency.Ecosystem)
-			if maintainerCount >= 2 {
-				points++
-				evidence = append(evidence, fmt.Sprintf("%d maintainers", maintainerCount))
-				verified = true
-				healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to maintainer count"})
-				healthChecks = append(healthChecks, models.CheckResult{Name: "Maintainer count (fallback)", Status: "PASS", Detail: fmt.Sprintf("%d maintainers >= 2 threshold", maintainerCount)})
-			} else if hasOSSFContributors && ossfContributorScore > 0 {
-				// OSSF data present but score < 5 — low organizational diversity
-				evidence = append(evidence, fmt.Sprintf("OSSF Contributors score: %d/10 (low organizational diversity)", ossfContributorScore))
-				verified = true
-				healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to OSSF Scorecard"})
-				healthChecks = append(healthChecks, models.CheckResult{Name: "OSSF Contributors (fallback)", Status: "FAIL", Detail: fmt.Sprintf("OSSF Contributors score %d/10 < 5 threshold (limited organizational diversity — few contributing companies)", ossfContributorScore)})
-			} else if maintainerCount > 0 {
-				evidence = append(evidence, fmt.Sprintf("Only %d maintainer(s)", maintainerCount))
-				verified = true
-				healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "Commit distribution unavailable; fell back to maintainer count"})
-				healthChecks = append(healthChecks, models.CheckResult{Name: "Maintainer count (fallback)", Status: "FAIL", Detail: fmt.Sprintf("Only %d maintainer(s) < 2 threshold", maintainerCount)})
-			} else if !caps.HasMaintainerList {
-				// Ecosystem doesn't expose this data — don't penalize
-				points++
-				evidence = append(evidence, fmt.Sprintf("Maintainer count unavailable (%s does not expose this data)", result.Dependency.Ecosystem))
-				healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: fmt.Sprintf("%s does not expose commit distribution or maintainer data; benefit of doubt awarded", result.Dependency.Ecosystem)})
-			} else {
-				healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "No commit distribution or maintainer data available"})
-			}
+			// No bus factor or OSSF data available — mark as unavailable.
+			// Maintainer count is NOT used here; it is assessed by Publisher Control.
+			healthChecks = append(healthChecks, models.CheckResult{Name: "Bus factor", Status: "UNAVAILABLE", Detail: "No commit distribution or OSSF contributor data available; maintainer count assessed by Publisher Control"})
 		}
 	}
 
