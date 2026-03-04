@@ -308,7 +308,7 @@ func TestScoreGovernance_RealPackages_PyPI_NoRepository(t *testing.T) {
 //                represent the unverified, highest-risk state without panicking.
 // Source: Defensive programming principle – zero value = safe default
 // Methodology: Create zero-value GovernanceMetrics, verify field semantics
-// Result: Zero value means: no docs, no response data, no abandonment flagged (yet)
+// Result: Zero value means: no docs, no response data
 func TestGovernanceMetrics_ZeroValueSemantics(t *testing.T) {
 	metrics := GovernanceMetrics{}
 
@@ -318,12 +318,6 @@ func TestGovernanceMetrics_ZeroValueSemantics(t *testing.T) {
 	}
 	if metrics.AvgIssueResponseDays != 0 {
 		t.Errorf("Zero value should have AvgIssueResponseDays=0, got %f", metrics.AvgIssueResponseDays)
-	}
-	if metrics.RecentActivityGap != 0 {
-		t.Errorf("Zero value should have RecentActivityGap=0, got %f", metrics.RecentActivityGap)
-	}
-	if metrics.HasAbandonmentPattern {
-		t.Error("Zero value should have HasAbandonmentPattern=false")
 	}
 	if metrics.Verified {
 		t.Error("Zero value should have Verified=false (unverified is the safe default)")
@@ -338,11 +332,9 @@ func TestGovernanceMetrics_ZeroValueSemantics(t *testing.T) {
 // Result: All governance flags set → struct represents lowest-risk profile
 func TestGovernanceMetrics_WellGovernedPackage(t *testing.T) {
 	metrics := GovernanceMetrics{
-		HasSecurityPolicy:     true,
-		AvgIssueResponseDays:  3.5, // Fast response (<7 days)
-		RecentActivityGap:     10.0,
-		HasAbandonmentPattern: false,
-		Verified:              true,
+		HasSecurityPolicy:    true,
+		AvgIssueResponseDays: 3.5, // Fast response (<7 days)
+		Verified:             true,
 	}
 
 	if !metrics.HasSecurityPolicy {
@@ -350,9 +342,6 @@ func TestGovernanceMetrics_WellGovernedPackage(t *testing.T) {
 	}
 	if metrics.AvgIssueResponseDays > 7 {
 		t.Errorf("Fast response should be <=7 days, got %f", metrics.AvgIssueResponseDays)
-	}
-	if metrics.HasAbandonmentPattern {
-		t.Error("Active package should not have abandonment pattern")
 	}
 	if !metrics.Verified {
 		t.Error("Expected Verified=true after successful data fetch")
@@ -413,18 +402,15 @@ func TestScoreGovernance_StrongGovernance(t *testing.T) {
 	}
 }
 
-// Test: Governance risk assessment – abandoned package (>180 days inactive)
-// Justification: Dormant packages that suddenly reactivate are a common supply chain
-//
-//	attack pattern. Abandoned packages are higher takeover risk.
-//
+// Test: Governance risk assessment – dormant package no longer penalized for dormancy
+// Justification: Dormancy is now assessed solely by Package Maturity to avoid
+//                triple-counting the same signal. Governance only checks for
+//                SECURITY.md, issue response times, and related process signals.
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
-//
-//	"Towards Measuring Supply Chain Attacks" (NDSS 2020)
-//
-// Methodology: Detect packages with >180 days of inactivity (live API call for docs check)
-// Result: Should assign 2 risk points and include abandonment evidence
-func TestScoreGovernance_AbandonedPackage(t *testing.T) {
+// Methodology: Set package with >180 days of inactivity, verify governance does NOT
+//              return early with abandonment penalty
+// Result: Risk points should reflect governance signals (docs, response), not dormancy
+func TestScoreGovernance_DormantPackageNotPenalizedForDormancy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test: makes real network calls to GitHub")
 	}
@@ -446,12 +432,13 @@ func TestScoreGovernance_AbandonedPackage(t *testing.T) {
 
 	score := analyzer.scoreGovernance(result)
 
-	// 8 months of inactivity → abandonment → maximum risk
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for abandoned package (8 months inactive), got %d", score.RiskPoints)
+	// Governance should NOT mention abandonment — that's Package Maturity's job
+	if containsSubstring(score.Description, "Abandoned") || containsSubstring(score.Description, "abandoned") {
+		t.Errorf("Governance should not penalize for dormancy (that's Package Maturity's job), got: %s", score.Description)
 	}
-	if score.Evidence == "" {
-		t.Error("Expected non-empty Evidence including abandonment information")
+	// Risk should be based on governance signals, not dormancy
+	if score.RiskPoints < 0 || score.RiskPoints > 2 {
+		t.Errorf("RiskPoints out of range [0,2]: %d", score.RiskPoints)
 	}
 }
 
@@ -543,7 +530,7 @@ func TestScoreGovernance_CategoryScoreStructure(t *testing.T) {
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/test/inactive",
 		Metadata: models.PackageMetadata{
-			RepoLastCommit: time.Now().AddDate(0, 0, -181), // 181 days — above 180-day threshold
+			RepoLastCommit: time.Now().AddDate(0, -1, 0), // 1 month ago
 			RepoCreatedAt:  time.Now().AddDate(-2, 0, 0),
 		},
 		Dependency: models.Dependency{
@@ -571,18 +558,20 @@ func TestScoreGovernance_CategoryScoreStructure(t *testing.T) {
 	}
 }
 
-// Test: Governance risk assessment - Abandonment threshold boundary (just over 180 days)
-// Justification: Packages inactive for more than 6 months trigger the abandonment override
+// Test: Governance risk assessment - dormancy no longer triggers abandonment override
+// Justification: Dormancy is now assessed solely by Package Maturity. Governance should
+//                evaluate packages based on their governance signals regardless of activity.
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
-// Methodology: Set RepoLastCommit to 181 days ago (above abandonment threshold)
-// Result: Should assign 2 risk points with abandonment description
-func TestScoreGovernance_AbandonedAboveThreshold(t *testing.T) {
+// Methodology: Set RepoLastCommit to 181 days ago, verify governance does NOT early-return
+//              with abandonment penalty
+// Result: Risk points should reflect governance signals, not dormancy
+func TestScoreGovernance_DormancyDoesNotTriggerAbandonmentOverride(t *testing.T) {
 	analyzer := NewAnalyzer()
 
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/test/inactive",
 		Metadata: models.PackageMetadata{
-			RepoLastCommit: time.Now().AddDate(0, 0, -181), // 181 days — above 180-day threshold
+			RepoLastCommit: time.Now().AddDate(0, 0, -181), // 181 days — above old 180-day threshold
 			RepoCreatedAt:  time.Now().AddDate(-2, 0, 0),
 		},
 		Dependency: models.Dependency{
@@ -594,11 +583,13 @@ func TestScoreGovernance_AbandonedAboveThreshold(t *testing.T) {
 
 	score := analyzer.scoreGovernance(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for 181-day inactive package, got %d", score.RiskPoints)
+	// Should NOT mention abandonment — that signal belongs to Package Maturity
+	if containsSubstring(score.Description, "bandoned") {
+		t.Errorf("Governance should not mention abandonment (Package Maturity owns that signal), got: %s", score.Description)
 	}
-	if !containsSubstring(score.Description, "bandoned") {
-		t.Errorf("Expected abandoned description, got: %s", score.Description)
+	// Risk should be in valid range and based on governance signals
+	if score.RiskPoints < 0 || score.RiskPoints > 2 {
+		t.Errorf("RiskPoints out of range [0,2]: %d", score.RiskPoints)
 	}
 }
 
@@ -725,14 +716,12 @@ func TestScoreGovernance_CategoryScoreStructure_ArchivedFast(t *testing.T) {
 // Justification: Ensure GovernanceMetrics correctly tracks compromise-relevant governance indicators
 // Source: OSSF Scorecard Specification (Security Policy check)
 // Methodology: Validate structure fields and types
-// Result: GovernanceMetrics should contain security policy, responsiveness, and abandonment fields
+// Result: GovernanceMetrics should contain security policy and responsiveness fields
 func TestGovernanceMetrics_Structure(t *testing.T) {
 	metrics := &GovernanceMetrics{
-		HasSecurityPolicy:     true,
-		AvgIssueResponseDays:  3.5,
-		RecentActivityGap:     10.0,
-		HasAbandonmentPattern: false,
-		Verified:              true,
+		HasSecurityPolicy:    true,
+		AvgIssueResponseDays: 3.5,
+		Verified:             true,
 	}
 
 	if !metrics.HasSecurityPolicy {
@@ -780,11 +769,11 @@ func TestScoreGovernance_RiskThresholds(t *testing.T) {
 			expectedVerify: true,
 		},
 		{
-			name:           "Abandoned (8 months inactive)",
+			name:           "Inactive package — scored on governance signals not dormancy",
 			repoURL:        "https://github.com/test/pkg",
 			lastCommit:     time.Now().AddDate(0, -8, 0),
 			expectedRisk:   2,
-			expectedVerify: true, // Verified=true because we reached analyzeGovernance
+			expectedVerify: true, // Verified=true because we reached analyzeGovernance (risk=2 from no governance docs, not dormancy)
 		},
 	}
 

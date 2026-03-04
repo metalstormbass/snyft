@@ -3,7 +3,6 @@ package analyzer
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/metalstormbass/snyft/pkg/fetcher"
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -13,8 +12,6 @@ import (
 type GovernanceMetrics struct {
 	HasSecurityPolicy    bool    // SECURITY.md — indicates vulnerability disclosure process
 	AvgIssueResponseDays float64
-	RecentActivityGap    float64 // Days since last activity
-	HasAbandonmentPattern bool
 	Verified             bool
 }
 
@@ -33,7 +30,7 @@ type GovernanceMetrics struct {
 // Methodology: Check for SECURITY.md (+ .github/SECURITY.md), CONTRIBUTING.md,
 //
 //	CODEOWNERS, CODE_OF_CONDUCT.md files via Git API;
-//	Analyze issue response times; Detect dormancy patterns
+//	Analyze issue response times
 //
 // Result: Assigns 0-2 risk points based on governance quality and abandonment signals
 func (a *Analyzer) analyzeGovernance(result *models.AnalysisResult, repoURL string) *GovernanceMetrics {
@@ -56,18 +53,6 @@ func (a *Analyzer) analyzeGovernance(result *models.AnalysisResult, repoURL stri
 			if avgResponseTime, err := ghClient.GetAverageIssueResponseTime(repoURL); err == nil {
 				metrics.AvgIssueResponseDays = avgResponseTime
 			}
-		}
-	}
-
-	// Check for abandonment patterns
-	if !result.Metadata.RepoLastCommit.IsZero() {
-		daysSinceLastCommit := time.Since(result.Metadata.RepoLastCommit).Hours() / 24
-		metrics.RecentActivityGap = daysSinceLastCommit
-
-		// Abandonment pattern: long inactivity followed by sudden release
-		// This is already checked in scoreReleaseAnomalies, but we track it here too
-		if daysSinceLastCommit > 180 { // 6 months of inactivity
-			metrics.HasAbandonmentPattern = true
 		}
 	}
 
@@ -103,7 +88,7 @@ func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repo
 // Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
 //         "Towards Measuring Supply Chain Attacks" (NDSS 2020)
 //         OSSF Scorecard Specification (Security Policy check)
-// Methodology: Check for SECURITY.md, issue response times, abandonment signals
+// Methodology: Check for SECURITY.md, issue response times
 //
 // Scoring (two components):
 //   Security Policy (0-1 pt): SECURITY.md present or OSSF Security-Policy >= 5
@@ -111,25 +96,24 @@ func (a *Analyzer) checkGovernanceFile(gitClient fetcher.GitPlatformClient, repo
 //   Total 2 points = 0 risk (responsive + security policy)
 //   Total 1 point  = 1 risk (partial signals)
 //   Total 0 points = 2 risk (no signals)
-//   Override: Archived repos and abandoned packages (>180 days) always get 2 risk
+//   Override: Archived repos always get 2 risk
 func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.CategoryScore {
 	// Source: OSSF Scorecard; Backstabber's Knife Collection (Ohm et al., 2020)
-	govMethodology := "Checked for SECURITY.md (and .github/SECURITY.md) via Git API. Analyzed issue response times via GitHub API. Checked OSSF Scorecard Security-Policy score. Detected abandonment via last commit date. Checked for contributing/release documentation (CONTRIBUTING.md, RELEASING.md, RELEASE.md)."
+	govMethodology := "Checked for SECURITY.md (and .github/SECURITY.md) via Git API. Analyzed issue response times via GitHub API. Checked OSSF Scorecard Security-Policy score. Checked for contributing/release documentation (CONTRIBUTING.md, RELEASING.md, RELEASE.md)."
 
 	// Early return if no repository URL
 	if result.RepositoryURL == "" {
 		return models.CategoryScore{
 			Score:       1,
 			RiskPoints:  1,
-			Description: "No source repository URL found — unable to check for SECURITY.md, issue response times, or abandonment patterns. Governance quality is unknown.",
+			Description: "No source repository URL found — unable to check for SECURITY.md or issue response times. Governance quality is unknown.",
 			Evidence:    "No source repository URL found; further investigation recommended",
 			Verified:    false,
 			DataAvailable: false,
-			Methodology: "No repository URL available. Could not check for SECURITY.md, issue response times, or abandonment patterns.",
+			Methodology: "No repository URL available. Could not check for SECURITY.md or issue response times.",
 			ChecksPerformed: []models.CheckResult{
 				{Name: "SECURITY.md", Status: "SKIPPED", Detail: "No repository URL to check"},
 				{Name: "Issue response time", Status: "SKIPPED", Detail: "No repository URL to check"},
-				{Name: "Abandonment detection", Status: "SKIPPED", Detail: "No repository URL to check"},
 				{Name: "OSSF Security-Policy", Status: "SKIPPED", Detail: "No repository URL to check"},
 			},
 		}
@@ -151,26 +135,9 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 		}
 	}
 
-	// Early return for abandoned packages
-	if !result.Metadata.RepoLastCommit.IsZero() {
-		daysSince := time.Since(result.Metadata.RepoLastCommit).Hours() / 24
-		if daysSince > 180 {
-			return models.CategoryScore{
-				Score:       0,
-				RiskPoints:  2,
-				Description: fmt.Sprintf("No commits in %.0f days (last commit: %s). Abandoned projects have no active governance — maintainer accounts may be unmonitored and vulnerable to takeover.", daysSince, result.Metadata.RepoLastCommit.Format("2006-01-02")),
-				Evidence:    fmt.Sprintf("Abandoned: %.0f days since last commit", daysSince),
-				Verified:    true,
-				DataAvailable: true,
-				Methodology: govMethodology,
-				ChecksPerformed: []models.CheckResult{
-					{Name: "Abandonment detection", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (>180 day threshold)", daysSince)},
-				},
-			}
-		}
-	}
-
 	// Analyze governance metrics
+	// Note: dormancy/staleness is assessed solely by Package Maturity to avoid
+	// triple-counting the same signal across multiple categories.
 	govMetrics := a.analyzeGovernance(result, result.RepositoryURL)
 
 	if !govMetrics.Verified {
@@ -247,11 +214,6 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 	} else {
 		govChecks = append(govChecks, models.CheckResult{Name: "Issue response time", Status: "UNAVAILABLE", Detail: "No issue response data available"})
 		govChecks = append(govChecks, models.CheckResult{Name: "Release documentation", Status: "FAIL", Detail: "No contributing/release documentation found"})
-	}
-
-	if govMetrics.RecentActivityGap > 90 {
-		evidenceParts = append(evidenceParts, fmt.Sprintf("Inactive: %.0f days since last commit", govMetrics.RecentActivityGap))
-		govChecks = append(govChecks, models.CheckResult{Name: "Recent activity", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (> 90 day concern threshold)", govMetrics.RecentActivityGap)})
 	}
 
 	// -----------------------------------------------------------------------
