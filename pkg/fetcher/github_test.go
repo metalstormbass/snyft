@@ -1513,6 +1513,184 @@ func TestGetCommitAuthors_MockServer429(t *testing.T) {
 	}
 }
 
+// Test: normalizeAuthorID correctly handles GitHub noreply emails and regular emails
+// Justification: GitHub noreply emails (e.g., "12345+user@users.noreply.github.com") cause
+//                the same person to be counted as two different authors when they also commit
+//                with their personal email. This inflates unique author counts and can trigger
+//                false "team replacement" alerts — a primary ownership takeover signal.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — accurate author counting is
+//         essential for ownership transfer detection; inflated counts produce false positives.
+// Methodology: Unit test normalizeAuthorID with various email formats.
+// Result: GitHub noreply emails are normalized to the username; regular emails are lowercased.
+func TestNormalizeAuthorID(t *testing.T) {
+	tests := []struct {
+		name     string
+		email    string
+		gitName  string
+		expected string
+	}{
+		{"GitHub noreply with numeric prefix", "12345+antonkueltz@users.noreply.github.com", "Anton Kueltz", "antonkueltz"},
+		{"GitHub noreply without prefix", "antonkueltz@users.noreply.github.com", "Anton Kueltz", "antonkueltz"},
+		{"Regular email", "kueltz.anton@gmail.com", "Anton Kueltz", "kueltz.anton@gmail.com"},
+		{"Regular email with caps", "Kueltz.Anton@Gmail.com", "Anton Kueltz", "kueltz.anton@gmail.com"},
+		{"Empty email falls back to name", "", "Anton Kueltz", "anton kueltz"},
+		{"Both empty", "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeAuthorID(tt.email, tt.gitName)
+			if result != tt.expected {
+				t.Errorf("normalizeAuthorID(%q, %q) = %q, want %q", tt.email, tt.gitName, result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test: isBotCommitAuthor correctly identifies bot accounts
+// Justification: Bot commits (dependabot, renovate, GitHub Actions) inflate unique author
+//                counts and distort ownership analysis. A project with 18 human contributors
+//                and 3 bot accounts would show 21 unique authors, producing inflated
+//                "historical authors stepped back" counts in team replacement detection.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — ownership transfer detection
+//         should only consider human contributors to avoid false positives.
+// Methodology: Unit test isBotCommitAuthor with known bot patterns.
+// Result: Bot emails/names return true; human emails/names return false.
+func TestIsBotCommitAuthor(t *testing.T) {
+	tests := []struct {
+		name     string
+		email    string
+		gitName  string
+		expected bool
+	}{
+		{"Dependabot", "dependabot[bot]@users.noreply.github.com", "dependabot[bot]", true},
+		{"Renovate bot", "renovate[bot]@users.noreply.github.com", "renovate[bot]", true},
+		{"GitHub Actions", "github-actions[bot]@users.noreply.github.com", "github-actions[bot]", true},
+		{"Greenkeeper", "greenkeeper[bot]@users.noreply.github.com", "greenkeeper[bot]", true},
+		{"Bot by name only", "someone@example.com", "my-custom[bot]", true},
+		{"GitHub noreply (not a bot)", "noreply@github.com", "GitHub", true},
+		{"Regular human", "user@example.com", "Some Developer", false},
+		{"Human with noreply suffix", "12345+user@users.noreply.github.com", "Some Developer", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isBotCommitAuthor(tt.email, tt.gitName)
+			if result != tt.expected {
+				t.Errorf("isBotCommitAuthor(%q, %q) = %v, want %v", tt.email, tt.gitName, result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test: Mock server commit author analysis correctly deduplicates noreply emails
+// Justification: When a maintainer commits with both their personal email and GitHub's
+//                noreply address, the same person should be counted once — not flagged as
+//                a "new" author replacing themselves. Without deduplication, a project like
+//                fastecdsa (18 contributors, 1 active maintainer) shows "1/1 recent authors
+//                are new (100% team change; 21 historical authors stepped back)" — a false
+//                positive that incorrectly signals malicious ownership transfer.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — accurate author identification
+//         is prerequisite for ownership transfer detection.
+// Methodology: Mock server returns commits from the same person using two different emails
+//              (personal + GitHub noreply). Verify they are counted as one author.
+// Result: Single unique author, no team replacement flagged.
+func TestGetCommitAuthors_DeduplicatesNoreplyEmails(t *testing.T) {
+	now := time.Now()
+	commits := []GitHubCommit{
+		{Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Anton Kueltz", Email: "12345+antonkueltz@users.noreply.github.com", Date: now.AddDate(0, 0, -10)}}},
+		{Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Anton Kueltz", Email: "kueltz.anton@gmail.com", Date: now.AddDate(0, -6, 0)}}},
+		{Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Anton Kueltz", Email: "kueltz.anton@gmail.com", Date: now.AddDate(-1, 0, 0)}}},
+	}
+
+	page := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		w.Header().Set("Content-Type", "application/json")
+		if page == 1 {
+			json.NewEncoder(w).Encode(commits)
+		} else {
+			json.NewEncoder(w).Encode([]GitHubCommit{})
+		}
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	stats, err := client.GetCommitAuthors("https://github.com/AntonKueltz/fastecdsa")
+	if err != nil {
+		t.Fatalf("GetCommitAuthors() unexpected error: %v", err)
+	}
+
+	// Both emails should resolve to the same author via name-based dedup
+	// (noreply normalizes to "antonkueltz", personal stays as email, but same name merges them)
+	if len(stats.UniqueAuthors) != 1 {
+		t.Errorf("Expected 1 unique author after dedup, got %d: %v", len(stats.UniqueAuthors), stats.UniqueAuthors)
+	}
+
+	if len(stats.RecentAuthors) != 1 {
+		t.Errorf("Expected 1 recent author, got %d", len(stats.RecentAuthors))
+	}
+
+	// Should NOT have historical authors — the single author is recent
+	if len(stats.HistoricalAuthors) != 0 {
+		t.Errorf("Expected 0 historical authors (author is still active), got %d", len(stats.HistoricalAuthors))
+	}
+}
+
+// Test: Bot commits are filtered from author statistics
+// Justification: Bot accounts like dependabot inflate unique author counts. A project
+//                with 5 human contributors and 2 bot accounts should report 5 unique
+//                authors, not 7. Inflated counts cause false positives in ownership
+//                transfer detection.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — ownership analysis
+//         should track human maintainers, not automated tooling.
+// Methodology: Mock server returns commits from humans and bots. Verify bots are excluded.
+// Result: Only human authors appear in stats.
+func TestGetCommitAuthors_FiltersBotCommits(t *testing.T) {
+	now := time.Now()
+	commits := []GitHubCommit{
+		{Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "Human Dev", Email: "dev@example.com", Date: now.AddDate(0, 0, -5)}}},
+		{Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "dependabot[bot]", Email: "dependabot[bot]@users.noreply.github.com", Date: now.AddDate(0, 0, -3)}}},
+		{Commit: GitHubCommitInfo{Author: GitHubCommitAuthor{Name: "renovate[bot]", Email: "renovate[bot]@users.noreply.github.com", Date: now.AddDate(0, 0, -7)}}},
+	}
+
+	page := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		w.Header().Set("Content-Type", "application/json")
+		if page == 1 {
+			json.NewEncoder(w).Encode(commits)
+		} else {
+			json.NewEncoder(w).Encode([]GitHubCommit{})
+		}
+	}))
+	defer server.Close()
+
+	client := &GitHubClient{
+		httpClient: &http.Client{},
+		baseURL:    server.URL,
+		cache:      newRepoCache(),
+	}
+
+	stats, err := client.GetCommitAuthors("https://github.com/owner/repo")
+	if err != nil {
+		t.Fatalf("GetCommitAuthors() unexpected error: %v", err)
+	}
+
+	if len(stats.UniqueAuthors) != 1 {
+		t.Errorf("Expected 1 unique author (bots filtered), got %d: %v", len(stats.UniqueAuthors), stats.UniqueAuthors)
+	}
+
+	if stats.TotalCommits != 1 {
+		t.Errorf("Expected 1 total commit (bot commits excluded), got %d", stats.TotalCommits)
+	}
+}
+
 // Test: GetRepositoryInfo returns cached result on second call without hitting the server
 // Justification: Caching reduces redundant network calls. A single package
 //

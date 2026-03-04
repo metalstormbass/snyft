@@ -504,40 +504,35 @@ func (c *BitbucketClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, 
 		HistoricalAuthors:  []string{},
 	}
 
-	ninetyDaysAgo := time.Now().AddDate(0, 0, -90)
-
 	for _, commit := range commits {
 		authorName := commit.Commit.Author.Name
+		authorEmail := "" // Bitbucket uses name as primary identifier
 		if authorName == "" {
 			continue
 		}
 
+		if isBotCommitAuthor(authorEmail, authorName) {
+			continue
+		}
+
+		authorID := normalizeAuthorID(authorEmail, authorName)
+		if authorID == "" {
+			continue
+		}
+
 		stats.TotalCommits++
-		stats.AuthorCommitCounts[authorName]++
+		stats.AuthorCommitCounts[authorID]++
 
 		commitDate := commit.Commit.Author.Date
-		if firstCommit, exists := stats.AuthorFirstCommit[authorName]; !exists || commitDate.Before(firstCommit) {
-			stats.AuthorFirstCommit[authorName] = commitDate
+		if firstCommit, exists := stats.AuthorFirstCommit[authorID]; !exists || commitDate.Before(firstCommit) {
+			stats.AuthorFirstCommit[authorID] = commitDate
 		}
-		if lastCommit, exists := stats.AuthorLastCommit[authorName]; !exists || commitDate.After(lastCommit) {
-			stats.AuthorLastCommit[authorName] = commitDate
+		if lastCommit, exists := stats.AuthorLastCommit[authorID]; !exists || commitDate.After(lastCommit) {
+			stats.AuthorLastCommit[authorID] = commitDate
 		}
 	}
 
-	// Categorize authors
-	seen := make(map[string]bool)
-	for authorID, lastCommit := range stats.AuthorLastCommit {
-		if !seen[authorID] {
-			stats.UniqueAuthors = append(stats.UniqueAuthors, authorID)
-			seen[authorID] = true
-
-			if lastCommit.After(ninetyDaysAgo) {
-				stats.RecentAuthors = append(stats.RecentAuthors, authorID)
-			} else {
-				stats.HistoricalAuthors = append(stats.HistoricalAuthors, authorID)
-			}
-		}
-	}
+	finalizeCommitAuthorStats(stats)
 
 	return stats, nil
 }
