@@ -221,7 +221,12 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 					fmt.Sprintf("PyPI: %d historical author changes", pypiHistory.AuthorChanges))
 				ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "FAIL", Detail: fmt.Sprintf("%d historical author changes detected", pypiHistory.AuthorChanges)})
 			} else {
-				if riskPoints > 0 {
+				// Only let PyPI "stable ownership" override git-based analysis
+				// when actual per-release uploader data is available. PyPI's
+				// public JSON API typically returns "" for the uploader field,
+				// causing all releases to be attributed to the current author,
+				// which masks real ownership changes detected by git analysis.
+				if pypiHistory.UploaderDataAvailable && riskPoints > 0 {
 					riskPoints = 0
 				}
 				if pypiHistory.CurrentAuthor != "" {
@@ -230,7 +235,11 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 				} else {
 					evidenceParts = append(evidenceParts, "PyPI: No ownership changes detected")
 				}
-				ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "PASS", Detail: "Stable ownership, no transfers detected"})
+				if pypiHistory.UploaderDataAvailable {
+					ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "PASS", Detail: "Stable ownership confirmed via per-release uploader data"})
+				} else {
+					ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "SKIPPED", Detail: "Per-release uploader data unavailable; deferring to git-based analysis"})
+				}
 			}
 		} else {
 			ownerChecks = append(ownerChecks, models.CheckResult{Name: "PyPI ownership history", Status: "UNAVAILABLE", Detail: "Could not fetch PyPI ownership history"})

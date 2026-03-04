@@ -145,8 +145,9 @@ type PackageMetadata struct {
 	TotalReleaseCount int               `json:"total_release_count"` // 0 means no GitHub releases to check
 
 	// Provenance information
-	HasNPMProvenance     bool  `json:"has_npm_provenance"`
-	HasMavenGPGSignature bool  `json:"has_maven_gpg_signature"`       // Maven Central GPG .asc signature
+	HasNPMProvenance     bool   `json:"has_npm_provenance"`
+	HasPyPIAttestation   bool   `json:"has_pypi_attestation"`          // PEP 740 / Trusted Publisher attestation
+	HasMavenGPGSignature bool   `json:"has_maven_gpg_signature"`       // Maven Central GPG .asc signature
 	ProvenanceDetails    string `json:"provenance_details,omitempty"`  // Additional context
 
 	// Health metrics (Category 7)

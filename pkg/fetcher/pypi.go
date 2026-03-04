@@ -598,6 +598,12 @@ type PyPIOwnershipHistory struct {
 	AuthorChanges     int
 	RecentTransfer    bool
 	TransferDate      time.Time
+	// UploaderDataAvailable indicates whether actual per-release uploader data
+	// was found. PyPI's public JSON API typically returns "" for the uploader
+	// field, so all releases get attributed to the current info.Author. When
+	// this is false, the ownership history is unreliable and should NOT be used
+	// to override git-based ownership analysis.
+	UploaderDataAvailable bool
 }
 
 // GetOwnershipHistory analyzes package owner/author changes over time.
@@ -662,12 +668,15 @@ func (c *PyPIClient) GetOwnershipHistory(packageName string) (*PyPIOwnershipHist
 	// and fall back to info.Author so that at minimum the current author is recorded
 	// for each release, enabling release timestamp tracking even when per-release
 	// uploader history is unavailable via the public API.
+	uploaderDataFound := false
 	for _, releaseFiles := range pypiResp.Releases {
 		if len(releaseFiles) > 0 {
 			file := releaseFiles[0]
 			// Prefer per-file uploader when present; fall back to info-level author.
 			author := file.Uploader
-			if author == "" {
+			if author != "" {
+				uploaderDataFound = true
+			} else {
 				author = pypiResp.Info.Author
 			}
 			if author != "" {
@@ -679,6 +688,7 @@ func (c *PyPIClient) GetOwnershipHistory(packageName string) (*PyPIOwnershipHist
 			}
 		}
 	}
+	history.UploaderDataAvailable = uploaderDataFound
 
 	// Sort releases by date (oldest first)
 	sort.Slice(releases, func(i, j int) bool {
@@ -733,6 +743,48 @@ func (c *PyPIClient) scrapePyPIOwnershipHistory(packageName string) (*PyPIOwners
 		AuthorChanges:     0,
 		RecentTransfer:    false,
 	}, nil
+}
+
+// CheckPyPIAttestation checks if a PyPI package has PEP 740 / Trusted Publisher
+// attestations. PyPI's Trusted Publishers allow packages to be published from
+// trusted CI/CD environments (GitHub Actions, GitLab CI, etc.) with verifiable
+// provenance, eliminating the need for long-lived API tokens.
+//
+// Detection: checks the latest release's files for a non-empty "provenance" field
+// (PEP 740 attestation URL), which indicates the package uses Trusted Publishers.
+//
+// Source: PEP 740 — https://peps.python.org/pep-0740/
+func (c *PyPIClient) CheckPyPIAttestation(packageName string) (bool, error) {
+	url := fmt.Sprintf("%s/%s/json", c.baseURL, packageName)
+
+	resp, err := c.httpClient.Get(url)
+	if err != nil {
+		return false, fmt.Errorf("PyPI API request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("PyPI API returned status %d", resp.StatusCode)
+	}
+
+	var pypiResp struct {
+		Info PyPIInfo  `json:"info"`
+		Urls []PyPIURL `json:"urls"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pypiResp); err != nil {
+		return false, fmt.Errorf("failed to decode PyPI response: %w", err)
+	}
+
+	// Check the latest version's distribution files for PEP 740 attestations.
+	// A non-empty "provenance" field indicates the package was published via
+	// a Trusted Publisher with verifiable provenance.
+	for _, file := range pypiResp.Urls {
+		if file.Provenance != "" {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // PyPIFullResponse includes releases data
