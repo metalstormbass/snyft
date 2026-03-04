@@ -19,8 +19,7 @@ snyft/
 │   ├── parser/             # Manifest parsers (JS, Python, Java)
 │   ├── fetcher/            # API clients + web scraping fallbacks
 │   │                       # (GitHub, GitLab, Bitbucket, npm, PyPI, Maven, OSSF)
-│   ├── analyzer/           # 10-category scoring engine
-│   ├── ai/                 # Claude AI integration (attack patterns, executive summaries)
+│   ├── analyzer/           # 10-category scoring engine + historical compromise detection
 │   └── report/             # Multi-format output (text, markdown, JSON, HTML)
 ├── examples/               # Example projects for testing
 ├── main.go                 # Entry point
@@ -63,6 +62,8 @@ Core scoring engine with 10 independent categories (0-2 points each, except Depe
 10. Package Maturity
 
 Source code verification runs first (checks tarball/sdist/sources.jar + git tags), then each category is scored independently.
+
+A separate **historical compromise check** (`known_compromises.go`) matches scanned packages against a curated list of documented supply chain attacks (account takeovers, social engineering, protestware). Matches produce a HIGH finding with attack details and references.
 
 ### Report Layer (pkg/report/)
 
