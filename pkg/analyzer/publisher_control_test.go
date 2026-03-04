@@ -1979,3 +1979,353 @@ func TestAnalyzePublisherControl_PopulatesDownloadData(t *testing.T) {
 		t.Errorf("Expected MEDIUM or lower risk for high-download single maintainer, got HIGH (evidence: %s)", analysis.Evidence)
 	}
 }
+
+// ============================================================
+// Organizational publisher detection tests
+// These tests verify that packages published by organizational accounts
+// (npm scopes, PyPI org maintainers, Maven corporate groupIds) are NOT
+// incorrectly flagged as single-maintainer HIGH risk.
+// ============================================================
+
+// Test: npm org scope (@aws-sdk/*) with single registry maintainer = LOW/MEDIUM (not HIGH)
+// Justification: npm org scopes represent institutional publishers. The "single maintainer"
+//   is actually an org account managed by a team with internal access controls.
+//   AWS SDK packages are published by the AWS org, not an individual developer.
+// Source: npm organization documentation — org scopes require team management;
+//         "Backstabber's Knife Collection" (Ohm et al., 2020) — account takeover risk
+//         is mitigated by institutional credential management
+// Methodology: Set package name with @aws-sdk scope, single maintainer, verify
+//   org publisher is detected and risk is not HIGH
+// Result: IsOrgPublisher=true, risk <= MEDIUM
+func TestOrgPublisher_NPM_AwsSdkScope(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "@aws-sdk/client-s3",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"aws-sdk-team <aws-sdk@amazon.com>"},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for @aws-sdk scope")
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("@aws-sdk package should NOT be HIGH risk, got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
+	}
+	if !strings.Contains(analysis.OrgPublisherReason, "@aws-sdk") {
+		t.Errorf("Expected org reason to mention @aws-sdk, got: %s", analysis.OrgPublisherReason)
+	}
+}
+
+// Test: npm org scope (@google-cloud/*) detected as org publisher
+// Justification: Google Cloud packages are published by the @google-cloud org scope.
+//   The registry shows one publisher account but it represents Google's infrastructure team.
+// Source: npm organization documentation
+// Methodology: Set package name with @google-cloud scope, verify detection
+// Result: IsOrgPublisher=true
+func TestOrgPublisher_NPM_GoogleCloudScope(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "@google-cloud/storage",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"google-cloud <google-cloud@google.com>"},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for @google-cloud scope")
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("@google-cloud package should NOT be HIGH risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: Non-scoped npm package with single maintainer is NOT org publisher
+// Justification: Regular npm packages without org scopes should still be assessed
+//   normally. Only known org scopes get the org publisher treatment.
+// Source: npm organization documentation
+// Methodology: Set non-scoped package name, single maintainer, verify no org detection
+// Result: IsOrgPublisher=false, normal single-maintainer scoring
+func TestOrgPublisher_NPM_NonScopedPackage_NotDetected(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "lodash",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"jdalton <john@gmail.com>"},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=false for non-scoped npm package")
+	}
+}
+
+// Test: PyPI package with known org maintainer (e.g. boto3 from AWS)
+// Justification: boto3/botocore are published by "Amazon Web Services" on PyPI.
+//   The single maintainer account represents AWS's release team, not an individual.
+// Source: PyPI package pages for boto3/botocore
+// Methodology: Set maintainer to known org name, verify detection
+// Result: IsOrgPublisher=true, risk not HIGH
+func TestOrgPublisher_PyPI_Boto3_AWS(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "boto3",
+			Ecosystem: models.EcosystemPyPI,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"Amazon Web Services"},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for boto3 (Amazon Web Services)")
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("boto3 (AWS) should NOT be HIGH risk, got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
+	}
+}
+
+// Test: PyPI Pallets org packages (flask, jinja2, click) detected as org publisher
+// Justification: Pallets team publishes flask/jinja2/click/werkzeug under a single
+//   org account. Despite appearing as "single maintainer", it's an organizational publisher.
+// Source: PyPI package pages for flask, jinja2, click
+// Methodology: Set maintainer to "pallets", verify detection
+// Result: IsOrgPublisher=true
+func TestOrgPublisher_PyPI_Pallets(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "flask",
+			Ecosystem: models.EcosystemPyPI,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"pallets"},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for flask (pallets)")
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Flask (Pallets) should NOT be HIGH risk, got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
+	}
+}
+
+// Test: PyPI individual maintainer is NOT detected as org publisher
+// Justification: Individual PyPI maintainers should not get org publisher treatment.
+//   Only known organizational accounts should be detected.
+// Source: PyPI package pages
+// Methodology: Set maintainer to personal name, verify no org detection
+// Result: IsOrgPublisher=false
+func TestOrgPublisher_PyPI_IndividualMaintainer_NotDetected(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "passlib",
+			Ecosystem: models.EcosystemPyPI,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"Eli Collins <elic@assurancetechnologies.com>"},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=false for individual PyPI maintainer")
+	}
+}
+
+// Test: Maven groupId com.google.* detected as org publisher
+// Justification: Maven Central requires domain ownership verification for groupIds.
+//   com.google.* packages are published by Google's release infrastructure.
+// Source: Maven Central groupId ownership rules
+// Methodology: Set package name with com.google groupId, verify detection
+// Result: IsOrgPublisher=true, risk not HIGH
+func TestOrgPublisher_Maven_Google(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:  1,
+		SingleMaintainer: true,
+		PackageName:      "com.google.guava:guava",
+		Ecosystem:        models.EcosystemMaven,
+	}
+
+	analysis.detectOrgPublisher()
+	analysis.calculateRiskScore()
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for com.google.guava")
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Google Maven package should NOT be HIGH risk, got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
+	}
+}
+
+// Test: Maven groupId com.amazonaws detected as org publisher
+// Justification: com.amazonaws groupId is owned by Amazon, proven via domain verification.
+// Source: Maven Central groupId ownership rules
+// Methodology: Set package name with com.amazonaws groupId, verify detection
+// Result: IsOrgPublisher=true
+func TestOrgPublisher_Maven_AWS(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:  1,
+		SingleMaintainer: true,
+		PackageName:      "com.amazonaws:aws-java-sdk-s3",
+		Ecosystem:        models.EcosystemMaven,
+	}
+
+	analysis.detectOrgPublisher()
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for com.amazonaws")
+	}
+}
+
+// Test: Maven groupId org.apache detected as org publisher
+// Justification: Apache Software Foundation packages use org.apache groupId.
+// Source: Maven Central groupId ownership rules
+// Methodology: Set package name with org.apache groupId, verify detection
+// Result: IsOrgPublisher=true
+func TestOrgPublisher_Maven_Apache(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:  1,
+		SingleMaintainer: true,
+		PackageName:      "org.apache.commons:commons-lang3",
+		Ecosystem:        models.EcosystemMaven,
+	}
+
+	analysis.detectOrgPublisher()
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for org.apache")
+	}
+}
+
+// Test: Maven groupId org.springframework detected as org publisher
+// Justification: Spring Framework packages use org.springframework groupId.
+// Source: Maven Central groupId ownership rules
+// Methodology: Set package name with org.springframework groupId, verify detection
+// Result: IsOrgPublisher=true
+func TestOrgPublisher_Maven_Spring(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:  1,
+		SingleMaintainer: true,
+		PackageName:      "org.springframework:spring-core",
+		Ecosystem:        models.EcosystemMaven,
+	}
+
+	analysis.detectOrgPublisher()
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for org.springframework")
+	}
+}
+
+// Test: Maven unknown groupId is NOT detected as org publisher
+// Justification: Unknown groupIds should not get org publisher treatment.
+// Source: Maven Central groupId ownership rules
+// Methodology: Set package with unknown groupId, verify no detection
+// Result: IsOrgPublisher=false
+func TestOrgPublisher_Maven_Unknown_NotDetected(t *testing.T) {
+	analysis := &PublisherControlAnalysis{
+		MaintainerCount:  1,
+		SingleMaintainer: true,
+		PackageName:      "com.example:my-library",
+		Ecosystem:        models.EcosystemMaven,
+	}
+
+	analysis.detectOrgPublisher()
+
+	if analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=false for unknown Maven groupId")
+	}
+}
+
+// Test: Org publisher detection does NOT apply to multi-maintainer packages
+// Justification: The org publisher detection is only relevant when there's a single
+//   registry maintainer. Multi-maintainer packages already correctly show multiple
+//   maintainers and don't need this mitigation.
+// Source: npm/PyPI/Maven documentation
+// Methodology: Set multi-maintainer package with org scope, verify no org detection
+// Result: IsOrgPublisher=false (multi-maintainer doesn't need it)
+func TestOrgPublisher_MultiMaintainer_Skipped(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "@aws-sdk/client-dynamodb",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{
+				"dev1@amazon.com",
+				"dev2@amazon.com",
+			},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=false for multi-maintainer package (not needed)")
+	}
+}
+
+// Test: @types/* scope detected as org publisher
+// Justification: DefinitelyTyped @types packages are published by the DefinitelyTyped
+//   org bot. The single publisher account manages thousands of type definition packages.
+// Source: DefinitelyTyped project documentation
+// Methodology: Set @types scoped package, verify org detection
+// Result: IsOrgPublisher=true
+func TestOrgPublisher_NPM_TypesScope(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "@types/node",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"types <ts-npm-types@microsoft.com>"},
+		},
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.IsOrgPublisher {
+		t.Error("Expected IsOrgPublisher=true for @types scope")
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("@types package should NOT be HIGH risk, got %s", analysis.RiskLevel)
+	}
+}
