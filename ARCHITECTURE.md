@@ -42,15 +42,14 @@ Extracts dependencies from manifest files using a strategy/dispatcher pattern.
 
 ### Fetcher Layer (pkg/fetcher/)
 
-API clients for external services with retry logic and rate limiting awareness. Each client has web scraping fallbacks for when APIs fail or rate-limit.
+Data collection via web scraping, bare git clones, and package registry APIs. No GitHub API keys required.
 
-- **GitHub/GitLab/Bitbucket**: Repository metadata, CI detection, releases, provenance
-- **npm/PyPI/Maven**: Package metadata, version info, maintainer data
-- **OSSF**: OpenSSF Scorecard security metrics
+- **GitHub/GitLab/Bitbucket**: Repository metadata via web scraping and bare git clone (commits, tags, CI configs, contributors)
+- **npm/PyPI/Maven**: Package metadata, version info, maintainer data via registry APIs
 
 ### Analyzer Layer (pkg/analyzer/)
 
-Core scoring engine with 10 categories (0-2 points each, 0-20 total):
+Core scoring engine with 10 independent categories (0-2 points each):
 
 1. Publisher Control
 2. Ownership Changes
@@ -96,4 +95,4 @@ Graceful degradation: if any API fails, analysis continues with available data. 
 
 ## Performance
 
-Primary bottleneck is external network calls. Mitigated by parallel workers, configurable concurrency, and response caching. Web scraping is the primary data source, bypassing API rate limits. Optional API tokens (GITHUB_TOKEN, etc.) supplement with richer data at higher rate limits (5,000 req/hour).
+Primary bottleneck is external network calls. Mitigated by parallel workers, configurable concurrency, bare git clone pooling, and response caching. Web scraping and git clones are the sole data sources — no API keys or rate limits to manage.
