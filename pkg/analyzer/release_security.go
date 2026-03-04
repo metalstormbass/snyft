@@ -20,9 +20,9 @@ import (
 //         SLSA Build Level Requirements (https://slsa.dev/spec/v1.0/levels)
 // Methodology:
 //   - Check HasAutomatedReleases via CI/CD detection
-//   - Query branch protection rules via GitHub/GitLab/Bitbucket APIs (with OSSF fallback)
+//   - Check branch protection via OSSF Scorecard
 //   - Verify signed releases via GetProvenanceInfo and CheckSignedReleases (with OSSF fallback)
-//   - Check required PR reviews from branch protection or code review rate (with OSSF fallback)
+//   - Check required PR reviews from code review rate (with OSSF fallback)
 //   - Analyze GitHub Actions workflow permissions for least privilege
 // Result:
 //   - 0 risk points (score 2): CI publishing + branch protection + signed tags + required reviews
@@ -88,17 +88,10 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		}
 	}
 
-	// Component 2: Branch Protection
+	// Component 2: Branch Protection (via OSSF Scorecard only)
 	// The GitHub API requires admin access to read branch protection (returns 403/404
-	// without it). When the API is denied, fall back to OSSF Scorecard data. If neither
-	// source has data, report UNAVAILABLE rather than FAIL — "access denied" is not
-	// evidence of missing protection.
-	// Pattern: follows governance.go OSSF fallback (primary check → OSSF → UNAVAILABLE).
-	if result.Metadata.HasBranchProtection {
-		points++
-		evidence = append(evidence, "Branch protection enabled on default branch")
-		relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "PASS", Detail: "Branch protection enabled on default branch"})
-	} else {
+	// without it), so we rely solely on OSSF Scorecard data.
+	{
 		ossfBranchProt := 0
 		if result.Metadata.OSSFChecks != nil {
 			if bp, ok := result.Metadata.OSSFChecks["Branch-Protection"]; ok {
@@ -112,15 +105,8 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		} else if ossfBranchProt > 0 {
 			evidence = append(evidence, fmt.Sprintf("OSSF Branch-Protection: %d/10 (partial — may lack required PR reviews or status checks)", ossfBranchProt))
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "FAIL", Detail: fmt.Sprintf("OSSF Branch-Protection score: %d/10 (< 7 threshold; may lack required PR reviews or status checks)", ossfBranchProt)})
-		} else if result.Metadata.BranchProtectionDenied {
-			// API returned 403/404 (admin access required) and OSSF has no data.
-			// Cannot determine branch protection status — report as unavailable,
-			// not as a failure, to avoid penalizing packages we simply can't check.
-			evidence = append(evidence, "Branch protection status unavailable (API access denied, no OSSF data)")
-			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "UNAVAILABLE", Detail: "GitHub API requires admin access to read branch protection; OSSF Scorecard has no data for this repository"})
 		} else {
-			evidence = append(evidence, "No branch protection detected")
-			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "FAIL", Detail: "No branch protection detected via API or OSSF Scorecard"})
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "Branch protection", Status: "UNAVAILABLE", Detail: "No OSSF Scorecard data available for branch protection"})
 		}
 	}
 
@@ -149,11 +135,7 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 	}
 
 	// Component 4: Required PR Reviews
-	if result.Metadata.RequiredReviewers > 0 {
-		points++
-		evidence = append(evidence, fmt.Sprintf("%d required reviewers for PRs", result.Metadata.RequiredReviewers))
-		relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "PASS", Detail: fmt.Sprintf("%d required reviewer(s) configured", result.Metadata.RequiredReviewers)})
-	} else if result.Metadata.CodeReviewRate >= 75 {
+	if result.Metadata.CodeReviewRate >= 75 {
 		points++
 		evidence = append(evidence, fmt.Sprintf("%.0f%% PRs reviewed (strong review practice)", result.Metadata.CodeReviewRate))
 		relSecChecks = append(relSecChecks, models.CheckResult{Name: "Required PR reviews", Status: "PASS", Detail: fmt.Sprintf("%.0f%% PRs reviewed (>= 75%% threshold)", result.Metadata.CodeReviewRate)})

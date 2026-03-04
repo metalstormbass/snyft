@@ -469,9 +469,6 @@ func (a *Analyzer) analyzeHealthMetrics(result *models.AnalysisResult, repoURL s
 	prStats, err := gitClient.GetPullRequestStats(repoURL)
 	if err == nil && prStats != nil {
 		result.Metadata.CodeReviewRate = prStats.CodeReviewRate
-		result.Metadata.RequiredReviewers = prStats.RequiredReviewers
-		result.Metadata.HasBranchProtection = prStats.HasBranchProtection
-		result.Metadata.BranchProtectionDenied = prStats.BranchProtectionDenied
 	}
 
 	// Analyze CI quality.
@@ -561,8 +558,7 @@ func packageMetadataFromNPM(pkg *fetcher.NPMPackage) models.PackageMetadata {
 
 func packageMetadataFromPyPI(pkg *fetcher.PyPIPackage) models.PackageMetadata {
 	metadata := models.PackageMetadata{
-		DownloadCount: pkg.Downloads,
-		PublishedAt:   pkg.PublishedAt,
+		PublishedAt: pkg.PublishedAt,
 		LatestVersion: pkg.LatestVersion,
 		Maintainers:   pkg.Maintainers,
 		License:       pkg.License,

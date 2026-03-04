@@ -1320,41 +1320,6 @@ func TestScoreInstallExecution_HighRisk_PythonSetupPy(t *testing.T) {
 	}
 }
 
-func TestScoreInstallExecution_HighRisk_MavenPOM(t *testing.T) {
-	// Test: Maven pom.xml with exec-maven-plugin
-	// Justification: Maven plugins can execute arbitrary code during build lifecycle
-	// Source: "Software Supply Chain Attacks on Package Managers for Interpreted Languages" (Ohm et al., 2020)
-	//         https://arxiv.org/abs/2002.01139
-	//         Maven Security documentation on plugin risks
-	// Methodology: Analyzed pom.xml for dangerous plugins (exec-maven-plugin, maven-antrun-plugin)
-	analyzer := NewAnalyzer()
-	result := &models.AnalysisResult{
-		Metadata: models.PackageMetadata{
-			HasInstallScripts: true,
-			InstallScripts: map[string]string{
-				"pom.xml": "<plugin><artifactId>exec-maven-plugin</artifactId></plugin>",
-			},
-			InstallScriptAnalysis: &models.InstallScriptAnalysis{
-				HasDangerousPatterns: true,
-				DangerousPatterns: []models.DangerousPattern{
-					{
-						Pattern:     "exec-maven-plugin",
-						Description: "Arbitrary command execution during build",
-						Severity:    "HIGH",
-					},
-				},
-				RiskLevel: "HIGH",
-			},
-		},
-	}
-
-	score := analyzer.scoreInstallExecution(result)
-
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for dangerous pom.xml, got %d", score.RiskPoints)
-	}
-}
-
 // ===== Dependency Sprawl Tests =====
 // Test: Large transitive dependency trees
 // Justification: Each dependency is a potential entry point for supply chain attacks; more dependencies = larger attack surface
@@ -1801,7 +1766,7 @@ func TestScoreProvenance_LowRisk_NPMProvenance(t *testing.T) {
 func TestScoreInstallExecution_HasInstallScriptsFlag_NoMatchingHooks(t *testing.T) {
 	// Test: HasInstallScripts=true but the scripts map contains non-install-time entries
 	// Justification: Exercises the fallback path where HasInstallScripts is set but no
-	//                install-time script names (preinstall/install/postinstall/setup.py/pom.xml) match
+	//                install-time script names (preinstall/install/postinstall/setup.py) match
 	// Source: npm documentation — "scripts" field can contain test/start/build but not install hooks
 	// Methodology: Pure unit test with custom script name that doesn't match install-time hooks
 	// Result: 0 risk points — package has scripts but they aren't install-time hooks
@@ -2131,8 +2096,6 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 					TopContributorPct:   25.0,
 					HasCI:               true,
 					CIQualityScore:      9,
-					HasBranchProtection: true,
-					RequiredReviewers:   2,
 					CodeReviewRate:      95.0,
 				},
 			},
@@ -2159,8 +2122,6 @@ func TestScoreHealth_LowRisk(t *testing.T) {
 					Maintainers:         []string{"alice", "bob", "carol", "dave"},
 					HasCI:               true,
 					CIQualityScore:      7,
-					HasBranchProtection: true,
-					RequiredReviewers:   1,
 				},
 			},
 			wantRisk: 0, // Low risk
@@ -2507,8 +2468,6 @@ func TestScoreHealth_CodeReviewRate0_Justification(t *testing.T) {
 			HasCI:               true,
 			CIQualityScore:      8,
 			CodeReviewRate:      0,
-			HasBranchProtection: false,
-			RequiredReviewers:   0,
 		},
 	}
 
@@ -2533,8 +2492,6 @@ func TestScoreHealth_CodeReviewRate90_Justification(t *testing.T) {
 			HasCI:               true,
 			CIQualityScore:      7,
 			CodeReviewRate:      95.0,
-			HasBranchProtection: true,
-			RequiredReviewers:   2,
 		},
 	}
 
@@ -2693,44 +2650,28 @@ func TestScoreHealth_BusFactorCalculation(t *testing.T) {
 
 func TestScoreHealth_CodeReviewVerification(t *testing.T) {
 	tests := []struct {
-		name                string
-		hasBranchProtection bool
-		requiredReviewers   int
-		codeReviewRate      float64
-		ciQualityScore      int
-		expectsReviewPoint  bool
+		name               string
+		codeReviewRate     float64
+		ciQualityScore     int
+		expectsReviewPoint bool
 	}{
 		{
-			name:                "Branch protection with required reviewers",
-			hasBranchProtection: true,
-			requiredReviewers:   2,
-			codeReviewRate:      0,
-			ciQualityScore:      8,
-			expectsReviewPoint:  true,
+			name:               "High review rate",
+			codeReviewRate:     85.0,
+			ciQualityScore:     8,
+			expectsReviewPoint: true,
 		},
 		{
-			name:                "High review rate without protection",
-			hasBranchProtection: false,
-			requiredReviewers:   0,
-			codeReviewRate:      85.0,
-			ciQualityScore:      8,
-			expectsReviewPoint:  true,
+			name:               "Moderate review rate",
+			codeReviewRate:     60.0,
+			ciQualityScore:     8,
+			expectsReviewPoint: false, // Below 75% threshold
 		},
 		{
-			name:                "Moderate review rate",
-			hasBranchProtection: false,
-			requiredReviewers:   0,
-			codeReviewRate:      60.0,
-			ciQualityScore:      8,
-			expectsReviewPoint:  false, // Below 75% threshold
-		},
-		{
-			name:                "No reviews",
-			hasBranchProtection: false,
-			requiredReviewers:   0,
-			codeReviewRate:      0,
-			ciQualityScore:      8,
-			expectsReviewPoint:  false,
+			name:               "No reviews",
+			codeReviewRate:     0,
+			ciQualityScore:     8,
+			expectsReviewPoint: false,
 		},
 	}
 
@@ -2743,8 +2684,6 @@ func TestScoreHealth_CodeReviewVerification(t *testing.T) {
 					BusFactor:           3, // Good bus factor (gets 1 point)
 					HasCI:               true,
 					CIQualityScore:      tt.ciQualityScore, // >= 7 gets 1 point
-					HasBranchProtection: tt.hasBranchProtection,
-					RequiredReviewers:   tt.requiredReviewers,
 					CodeReviewRate:      tt.codeReviewRate,
 				},
 			}
@@ -3125,8 +3064,6 @@ func TestScoreHealth_ScoreRange(t *testing.T) {
 					BusFactor:           5,
 					CIQualityScore:      9,
 					HasCI:               true,
-					HasBranchProtection: true,
-					RequiredReviewers:   2,
 				},
 			},
 		},
@@ -3170,8 +3107,6 @@ func TestRiskLevel_WellMaintainedPackage_ScoresLow(t *testing.T) {
 			Maintainers:         []string{"alice", "bob", "charlie"},
 			HasInstallScripts:   false,
 			BusFactor:           3,
-			HasBranchProtection: true,
-			RequiredReviewers:   2,
 			HasReleaseProcess:   true,
 			RepoCreatedAt:       time.Now().Add(-5 * 365 * 24 * time.Hour),
 			PublishedAt:         time.Now().Add(-5 * 365 * 24 * time.Hour),
@@ -3226,8 +3161,6 @@ func TestRiskLevel_RiskyPackage_ScoresHigh(t *testing.T) {
 				RiskLevel: "HIGH",
 			},
 			BusFactor:           1,
-			HasBranchProtection: false,
-			RequiredReviewers:   0,
 			HasReleaseProcess:   false,
 			RepoCreatedAt:       time.Now().Add(-60 * 24 * time.Hour), // Very new
 			PublishedAt:         time.Now().Add(-90 * 24 * time.Hour),
@@ -3270,8 +3203,6 @@ func TestRiskLevel_WellMaintainedScoresLowerThanRisky(t *testing.T) {
 			Maintainers:         []string{"a", "b", "c", "d"},
 			HasInstallScripts:   false,
 			BusFactor:           4,
-			HasBranchProtection: true,
-			RequiredReviewers:   2,
 			HasReleaseProcess:   true,
 			SignedReleases:      true,
 			RepoCreatedAt:       time.Now().Add(-5 * 365 * 24 * time.Hour),
@@ -3293,7 +3224,6 @@ func TestRiskLevel_WellMaintainedScoresLowerThanRisky(t *testing.T) {
 				RiskLevel:            "HIGH",
 			},
 			BusFactor:           1,
-			HasBranchProtection: false,
 			HasReleaseProcess:   false,
 			RepoCreatedAt:       time.Now().Add(-30 * 24 * time.Hour),
 			PublishedAt:         time.Now().Add(-60 * 24 * time.Hour),
@@ -3608,14 +3538,13 @@ func TestScoreHealth_WithData_ScoresNormally(t *testing.T) {
 	// Justification: The missing-data fix should not affect packages where data IS available.
 	//                A package with good bus factor and review oversight should still score 0 risk.
 	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
-	// Methodology: Create result with bus factor >= 2 and branch protection. Verify risk = 0.
+	// Methodology: Create result with bus factor >= 2 and code review rate >= 75%. Verify risk = 0.
 	// Result: 0 risk points (verified safe) with DataAvailable=true
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
-			BusFactor:            3,
-			HasBranchProtection:  true,
-			RequiredReviewers:    2,
+			BusFactor:      3,
+			CodeReviewRate: 80,
 		},
 		RepositoryURL: "https://github.com/test/repo",
 	}
