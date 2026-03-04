@@ -65,6 +65,11 @@ var (
 		`/tmp/|/var/tmp/)`)
 )
 
+// Benign exec patterns that are common in setup.py for version reading, etc.
+// These are NOT supply chain attack vectors.
+// Source: PyPA packaging conventions; common setup.py idioms
+var rePyBenignExec = regexp.MustCompile(`(?i)exec\s*\(\s*open\s*\(\s*['"]\S+['"]\s*\)\s*\.read\s*\(\s*\)\s*\)`)
+
 // Patterns that can be explained by C extension builds.
 // When ALL detected patterns are in this set AND the file has C extension context,
 // findings are downgraded.
@@ -253,10 +258,9 @@ func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 		}
 	}
 
-	// Filter for C extension build patterns.
-	// Packages like psycopg2, numpy, etc. legitimately use subprocess/exec calls
-	// for compilation. If the setup.py has C extension build context and all
-	// dangerous patterns are explainable by build operations, downgrade severity.
+	// Filter for C extension build patterns and annotate surviving patterns with
+	// line numbers for evidence. Both operations share line tracking to avoid
+	// filtered lines being re-assigned to surviving patterns.
 	// Source: PyPA documentation on building C extensions with setuptools/distutils
 	analysis.DangerousPatterns = filterBuildPatterns(setupContent, analysis.DangerousPatterns)
 
@@ -286,25 +290,57 @@ func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 // setuptools Extension, Cython, etc.) and the flagged patterns match benign build
 // commands (gcc, make, cmake, etc.), they are downgraded from HIGH to LOW.
 // Patterns that involve network operations or downloads are never downgraded.
+//
+// Additionally filters out benign exec patterns like exec(open('version.py').read())
+// which are standard packaging idioms, regardless of build context.
 func filterBuildPatterns(content string, patterns []DangerousPattern) []DangerousPattern {
-	// If no C extension build context, no filtering needed
-	if !rePyCExtContext.MatchString(content) {
-		return patterns
-	}
-
-	// Build a line index for context-aware checks
 	lines := strings.Split(content, "\n")
+	hasBuildContext := rePyCExtContext.MatchString(content)
+
+	// Track which line numbers have been used for each pattern+match combination,
+	// so duplicate regex matches (e.g. two exec() calls) resolve to different lines.
+	usedLines := make(map[string]map[int]bool)
 
 	var filtered []DangerousPattern
 	for _, p := range patterns {
+		// Resolve the actual source line for this match
+		key := p.Pattern + ":" + p.Match
+		if usedLines[key] == nil {
+			usedLines[key] = make(map[int]bool)
+		}
+		lineNum := findMatchLineNumberSkipping(lines, p.Match, usedLines[key])
+		matchLine := ""
+		if lineNum > 0 {
+			usedLines[key][lineNum] = true
+			matchLine = lines[lineNum-1]
+		}
+
+		// Check if this match is on a benign version-reading line.
+		// exec(open('version.py').read()) is a standard PyPA packaging idiom,
+		// not a supply chain attack vector. Filter regardless of build context.
+		// Applies to both "exec()" and "process spawn" patterns since the generic
+		// reProcessSpawn regex also matches exec() calls.
+		if (p.Pattern == "exec()" || p.Pattern == "process spawn") && matchLine != "" && rePyBenignExec.MatchString(matchLine) {
+			continue // drop entirely — not a risk signal
+		}
+
+		// Annotate Match with line number for evidence
+		if lineNum > 0 {
+			line := strings.TrimSpace(lines[lineNum-1])
+			p.Match = fmt.Sprintf("Line %d: %s", lineNum, line)
+		}
+
+		if !hasBuildContext {
+			// No C extension build context — keep pattern as-is
+			filtered = append(filtered, p)
+			continue
+		}
+
 		if !buildExplainablePatterns[p.Pattern] {
 			// Not a build-explainable pattern, keep as-is
 			filtered = append(filtered, p)
 			continue
 		}
-
-		// Find the line(s) containing this match and check context
-		matchLine := findMatchLine(lines, p.Match)
 
 		if matchLine != "" && rePyDangerousSubprocessTarget.MatchString(matchLine) {
 			// Line contains dangerous targets (curl, wget, pip install, etc.)
@@ -339,6 +375,32 @@ func findMatchLine(lines []string, match string) string {
 		}
 	}
 	return ""
+}
+
+// findMatchLineNumber returns the 1-based line number of the first line containing the match.
+func findMatchLineNumber(lines []string, match string) int {
+	for i, line := range lines {
+		if strings.Contains(line, match) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// findMatchLineNumberSkipping returns the 1-based line number of the first line
+// containing the match, skipping any line numbers in the skip set.
+// This handles duplicate regex matches that appear on different lines.
+func findMatchLineNumberSkipping(lines []string, match string, skip map[int]bool) int {
+	for i, line := range lines {
+		lineNum := i + 1
+		if skip[lineNum] {
+			continue
+		}
+		if strings.Contains(line, match) {
+			return lineNum
+		}
+	}
+	return 0
 }
 
 // scriptFileExtensions lists file extensions considered as executable script files.

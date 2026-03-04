@@ -87,7 +87,7 @@ Each dependency is scored across 10 categories (0-2 risk points each, except Dep
 | **1. Publisher Control** | Single maintainer risk, account age, org vs personal (scraped), verified org badge (scraped), commit signing (git clone). High-download packages (1M+/week) get reduced single-maintainer penalty. |
 | **2. Ownership Changes** | Recent maintainer or owner transitions |
 | **3. Release Anomalies** | Dormancy reactivation (1yr+ gap then sudden release), unusual release spikes, cadence anomalies |
-| **4. Install Execution** | npm install scripts (postinstall/preinstall), dangerous patterns (code injection, network calls, privilege escalation). Analyzes actual script files from cloned repos. |
+| **4. Install Execution** | npm install scripts (postinstall/preinstall), setup.py for PyPI. Dangerous pattern analysis (network calls, code injection, privilege escalation). Allowlists build tool patterns (*-config binaries, compilers, exec(open(...).read()) version idiom). Evidence includes specific line numbers. |
 | **5. Dependency Sprawl** | Extreme dependency count only (0-1 pts, weak signal). Triggers at 50+ direct deps for npm/PyPI, 100+ for Maven. |
 | **6. Provenance** | SLSA attestation, signed releases, build provenance, source code verification |
 | **7. Health** | Bus factor (git clone), code review rate (scraped PR data), maintainer count |
