@@ -188,6 +188,9 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		Findings:   []models.Finding{},
 	}
 
+	// Check against known historical supply chain compromises
+	checkKnownCompromises(&result)
+
 	// Fetch package metadata from registry
 	var repoURL string
 	var metadata models.PackageMetadata
