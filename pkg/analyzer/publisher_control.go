@@ -67,6 +67,15 @@ type PublisherControlAnalysis struct {
 	MFAEnforced bool   `json:"mfa_enforced"` // true if org-level MFA is required
 	MFAChecked  bool   `json:"mfa_checked"`  // true if we successfully determined MFA status
 
+	// Download volume (risk modifier for high-traffic packages)
+	// Justification: Packages with >1M weekly downloads have higher community
+	// scrutiny. A compromised version would be detected faster due to the large
+	// user base monitoring for regressions and anomalies.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — popular
+	// packages have higher monitoring density, reducing attacker dwell time.
+	WeeklyDownloads       int64  `json:"weekly_downloads"`
+	HighDownloadVolume    bool   `json:"high_download_volume"` // true if >1M weekly downloads
+
 	// Ecosystem context for scoring
 	Ecosystem             models.Ecosystem `json:"ecosystem,omitempty"`
 
@@ -116,11 +125,13 @@ type EmailDomainInfo struct {
 // - Signing/MFA: 5%
 func (a *Analyzer) AnalyzePublisherControl(result *models.AnalysisResult, repoURL string) *PublisherControlAnalysis {
 	analysis := &PublisherControlAnalysis{
-		MaintainerCount: len(result.Metadata.Maintainers),
-		MaintainerEmails: result.Metadata.Maintainers,
-		SingleMaintainer: len(result.Metadata.Maintainers) == 1,
+		MaintainerCount:       len(result.Metadata.Maintainers),
+		MaintainerEmails:      result.Metadata.Maintainers,
+		SingleMaintainer:      len(result.Metadata.Maintainers) == 1,
 		PackagesPerMaintainer: make(map[string]int),
-		Ecosystem: result.Dependency.Ecosystem,
+		Ecosystem:             result.Dependency.Ecosystem,
+		WeeklyDownloads:       result.Metadata.WeeklyDownloads,
+		HighDownloadVolume:    result.Metadata.WeeklyDownloads > 1_000_000,
 	}
 
 	// Get git platform client
@@ -669,6 +680,25 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 		evidenceParts = append(evidenceParts, "MFA status unknown (personal account or platform limitation)")
 	}
 
+	// Factor 7: Download volume modifier (npm packages with >1M weekly downloads)
+	// High-download packages benefit from community scrutiny: a compromised version
+	// is detected faster because millions of users monitor for regressions. This
+	// partially mitigates single-maintainer risk by reducing attacker dwell time.
+	//
+	// Justification: Popular packages have higher monitoring density. The event-stream
+	// attack (2018, ~2M weekly downloads) was discovered within days precisely because
+	// of the large user base. Obscure single-maintainer packages can remain compromised
+	// for weeks or months.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+	if analysis.HighDownloadVolume && analysis.SingleMaintainer {
+		riskScore -= 0.4
+		if riskScore < 0 {
+			riskScore = 0
+		}
+		evidenceParts = append(evidenceParts,
+			fmt.Sprintf("high download volume (%d/week) mitigates single-maintainer risk", analysis.WeeklyDownloads))
+	}
+
 	// Convert to 0-2 risk points scale
 	// Thresholds calibrated so that baseline-normal OSS practices (personal email,
 	// no signing, personal account) don't automatically push multi-maintainer
@@ -690,6 +720,12 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	// 0 maintainers (ecosystem exposes list) = 0.6 → MEDIUM
 	// 0 maintainers (ecosystem doesn't expose) = 0.3 → LOW
 	// 4+ maintainers + org email = 0.0 → LOW
+	//
+	// With high download volume (>1M/week) modifier (-0.4):
+	// Single maintainer + personal acct + personal email + no signing + high DL = 1.6-0.4 = 1.2 → MEDIUM
+	// Single maintainer + no signing (checked) + high DL = 1.3-0.4 = 0.9 → MEDIUM
+	// Single maintainer + personal acct + personal email + high DL = 1.3-0.4 = 0.9 → MEDIUM
+	//
 	// Round to 2 decimal places to avoid IEEE 754 floating point precision issues.
 	// e.g. 1.0 + 0.15 + 0.15 = 1.2999999999999998 in float64, not 1.3
 	riskScore = math.Round(riskScore*100) / 100
@@ -808,6 +844,13 @@ func (analysis *PublisherControlAnalysis) buildPublisherControlChecks() []models
 		}
 	} else {
 		checks = append(checks, models.CheckResult{Name: "MFA enforcement", Status: "UNAVAILABLE", Detail: fmt.Sprintf("MFA status: %s (personal account or platform limitation)", analysis.MFAStatus)})
+	}
+
+	// Download volume check
+	if analysis.HighDownloadVolume {
+		checks = append(checks, models.CheckResult{Name: "Download volume", Status: "PASS", Detail: fmt.Sprintf("High download volume (%d/week) increases community scrutiny", analysis.WeeklyDownloads)})
+	} else if analysis.WeeklyDownloads > 0 {
+		checks = append(checks, models.CheckResult{Name: "Download volume", Status: "INFO", Detail: fmt.Sprintf("%d weekly downloads (below 1M threshold for risk mitigation)", analysis.WeeklyDownloads)})
 	}
 
 	// Package concentration check

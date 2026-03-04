@@ -126,6 +126,7 @@ type PackageMetadata struct {
 
 	// Package registry information
 	DownloadCount    int64     `json:"download_count"`
+	WeeklyDownloads  int64     `json:"weekly_downloads"` // Weekly download count from npm (last-week)
 	PublishedAt      time.Time `json:"published_at"`
 	LatestVersion    string    `json:"latest_version"`
 	Maintainers      []string  `json:"maintainers"`

@@ -324,6 +324,108 @@ func TestGetPackageInfo_UsesCreatedDateForPublishedAt(t *testing.T) {
 	}
 }
 
+// Test: fetchWeeklyDownloadCount retrieves last-week download count
+// Justification: Weekly download volume is used as a risk modifier for single-maintainer
+//   packages. High-download packages (>1M/week) have greater community scrutiny,
+//   which mitigates single-maintainer risk by reducing attacker dwell time.
+// Source: npm downloads API — GET https://api.npmjs.org/downloads/point/last-week/{name}
+// Methodology: Mock server returns download count JSON; verify client parses correctly.
+// Result: WeeklyDownloads populated with correct count from API response.
+func TestFetchWeeklyDownloadCount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/downloads/point/last-week/express" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"downloads":5000000,"start":"2026-02-24","end":"2026-03-02","package":"express"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &NPMClient{
+		httpClient:       &http.Client{},
+		baseURL:          server.URL,
+		downloadsBaseURL: server.URL,
+	}
+
+	count := client.fetchWeeklyDownloadCount("express")
+	if count != 5_000_000 {
+		t.Errorf("fetchWeeklyDownloadCount() = %d, want 5000000", count)
+	}
+}
+
+// Test: fetchWeeklyDownloadCount returns 0 on error
+// Justification: Download count is best-effort enrichment. API failures should not
+//   block analysis or inflate risk scores — a zero download count means "unknown",
+//   and the download volume modifier simply won't apply.
+// Source: npm downloads API error handling
+// Methodology: Mock server returns 404; verify client returns 0 gracefully.
+// Result: Returns 0 without error, allowing analysis to continue.
+func TestFetchWeeklyDownloadCount_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := &NPMClient{
+		httpClient:       &http.Client{},
+		baseURL:          server.URL,
+		downloadsBaseURL: server.URL,
+	}
+
+	count := client.fetchWeeklyDownloadCount("nonexistent-package")
+	if count != 0 {
+		t.Errorf("fetchWeeklyDownloadCount() on error = %d, want 0", count)
+	}
+}
+
+// Test: GetPackageInfo populates WeeklyDownloads from last-week API
+// Justification: The WeeklyDownloads field must be populated during GetPackageInfo
+//   so it flows through to PackageMetadata and the publisher control risk modifier.
+// Source: npm downloads API — GET https://api.npmjs.org/downloads/point/last-week/{name}
+// Methodology: Mock server returns both registry data and weekly download data;
+//   verify WeeklyDownloads is populated in NPMPackage.
+// Result: WeeklyDownloads field populated with weekly download count.
+func TestGetPackageInfo_PopulatesWeeklyDownloads(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/downloads/point/last-week/test-pkg":
+			_, _ = w.Write([]byte(`{"downloads":1500000,"package":"test-pkg"}`))
+		case r.URL.Path == "/downloads/point/last-month/test-pkg":
+			_, _ = w.Write([]byte(`{"downloads":6000000,"package":"test-pkg"}`))
+		default:
+			_, _ = w.Write([]byte(`{
+				"name":"test-pkg",
+				"license":"MIT",
+				"dist-tags":{"latest":"1.0.0"},
+				"maintainers":[{"name":"alice"}],
+				"versions":{"1.0.0":{"version":"1.0.0"}},
+				"time":{"created":"2020-01-01T00:00:00Z","1.0.0":"2025-12-01T00:00:00Z"}
+			}`))
+		}
+	}))
+	defer server.Close()
+
+	client := &NPMClient{
+		httpClient:       &http.Client{},
+		baseURL:          server.URL,
+		downloadsBaseURL: server.URL,
+	}
+
+	pkg, err := client.GetPackageInfo("test-pkg")
+	if err != nil {
+		t.Fatalf("GetPackageInfo() unexpected error: %v", err)
+	}
+
+	if pkg.WeeklyDownloads != 1_500_000 {
+		t.Errorf("WeeklyDownloads = %d, want 1500000", pkg.WeeklyDownloads)
+	}
+	if pkg.Downloads != 6_000_000 {
+		t.Errorf("Downloads (monthly) = %d, want 6000000", pkg.Downloads)
+	}
+}
+
 func TestGetOwnershipHistory_NPM_NotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
