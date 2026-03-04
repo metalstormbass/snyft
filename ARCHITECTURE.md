@@ -49,7 +49,7 @@ Data collection via web scraping, bare git clones, and package registry APIs. No
 
 ### Analyzer Layer (pkg/analyzer/)
 
-Core scoring engine with 10 independent categories (0-2 points each):
+Core scoring engine with 10 independent categories (0-2 points each, except Dependency Sprawl which is 0-1):
 
 1. Publisher Control
 2. Ownership Changes

@@ -34,7 +34,7 @@ func TestHTMLReport_ShowsConfidencePercentage(t *testing.T) {
 			ConfidencePercentage: 40.0,
 			SupplyChainScore: &models.SupplyChainScore{
 				TotalScore:   10,
-				MaxScore:     20,
+				MaxScore:     19,
 				ActiveChecks: 10,
 				RiskLevel:    "MEDIUM",
 			},
@@ -80,7 +80,7 @@ func TestHTMLReport_ConfidenceColorCoding_Low(t *testing.T) {
 			ConfidencePercentage: 30.0,
 			SupplyChainScore: &models.SupplyChainScore{
 				TotalScore:   12,
-				MaxScore:     20,
+				MaxScore:     19,
 				ActiveChecks: 10,
 				RiskLevel:    "HIGH",
 			},
@@ -123,7 +123,7 @@ func TestHTMLReport_ConfidenceColorCoding_High(t *testing.T) {
 			ConfidencePercentage: 90.0,
 			SupplyChainScore: &models.SupplyChainScore{
 				TotalScore:   4,
-				MaxScore:     20,
+				MaxScore:     19,
 				ActiveChecks: 10,
 				RiskLevel:    "LOW",
 			},

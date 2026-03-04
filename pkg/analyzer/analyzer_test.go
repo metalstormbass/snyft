@@ -1354,6 +1354,7 @@ func TestScoreDependencySprawl_Few(t *testing.T) {
 }
 
 func TestScoreDependencySprawl_Moderate(t *testing.T) {
+	// 25 transitive deps is well within the 200 threshold — 0 risk points
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
@@ -1367,8 +1368,8 @@ func TestScoreDependencySprawl_Moderate(t *testing.T) {
 
 	score := a.scoreDependencySprawl(result)
 
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for moderate dependencies, got %d", score.RiskPoints)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for 25 transitive deps (within 200 threshold), got %d", score.RiskPoints)
 	}
 
 	if !score.Verified {
@@ -1381,6 +1382,7 @@ func TestScoreDependencySprawl_Moderate(t *testing.T) {
 }
 
 func TestScoreDependencySprawl_Many(t *testing.T) {
+	// 75 transitive deps is within the 200 threshold — 0 risk points
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
@@ -1394,8 +1396,8 @@ func TestScoreDependencySprawl_Many(t *testing.T) {
 
 	score := a.scoreDependencySprawl(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for many dependencies, got %d", score.RiskPoints)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for 75 transitive deps (within 200 threshold), got %d", score.RiskPoints)
 	}
 
 	if !score.Verified {
@@ -1407,13 +1409,13 @@ func TestScoreDependencySprawl_Many(t *testing.T) {
 	}
 }
 
-func TestScoreDependencySprawl_EdgeCase_Exactly10(t *testing.T) {
+func TestScoreDependencySprawl_EdgeCase_Exactly200(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
 			DependencyMetrics: &models.DependencyMetrics{
-				TransitiveCount: 10,
-				DirectCount:     3,
+				TransitiveCount: 200,
+				DirectCount:     20,
 				Verified:        true,
 			},
 		},
@@ -1421,19 +1423,19 @@ func TestScoreDependencySprawl_EdgeCase_Exactly10(t *testing.T) {
 
 	score := a.scoreDependencySprawl(result)
 
-	// 10 deps should be "moderate" (1 point)
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for exactly 10 dependencies, got %d", score.RiskPoints)
+	// 200 deps is at the boundary — should be 0 risk (<=200 threshold)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for exactly 200 dependencies (at boundary), got %d", score.RiskPoints)
 	}
 }
 
-func TestScoreDependencySprawl_EdgeCase_Exactly50(t *testing.T) {
+func TestScoreDependencySprawl_EdgeCase_Exactly201(t *testing.T) {
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
 			DependencyMetrics: &models.DependencyMetrics{
-				TransitiveCount: 50,
-				DirectCount:     5,
+				TransitiveCount: 201,
+				DirectCount:     25,
 				Verified:        true,
 			},
 		},
@@ -1441,22 +1443,20 @@ func TestScoreDependencySprawl_EdgeCase_Exactly50(t *testing.T) {
 
 	score := a.scoreDependencySprawl(result)
 
-	// 50 deps should still be "moderate" (1 point)
+	// 201 deps exceeds threshold — should be 1 risk point (extreme sprawl)
 	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for exactly 50 dependencies, got %d", score.RiskPoints)
+		t.Errorf("Expected 1 risk point for 201 dependencies (exceeds 200 threshold), got %d", score.RiskPoints)
 	}
 }
 
 func TestScoreDependencySprawl_Fallback_NoMetrics(t *testing.T) {
 	// Test: No dependency metrics available — neither lock file nor registry data
-	// Justification: Stars and download counts are not valid proxies for dependency sprawl.
-	//   A package with 5 stars might have zero dependencies; a package with 1M downloads
-	//   (e.g. aws-sdk) can have hundreds of transitive dependencies.
-	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — npm analysis shows
-	//   dependency count is independent of package popularity metrics.
+	// Justification: Dependency count is a weak supply chain signal. Missing data
+	//   should not inflate the risk score for this category.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019)
 	// Methodology: When no lock file or registry dependency data is available, assign
-	//   neutral moderate risk (1 point) rather than an unreliable star-based estimate.
-	// Result: 1 risk point (neutral/unknown), unverified
+	//   0 risk points (weak signal, don't penalize missing data).
+	// Result: 0 risk points, unverified
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
@@ -1472,9 +1472,9 @@ func TestScoreDependencySprawl_Fallback_NoMetrics(t *testing.T) {
 		t.Error("Expected unverified score when no dependency data available")
 	}
 
-	// No data = neutral 1 risk point (unknown, not high risk based on irrelevant metrics)
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point (neutral) when no dependency data available, got %d", score.RiskPoints)
+	// No data = 0 risk points (weak signal, don't penalize missing data)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points when no dependency data available (weak signal), got %d", score.RiskPoints)
 	}
 }
 
@@ -1510,11 +1510,12 @@ func TestScoreDependencySprawl_RegistryDirect_FewDeps(t *testing.T) {
 }
 
 func TestScoreDependencySprawl_RegistryDirect_ModerateDeps(t *testing.T) {
-	// Test: Package with moderate direct dependencies from registry
-	// Justification: 6-15 direct deps indicates moderate transitive exposure.
+	// Test: Package with moderate direct dependencies from registry scores 0 risk
+	// Justification: Dependency count is a weak signal; only extreme sprawl (50+) triggers risk.
+	//   10 direct deps is well within normal range.
 	// Source: "Small World with High Risks" (Zimmermann et al., 2019)
 	// Methodology: DirectCount from registry, Verified=false (no lock file)
-	// Result: 1 risk point for 6-15 direct deps
+	// Result: 0 risk points for 10 direct deps (below 50 threshold)
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
@@ -1527,8 +1528,8 @@ func TestScoreDependencySprawl_RegistryDirect_ModerateDeps(t *testing.T) {
 
 	score := a.scoreDependencySprawl(result)
 
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for 10 direct deps, got %d", score.RiskPoints)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for 10 direct deps (below 50 threshold), got %d", score.RiskPoints)
 	}
 	if !strings.Contains(score.Description, "10 direct dependencies") {
 		t.Errorf("Description should reference actual dependency count, got: %s", score.Description)
@@ -1536,14 +1537,12 @@ func TestScoreDependencySprawl_RegistryDirect_ModerateDeps(t *testing.T) {
 }
 
 func TestScoreDependencySprawl_RegistryDirect_ManyDeps(t *testing.T) {
-	// Test: Package with many direct dependencies from registry (e.g. aws-sdk-like packages)
-	// Justification: 16+ direct deps creates a large transitive attack surface. Packages
-	//   like aws-sdk carry 30+ direct deps with hundreds of transitives.
-	// Source: "Small World with High Risks" (Zimmermann et al., 2019);
-	//   "Backstabber's Knife Collection" (Ohm et al., 2020) - large dep trees are
-	//   commonly exploited for supply chain poisoning via transitive compromise.
+	// Test: Package with many direct dependencies from registry scores 0 risk (below extreme threshold)
+	// Justification: 32 direct deps is below the extreme sprawl threshold of 50.
+	//   Dependency count is a weak signal; only extreme sprawl triggers 1 risk point.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019)
 	// Methodology: DirectCount from registry, Verified=false (no lock file)
-	// Result: 2 risk points for 16+ direct deps
+	// Result: 0 risk points for 32 direct deps (below 50 threshold)
 	a := NewAnalyzer()
 	result := &models.AnalysisResult{
 		Metadata: models.PackageMetadata{
@@ -1556,8 +1555,8 @@ func TestScoreDependencySprawl_RegistryDirect_ManyDeps(t *testing.T) {
 
 	score := a.scoreDependencySprawl(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for 32 direct deps, got %d", score.RiskPoints)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points for 32 direct deps (below 50 threshold), got %d", score.RiskPoints)
 	}
 	if !strings.Contains(score.Description, "32 direct dependencies") {
 		t.Errorf("Description should reference actual dependency count, got: %s", score.Description)
@@ -1648,8 +1647,9 @@ func TestScoreDependencySprawl_LowRisk_ZeroDependencies(t *testing.T) {
 }
 
 func TestScoreDependencySprawl_HighRisk_200PlusDependencies(t *testing.T) {
-	// Test: Package with 200+ transitive dependencies
-	// Justification: Large dependency trees exponentially increase attack surface and supply chain risk
+	// Test: Package with 200+ transitive dependencies scores 1 risk point (max for this category)
+	// Justification: Extreme dependency sprawl increases attack surface, but this is a
+	//   weak signal capped at 1 risk point.
 	// Source: "Towards Measuring Supply Chain Attacks on Package Managers for Interpreted Languages" (2020)
 	//         https://arxiv.org/abs/2002.01139
 	// Methodology: Counted all dependencies recursively from lock file
@@ -1666,8 +1666,8 @@ func TestScoreDependencySprawl_HighRisk_200PlusDependencies(t *testing.T) {
 
 	score := a.scoreDependencySprawl(result)
 
-	if score.RiskPoints != 2 {
-		t.Errorf("Expected 2 risk points for 200+ dependencies, got %d", score.RiskPoints)
+	if score.RiskPoints != 1 {
+		t.Errorf("Expected 1 risk point for 200+ dependencies (max for weak signal category), got %d", score.RiskPoints)
 	}
 
 	if score.Score != 0 {
@@ -2291,9 +2291,9 @@ func TestCalculateSupplyChainScore_OwnershipChangesIntegration(t *testing.T) {
 		t.Errorf("OwnershipChanges risk points = %d, want 0 (evidence: %s)", ownershipScore.RiskPoints, ownershipScore.Evidence)
 	}
 
-	// Total score should be in valid range (10 categories × 0-2 points = 0-20)
-	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 20 {
-		t.Errorf("TotalScore = %v, want 0-20", result.SupplyChainScore.TotalScore)
+	// Total score should be in valid range (9 categories × 0-2 + 1 category × 0-1 = 0-19)
+	if result.SupplyChainScore.TotalScore < 0 || result.SupplyChainScore.TotalScore > 19 {
+		t.Errorf("TotalScore = %v, want 0-19", result.SupplyChainScore.TotalScore)
 	}
 }
 
@@ -3337,7 +3337,7 @@ func TestCheckFilter_ActiveChecksAndMaxScore(t *testing.T) {
 // Justification: When --check is not specified, all checks must run as before
 // Source: Backward compatibility requirement
 // Methodology: Create analyzer without filter, verify all 10 checks are active
-// Result: ActiveChecks=10, MaxScore=20, no categories are Skipped
+// Result: ActiveChecks=10, MaxScore=19, no categories are Skipped
 
 func TestCheckFilter_NoFilter_AllChecksRun(t *testing.T) {
 	a := NewAnalyzer()
@@ -3352,8 +3352,8 @@ func TestCheckFilter_NoFilter_AllChecksRun(t *testing.T) {
 	if result.SupplyChainScore.ActiveChecks != 10 {
 		t.Errorf("ActiveChecks should be 10 without filter, got %d", result.SupplyChainScore.ActiveChecks)
 	}
-	if result.SupplyChainScore.MaxScore != 20 {
-		t.Errorf("MaxScore should be 20 without filter, got %d", result.SupplyChainScore.MaxScore)
+	if result.SupplyChainScore.MaxScore != 19 {
+		t.Errorf("MaxScore should be 19 without filter, got %d", result.SupplyChainScore.MaxScore)
 	}
 
 	// No categories should be skipped
