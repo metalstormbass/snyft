@@ -36,9 +36,18 @@ func classifyOwnershipFromCommitStats(stats *fetcher.CommitAuthorStats) (riskPoi
 			historicalSet[author] = true
 		}
 
+		// Continuity check: a "new" author who has commits going back 1+ years
+		// is a continuing maintainer, not truly new. This prevents flagging long-term
+		// contributors who just didn't have commits in the historical window.
+		oneYearAgo := time.Now().AddDate(-1, 0, 0)
 		newAuthors := 0
 		for _, author := range stats.RecentAuthors {
 			if !historicalSet[author] {
+				// Check if this author has commits going back 1+ years
+				if firstCommit, ok := stats.AuthorFirstCommit[author]; ok && firstCommit.Before(oneYearAgo) {
+					// Author has been committing for 1+ years — continuing maintainer, not new
+					continue
+				}
 				newAuthors++
 			}
 		}
@@ -129,13 +138,41 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 			verified = true
 			pts, ev := classifyOwnershipFromCommitStats(commitStats)
 			riskPoints = pts
+
+			// Account age guard: only assign 2 risk points from commit stats if ALL
+			// recent authors have account age <6 months. Established accounts with
+			// older commit history are less likely to be malicious takeover accounts.
+			if pts == 2 && len(commitStats.RecentAuthors) > 0 {
+				sixMonthsAgo := time.Now().AddDate(0, -6, 0)
+				allNewAccounts := true
+				for _, author := range commitStats.RecentAuthors {
+					acctCreated, acctErr := gitClient.GetUserAccountCreatedDate(author)
+					if acctErr != nil {
+						// Can't verify account age — don't assume new
+						allNewAccounts = false
+						break
+					}
+					if acctCreated.Before(sixMonthsAgo) {
+						allNewAccounts = false
+						break
+					}
+				}
+				if !allNewAccounts {
+					riskPoints = 1
+					ev = ev + " (downgraded: not all recent authors have new accounts)"
+					ownerChecks = append(ownerChecks, models.CheckResult{Name: "Account age check", Status: "PASS", Detail: "At least one recent author has an account older than 6 months; downgraded from 2 to 1 risk points"})
+				} else {
+					ownerChecks = append(ownerChecks, models.CheckResult{Name: "Account age check", Status: "FAIL", Detail: "All recent authors have accounts less than 6 months old"})
+				}
+			}
+
 			if ev != "" {
 				evidenceParts = append(evidenceParts, gitClient.GetPlatformName()+": "+ev)
 			}
 			status := "PASS"
-			if pts >= 2 {
+			if riskPoints >= 2 {
 				status = "FAIL"
-			} else if pts == 1 {
+			} else if riskPoints == 1 {
 				status = "FAIL"
 			}
 			ownerChecks = append(ownerChecks, models.CheckResult{Name: "Commit author analysis", Status: status, Detail: ev})
@@ -286,7 +323,8 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 				isOrgOwned, _ = gitClient.CheckIfOrganization(result.Metadata.RepoOwner)
 			}
 			if isOrgOwned {
-				description = evidence + ". Significant team turnover detected. Organization-backed projects may see normal team rotation, but large-scale author replacement still warrants review as it can mask a hostile takeover."
+				// Org repos: softer language — team rotation is common in organizations
+				description = evidence + ". Team turnover noted in an organization-owned project. Organizations commonly rotate contributors, so this may reflect normal staffing changes rather than a hostile takeover."
 			} else {
 				description = evidence + ". Near-complete team replacement is a primary signal of malicious package acquisition — new authors replacing all prior contributors may indicate an account or project takeover."
 			}

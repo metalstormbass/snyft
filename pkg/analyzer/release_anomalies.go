@@ -61,26 +61,11 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 
 	daysSinceLastCommit := time.Since(result.Metadata.RepoLastCommit).Hours() / 24
 	daysSinceCreated := time.Since(result.Metadata.RepoCreatedAt).Hours() / 24
+	repoAgeYears := daysSinceCreated / 365
 
-	// Very inactive (dormant for over a year)
-	if daysSinceLastCommit > 365 {
-		return models.CategoryScore{
-			Score:       1,
-			RiskPoints:  1,
-			Description: fmt.Sprintf("No commits in %.0f days (last commit: %s). Dormant packages are attractive targets for account takeover — maintainers may not be monitoring their accounts or credentials.", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
-			Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year); last commit: %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02")),
-			Verified:    true,
-			DataAvailable: true,
-			Methodology: anomalyMethodology,
-			ChecksPerformed: []models.CheckResult{
-				{Name: "Dormancy detection", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (> 365 day threshold); last commit %s", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02"))},
-				{Name: "Release pattern analysis", Status: "SKIPPED", Detail: "Package is dormant; release pattern analysis not applicable"},
-			},
-		}
-	}
-
-	// For packages with recent activity, fetch detailed release and commit history
-	// to detect suspicious reactivation patterns
+	// For packages with any history (>1 year old), fetch detailed release and commit history
+	// to detect suspicious reactivation patterns and validate dormancy.
+	// We defer the dormancy decision until after we have commit data to avoid false positives.
 	if daysSinceCreated > 365 {
 		// Try to get release history from Git platform first, fall back to registry
 		var registryReleases []fetcher.RegistryRelease
@@ -101,7 +86,7 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			}
 		}
 
-		// Fetch commit activity to analyze frequency changes
+		// Fetch commit activity to analyze frequency changes and validate dormancy
 		oneYearAgo := time.Now().AddDate(-1, 0, 0)
 		twoYearsAgo := time.Now().AddDate(-2, 0, 0)
 
@@ -113,12 +98,44 @@ func (a *Analyzer) scoreReleaseAnomalies(result *models.AnalysisResult) models.C
 			if anomaly != nil {
 				return *anomaly
 			}
+
+			// Refined dormancy check: only flag dormancy if the repo is >3 years old
+			// AND has <10 commits in the prior 2 years. Projects with 100+ recent commits
+			// are clearly active, not dormant. Skip if we don't have sufficient history coverage.
+			if daysSinceLastCommit > 365 && repoAgeYears > 3 {
+				// Count total commits in 2-year dataset
+				totalCommits := len(olderCommits)
+				if totalCommits < 10 && len(recentCommits) < 100 {
+					return models.CategoryScore{
+						Score:       1,
+						RiskPoints:  1,
+						Description: fmt.Sprintf("No commits in %.0f days (last commit: %s) with only %d commits in the prior 2 years. Dormant packages are attractive targets for account takeover — maintainers may not be monitoring their accounts or credentials.", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02"), totalCommits),
+						Evidence:    fmt.Sprintf("No commits in %.0f days (>1 year); last commit: %s; %d commits in prior 2 years", daysSinceLastCommit, result.Metadata.RepoLastCommit.Format("2006-01-02"), totalCommits),
+						Verified:    true,
+						DataAvailable: true,
+						Methodology: anomalyMethodology,
+						ChecksPerformed: []models.CheckResult{
+							{Name: "Dormancy detection", Status: "FAIL", Detail: fmt.Sprintf("%.0f days since last commit (> 365 day threshold), repo %.1f years old (> 3 year threshold), %d commits in prior 2 years (< 10 threshold)", daysSinceLastCommit, repoAgeYears, totalCommits)},
+							{Name: "Release pattern analysis", Status: "PASS", Detail: "No release anomalies detected"},
+						},
+					}
+				}
+			}
+		} else if daysSinceLastCommit > 365 && repoAgeYears > 3 {
+			// Commit data unavailable but repo looks dormant based on last commit date.
+			// Skip dormancy flag since we can't verify commit activity (incomplete history coverage).
 		}
 	}
 
-	// Regular, consistent activity (active within the year, no anomalies detected)
+	// Regular, consistent activity (no anomalies detected)
+	var dormancyDetail string
+	if daysSinceLastCommit > 365 {
+		dormancyDetail = fmt.Sprintf("Last commit %.0f days ago but repo does not meet dormancy criteria (requires >3 year old repo with <10 commits in 2 years)", daysSinceLastCommit)
+	} else {
+		dormancyDetail = fmt.Sprintf("Last commit %.0f days ago (within 1 year)", daysSinceLastCommit)
+	}
 	regularChecks := []models.CheckResult{
-		{Name: "Dormancy detection", Status: "PASS", Detail: fmt.Sprintf("Last commit %.0f days ago (within 1 year)", daysSinceLastCommit)},
+		{Name: "Dormancy detection", Status: "PASS", Detail: dormancyDetail},
 	}
 	if daysSinceCreated > 365 {
 		regularChecks = append(regularChecks, models.CheckResult{Name: "Release pattern analysis", Status: "PASS", Detail: "No dormancy reactivation or unusual release spikes detected"})

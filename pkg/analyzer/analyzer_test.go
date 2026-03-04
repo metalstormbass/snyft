@@ -625,24 +625,26 @@ func TestScoreOwnershipChanges_RepoCreatedBeforePublish_NotFlagged(t *testing.T)
 
 func TestScoreReleaseAnomalies_HighRisk_Dormant3Years(t *testing.T) {
 	// Test: Package dormant for 3+ years (>365 days since last commit)
-	// Justification: Extremely inactive packages are prime targets for account takeover attacks
+	// Justification: Dormancy detection now requires repo >3 years old AND <10 commits in prior 2 years,
+	//                verified via commit activity data. Without commit data (as in this unit test with
+	//                an unreachable URL), dormancy is skipped per "skip if history coverage incomplete."
 	// Source: Sonatype 2023 report - 245,000+ malicious packages found, many via abandoned package takeover
-	// Methodology: Pure unit test — RepositoryURL is set (avoids early return) but the dormancy
-	//              check (daysSinceLastCommit > 365) fires before any GitHub API calls.
+	// Methodology: Pure unit test — RepositoryURL is set but not reachable; commit data unavailable,
+	//              so dormancy is not flagged (incomplete coverage). Risk=0 (no anomalies confirmed).
 	analyzer := NewAnalyzer()
 	result := models.AnalysisResult{
 		Metadata: models.PackageMetadata{
 			RepoLastCommit: time.Now().AddDate(-3, 0, 0), // 3 years ago → >365 days
 			RepoCreatedAt:  time.Now().AddDate(-5, 0, 0), // 5 years old
 		},
-		RepositoryURL: "https://example.com/dormant", // Non-empty to pass early check, but dormancy fires first
+		RepositoryURL: "https://example.com/dormant", // Non-empty to pass early check
 	}
 
 	score := analyzer.scoreReleaseAnomalies(&result)
 
-	// 3 years since last commit → dormancy check fires → risk=1, "Package appears dormant"
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for 3-year dormancy, got %d (evidence: %s)", score.RiskPoints, score.Evidence)
+	// Without commit activity data, dormancy cannot be verified; risk=0 (no anomalies confirmed)
+	if score.RiskPoints != 0 {
+		t.Errorf("Expected 0 risk points when commit data unavailable (dormancy unverifiable), got %d (evidence: %s)", score.RiskPoints, score.Evidence)
 	}
 
 	if !score.Verified {
@@ -747,16 +749,18 @@ func TestScoreReleaseAnomalies(t *testing.T) {
 			expectedVerify: false,
 		},
 		{
-			name: "Dormant package (>1 year inactive)",
+			name: "Dormant package (>1 year inactive, commit data unavailable)",
 			result: models.AnalysisResult{
 				Metadata: models.PackageMetadata{
 					RepoLastCommit: time.Now().AddDate(-2, 0, 0), // 2 years ago
 					RepoCreatedAt:  time.Now().AddDate(-3, 0, 0), // 3 years ago
 				},
-				RepositoryURL: "https://github.com/example/repo",
+				RepositoryURL: "https://example.com/dormant-repo", // Non-GitHub URL avoids rate-limit flakiness
 			},
-			expectedRisk:   1,
-			expectedDesc:   "Package appears dormant",
+			// Dormancy detection now requires commit activity data to confirm <10 commits
+			// in prior 2 years. Without reachable API, dormancy is skipped (incomplete coverage).
+			expectedRisk:   0,
+			expectedDesc:   "no anomalies detected",
 			expectedVerify: true,
 		},
 		{
@@ -1115,16 +1119,17 @@ func TestScoreReleaseAnomalies_ScoreFieldConsistency(t *testing.T) {
 			expectedRisk:  1,
 		},
 		{
-			name: "Dormant package - Score should be 1 (= 2 - RiskPoints)",
+			name: "Dormant package (commit data unavailable) - Score should be 2 (= 2 - RiskPoints=0)",
 			result: models.AnalysisResult{
-				RepositoryURL: "https://github.com/example/old-package",
+				RepositoryURL: "https://example.com/old-package", // Non-GitHub URL avoids rate-limit flakiness
 				Metadata: models.PackageMetadata{
 					RepoLastCommit: time.Now().AddDate(-2, 0, 0), // 2 years dormant
 					RepoCreatedAt:  time.Now().AddDate(-4, 0, 0),
 				},
 			},
-			expectedScore: 1,
-			expectedRisk:  1,
+			// Dormancy detection requires commit activity data; without it, dormancy skipped
+			expectedScore: 2,
+			expectedRisk:  0,
 		},
 		{
 			name: "Active package - Score should be 2 (= 2 - RiskPoints=0)",
