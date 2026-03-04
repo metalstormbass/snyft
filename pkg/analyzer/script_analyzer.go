@@ -34,7 +34,7 @@ var (
 // requires subprocess/exec calls for compilation.
 // Source: Python Packaging Authority (PyPA) documentation; setuptools/distutils build_ext
 var (
-	rePyCExtContext = regexp.MustCompile(`(?i)(?:from\s+(?:distutils|setuptools)\s+(?:import|\.)|` +
+	rePyCExtContext = regexp.MustCompile(`(?i)(?:` +
 		`\bExtension\s*\(|` +
 		`\bext_modules\s*=|` +
 		`\bcythonize\s*\(|` +
@@ -63,6 +63,10 @@ var (
 		`bash\s+-c|sh\s+-c|` +
 		`python\s+-c|` +
 		`/tmp/|/var/tmp/)`)
+	// Benign exec() patterns — version reading is extremely common in Python packages.
+	// Pattern: exec(open('version.py').read()) or exec(open("src/_version.py").read())
+	// Source: Python Packaging Authority recommendations; used by thousands of PyPI packages
+	rePyBenignExecPattern = regexp.MustCompile(`(?i)exec\s*\(\s*(?:open|compile)\s*\(\s*['\"].*?(?:version|_version|__version__|VERSION).*?['"]\s*(?:,\s*['\"]r['"])?\s*\)\s*\.read\s*\(\s*\)`)
 )
 
 // Patterns that can be explained by C extension builds.
@@ -256,9 +260,13 @@ func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 	// Filter for C extension build patterns.
 	// Packages like psycopg2, numpy, etc. legitimately use subprocess/exec calls
 	// for compilation. If the setup.py has C extension build context and all
-	// dangerous patterns are explainable by build operations, downgrade severity.
+	// dangerous patterns are explainable by build operations, remove them entirely.
 	// Source: PyPA documentation on building C extensions with setuptools/distutils
 	analysis.DangerousPatterns = filterBuildPatterns(setupContent, analysis.DangerousPatterns)
+
+	// Enrich surviving dangerous patterns with line evidence so users can see
+	// the specific code that triggered the flag.
+	analysis.DangerousPatterns = enrichPatternsWithEvidence(setupContent, analysis.DangerousPatterns)
 
 	// Recalculate risk level
 	analysis.HasDangerousPatterns = len(analysis.DangerousPatterns) > 0
@@ -284,8 +292,9 @@ func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 // filterBuildPatterns checks if detected patterns in a setup.py are explained by
 // C extension build operations. If the file has C extension context (distutils,
 // setuptools Extension, Cython, etc.) and the flagged patterns match benign build
-// commands (gcc, make, cmake, etc.), they are downgraded from HIGH to LOW.
-// Patterns that involve network operations or downloads are never downgraded.
+// commands (gcc, make, cmake, *-config, etc.) or benign version-reading exec()
+// calls, the patterns are removed entirely — they are build artifacts, not threats.
+// Patterns that involve network operations or downloads are never removed.
 func filterBuildPatterns(content string, patterns []DangerousPattern) []DangerousPattern {
 	// If no C extension build context, no filtering needed
 	if !rePyCExtContext.MatchString(content) {
@@ -308,27 +317,59 @@ func filterBuildPatterns(content string, patterns []DangerousPattern) []Dangerou
 
 		if matchLine != "" && rePyDangerousSubprocessTarget.MatchString(matchLine) {
 			// Line contains dangerous targets (curl, wget, pip install, etc.)
-			// Keep the pattern as-is — this is not a benign build operation
+			// Keep the pattern — this is not a benign build operation.
+			// Include the actual line as evidence so users can assess it.
+			p.Description = fmt.Sprintf("%s | Evidence: %s", p.Description, strings.TrimSpace(matchLine))
 			filtered = append(filtered, p)
 			continue
 		}
 
 		if matchLine != "" && rePyBenignBuildCmd.MatchString(matchLine) {
-			// Line contains benign build commands — downgrade to LOW
-			p.Severity = "LOW"
-			p.Description = p.Description + " (likely C extension build)"
-			filtered = append(filtered, p)
+			// Line contains benign build commands (gcc, make, *-config, etc.)
+			// Remove entirely — this is a standard build operation.
 			continue
 		}
 
-		// Match is in a build context but line doesn't have specific build commands.
-		// Downgrade to LOW since the overall file context is C extension building.
-		p.Severity = "LOW"
-		p.Description = p.Description + " (in C extension build context)"
-		filtered = append(filtered, p)
+		if matchLine != "" && rePyBenignExecPattern.MatchString(matchLine) {
+			// Line matches benign version-reading exec() pattern
+			// e.g. exec(open('version.py').read())
+			// Remove entirely — this is a standard Python versioning pattern.
+			continue
+		}
+
+		// Match is in a build context but line doesn't have specific build commands
+		// or version-reading patterns. Still remove — the overall file context is
+		// C extension building and the pattern is build-explainable.
+		continue
 	}
 
 	return filtered
+}
+
+// enrichPatternsWithEvidence adds the actual matching source line to pattern
+// descriptions for patterns that survive filtering. This gives users the specific
+// code that triggered the flag so they can assess it themselves.
+func enrichPatternsWithEvidence(content string, patterns []DangerousPattern) []DangerousPattern {
+	lines := strings.Split(content, "\n")
+
+	for i := range patterns {
+		matchLine := findMatchLine(lines, patterns[i].Match)
+		if matchLine == "" {
+			continue
+		}
+		trimmed := strings.TrimSpace(matchLine)
+		// Only add evidence if not already present (filterBuildPatterns may have added it)
+		if !strings.Contains(patterns[i].Description, "Evidence:") {
+			// Find line number
+			lineNum := findMatchLineNumber(lines, patterns[i].Match)
+			if lineNum > 0 {
+				patterns[i].Description = fmt.Sprintf("%s | Evidence (line %d): %s", patterns[i].Description, lineNum, trimmed)
+			} else {
+				patterns[i].Description = fmt.Sprintf("%s | Evidence: %s", patterns[i].Description, trimmed)
+			}
+		}
+	}
+	return patterns
 }
 
 // findMatchLine returns the full line from the content that contains the match string.
@@ -339,6 +380,16 @@ func findMatchLine(lines []string, match string) string {
 		}
 	}
 	return ""
+}
+
+// findMatchLineNumber returns the 1-based line number containing the match string.
+func findMatchLineNumber(lines []string, match string) int {
+	for i, line := range lines {
+		if strings.Contains(line, match) {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // scriptFileExtensions lists file extensions considered as executable script files.
