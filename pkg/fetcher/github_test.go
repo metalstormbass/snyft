@@ -1608,9 +1608,9 @@ func TestGetCommitAuthors_DeduplicatesNoreplyEmails(t *testing.T) {
 		page++
 		w.Header().Set("Content-Type", "application/json")
 		if page == 1 {
-			json.NewEncoder(w).Encode(commits)
+			_ = json.NewEncoder(w).Encode(commits)
 		} else {
-			json.NewEncoder(w).Encode([]GitHubCommit{})
+			_ = json.NewEncoder(w).Encode([]GitHubCommit{})
 		}
 	}))
 	defer server.Close()
@@ -1664,9 +1664,9 @@ func TestGetCommitAuthors_FiltersBotCommits(t *testing.T) {
 		page++
 		w.Header().Set("Content-Type", "application/json")
 		if page == 1 {
-			json.NewEncoder(w).Encode(commits)
+			_ = json.NewEncoder(w).Encode(commits)
 		} else {
-			json.NewEncoder(w).Encode([]GitHubCommit{})
+			_ = json.NewEncoder(w).Encode([]GitHubCommit{})
 		}
 	}))
 	defer server.Close()
