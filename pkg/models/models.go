@@ -152,11 +152,8 @@ type PackageMetadata struct {
 	BusFactor           int               `json:"bus_factor"`             // Number of contributors for 50% of commits
 	CommitDistribution  map[string]int    `json:"commit_distribution"`    // Author -> commit count
 	TopContributorPct   float64           `json:"top_contributor_pct"`    // Percentage by top contributor
-	CodeReviewRate      float64           `json:"code_review_rate"`       // Percentage of PRs with reviews
-	RequiredReviewers   int               `json:"required_reviewers"`     // Required reviewers from branch protection
-	HasBranchProtection    bool           `json:"has_branch_protection"`     // Whether branch protection is enabled
-	BranchProtectionDenied bool           `json:"branch_protection_denied"` // True when API returned 403/404 (admin access required)
-	CIQualityScore      int               `json:"ci_quality_score"`       // 0-10 CI quality score
+	CodeReviewRate float64 `json:"code_review_rate"` // Percentage of PRs with reviews
+	CIQualityScore int     `json:"ci_quality_score"` // 0-10 CI quality score
 
 	// Install-time execution
 	InstallScripts      map[string]string `json:"install_scripts,omitempty"`       // postinstall, preinstall, etc.

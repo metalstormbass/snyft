@@ -25,10 +25,10 @@ func TestScoreReleaseSecurity_LowRisk_ComprehensiveControls(t *testing.T) {
 		RepositoryURL: "https://github.com/secure/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true, // Automated CI/CD releases
-			HasBranchProtection: true, // Branch protection enabled
 			SignedReleases:      true, // Releases are cryptographically signed
-			RequiredReviewers:   2,    // Requires 2 PR reviews before merge
 			CISystems:           []string{"GitHub Actions"},
+			CodeReviewRate:      80, // High review rate replaces removed branch protection
+			OSSFChecks:          map[string]int{"Branch-Protection": 8},
 		},
 	}
 
@@ -62,9 +62,7 @@ func TestScoreReleaseSecurity_HighRisk_LocalPublishingNoProtections(t *testing.T
 		RepositoryURL: "https://github.com/insecure/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false, // Manual/local publishing
-			HasBranchProtection: false, // No branch protection
 			SignedReleases:      false, // Unsigned releases
-			RequiredReviewers:   0,     // No required reviews
 			CISystems:           []string{},
 		},
 	}
@@ -97,9 +95,7 @@ func TestScoreReleaseSecurity_ModerateRisk_PartialControls(t *testing.T) {
 		RepositoryURL: "https://github.com/partial/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,  // Has CI/CD
-			HasBranchProtection: true,  // Has branch protection
 			SignedReleases:      false, // But no signed releases
-			RequiredReviewers:   0,     // And no required reviews
 			CISystems:           []string{"Travis CI"},
 		},
 	}
@@ -110,8 +106,9 @@ func TestScoreReleaseSecurity_ModerateRisk_PartialControls(t *testing.T) {
 		t.Errorf("Expected 1 risk point for partial controls, got %d", score.RiskPoints)
 	}
 
-	if score.Score < 2 || score.Score > 3 {
-		t.Errorf("Expected score 2-3 for moderate risk, got %d", score.Score)
+	// 1 point (CI only) → score=1
+	if score.Score != 1 {
+		t.Errorf("Expected score 1 for moderate risk, got %d", score.Score)
 	}
 
 	if !score.Verified {
@@ -157,9 +154,7 @@ func TestScoreReleaseSecurity_ModerateRisk_CIOnlyNoOtherControls(t *testing.T) {
 		RepositoryURL: "https://github.com/ci-only/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,  // Has CI/CD
-			HasBranchProtection: false, // No branch protection
 			SignedReleases:      false, // No signed releases
-			RequiredReviewers:   0,     // No required reviews
 			CISystems:           []string{"GitHub Actions"},
 		},
 	}
@@ -192,9 +187,7 @@ func TestScoreReleaseSecurity_HighRisk_GitHubActionsNoAutomatedRelease(t *testin
 		RepositoryURL: "https://github.com/manual-release/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false, // Manual releases despite having CI
-			HasBranchProtection: false,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			CISystems:           []string{"GitHub Actions"}, // CI exists but not used for releases
 		},
 	}
@@ -210,23 +203,23 @@ func TestScoreReleaseSecurity_HighRisk_GitHubActionsNoAutomatedRelease(t *testin
 	}
 }
 
-// Test: Package with branch protection and reviews but no CI publishing
+// Test: Package with branch protection (via OSSF) and reviews but no CI publishing
 // Justification: Branch protection and code reviews help but if releases are still
 //                manual/local, an attacker who compromises a maintainer's local machine
 //                or npm credentials can publish malicious versions directly to registry.
 // Source: npm security incidents - compromised local credentials used to publish malicious updates
-// Methodology: Check HasBranchProtection=true, RequiredReviewers>0 but HasReleaseProcess=false
+// Methodology: Check OSSF Branch-Protection >= 7, CodeReviewRate >= 75 but HasReleaseProcess=false
 // Result: 1 risk point - good repository practices but insecure publishing method
 func TestScoreReleaseSecurity_ModerateRisk_ProtectedRepoManualPublish(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/protected-manual/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   false, // Still manual publishing
-			HasBranchProtection: true,  // Branch is protected
-			SignedReleases:      false,
-			RequiredReviewers:   2, // Requires reviews
-			CISystems:           []string{},
+			HasReleaseProcess: false, // Still manual publishing
+			SignedReleases:    false,
+			CISystems:         []string{},
+			OSSFChecks:        map[string]int{"Branch-Protection": 8}, // Branch protection via OSSF
+			CodeReviewRate:    80, // High review rate
 		},
 	}
 
@@ -236,8 +229,9 @@ func TestScoreReleaseSecurity_ModerateRisk_ProtectedRepoManualPublish(t *testing
 		t.Errorf("Expected 1 risk point for protected repo but manual publishing, got %d", score.RiskPoints)
 	}
 
-	if score.Score < 2 || score.Score > 3 {
-		t.Errorf("Expected score 2-3 for moderate risk, got %d", score.Score)
+	// 2 points (OSSF branch + code review) → score=2, moderate risk
+	if score.Score != 2 {
+		t.Errorf("Expected score 2 for moderate risk, got %d", score.Score)
 	}
 
 	if !score.Verified {
@@ -252,23 +246,23 @@ func TestScoreReleaseSecurity_ModerateRisk_ProtectedRepoManualPublish(t *testing
 // Source: Sigstore documentation (https://www.sigstore.dev/)
 //         npm provenance attestations (https://github.blog/2023-04-19-introducing-npm-package-provenance/)
 // Methodology: Check all controls present except SignedReleases=false
-// Result: 0 risk points - 3 controls present (CI + branch protection + reviews) is strong
+// Result: 0 risk points - 3 controls present (CI + OSSF branch protection + code review) is strong
 func TestScoreReleaseSecurity_ModerateRisk_AllControlsExceptSigning(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/unsigned/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      false, // Missing signatures
-			RequiredReviewers:   2,
-			CISystems:           []string{"GitHub Actions"},
+			HasReleaseProcess: true,
+			SignedReleases:    false, // Missing signatures
+			CISystems:         []string{"GitHub Actions"},
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
 		},
 	}
 
 	score := analyzer.scoreReleaseSecurity(result)
 
-	// 3 points (CI + branch + reviewers) → 0 risk with adjusted thresholds
+	// 3 points (CI + OSSF branch + code review) → 0 risk with adjusted thresholds
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points for 3 controls present, got %d", score.RiskPoints)
 	}
@@ -289,18 +283,17 @@ func TestScoreReleaseSecurity_ModerateRisk_AllControlsExceptSigning(t *testing.T
 //                The penalty reduces the effective security score even when CI is present.
 // Source: SLSA Build L3 - https://slsa.dev/spec/v1.0/levels
 //         "Backstabber's Knife Collection" (Ohm et al., 2020) - https://arxiv.org/abs/2005.09535
-// Methodology: Check HasSelfHosted=true with CI and branch protection present; verify penalty applied
-// Result: 2 risk points - self-hosted runner erodes value of CI-based publishing
+// Methodology: Check HasSelfHosted=true with CI and OSSF branch protection present; verify penalty applied
+// Result: 1 risk point - self-hosted runner erodes value of CI-based publishing
 func TestScoreReleaseSecurity_HighRisk_SelfHostedRunnerPenalty(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/selfhosted/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,  // Has CI/CD
-			HasBranchProtection: true,  // Has branch protection
-			SignedReleases:      false,
-			RequiredReviewers:   0,
-			HasSelfHosted:       true, // Self-hosted runner: erodes CI security
+			HasReleaseProcess: true,  // Has CI/CD
+			SignedReleases:    false,
+			HasSelfHosted:     true, // Self-hosted runner: erodes CI security
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
 			BuildSystems: []models.BuildSystemInfo{
 				{
 					Platform:      "GitHub Actions",
@@ -315,7 +308,7 @@ func TestScoreReleaseSecurity_HighRisk_SelfHostedRunnerPenalty(t *testing.T) {
 
 	score := analyzer.scoreReleaseSecurity(result)
 
-	// Points: CI(+1) + BranchProtection(+1) + SelfHosted(-1) = 1 → riskPoints=1
+	// Points: CI(+1) + OSSFBranch(+1) + SelfHosted(-1) = 1 → riskPoints=1
 	if score.RiskPoints != 1 {
 		t.Errorf("Expected 1 risk point for self-hosted runner with partial controls, got %d", score.RiskPoints)
 	}
@@ -340,17 +333,17 @@ func TestScoreReleaseSecurity_HighRisk_SelfHostedRunnerPenalty(t *testing.T) {
 //                branch protection, reviews, or signed releases.
 // Source: SLSA Build L3 requirements - trusted build environment is non-negotiable
 // Methodology: Check all 4 controls present + HasSelfHosted=true; verify penalty reduces to moderate
-// Result: 1 risk point - self-hosted penalty prevents achieving lowest risk score
+// Result: 0 risk points - 3 points after self-hosted penalty still meets low-risk threshold
 func TestScoreReleaseSecurity_ModerateRisk_SelfHostedWithFullControls(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/full-selfhosted/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true, // CI/CD
-			HasBranchProtection: true, // Branch protection
-			SignedReleases:      true, // Signed releases
-			RequiredReviewers:   2,    // Required reviews
-			HasSelfHosted:       true, // Self-hosted penalty
+			HasReleaseProcess: true, // CI/CD
+			SignedReleases:    true, // Signed releases
+			HasSelfHosted:     true, // Self-hosted penalty
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
 			BuildSystems: []models.BuildSystemInfo{
 				{
 					Platform:     "Jenkins",
@@ -364,7 +357,7 @@ func TestScoreReleaseSecurity_ModerateRisk_SelfHostedWithFullControls(t *testing
 
 	score := analyzer.scoreReleaseSecurity(result)
 
-	// Points: CI(+1) + Branch(+1) + Signed(+1) + Reviewers(+1) + SelfHosted(-1) = 3 → riskPoints=0
+	// Points: CI(+1) + OSSFBranch(+1) + Signed(+1) + CodeReview(+1) + SelfHosted(-1) = 3 → riskPoints=0
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points (3 points after self-hosted penalty meets threshold), got %d", score.RiskPoints)
 	}
@@ -393,9 +386,7 @@ func TestScoreReleaseSecurity_DescriptionAccuracy(t *testing.T) {
 			name: "zero points - poor release security",
 			metadata: models.PackageMetadata{
 				HasReleaseProcess:   false,
-				HasBranchProtection: false,
 				SignedReleases:      false,
-				RequiredReviewers:   0,
 			},
 			mustContain: "No release security controls detected",
 		},
@@ -403,9 +394,7 @@ func TestScoreReleaseSecurity_DescriptionAccuracy(t *testing.T) {
 			name: "one point - moderate release security",
 			metadata: models.PackageMetadata{
 				HasReleaseProcess:   true, // Only 1 control
-				HasBranchProtection: false,
 				SignedReleases:      false,
-				RequiredReviewers:   0,
 			},
 			mustContain: "gaps remain",
 		},
@@ -413,19 +402,17 @@ func TestScoreReleaseSecurity_DescriptionAccuracy(t *testing.T) {
 			name: "two points - moderate release security",
 			metadata: models.PackageMetadata{
 				HasReleaseProcess:   true, // 2 controls
-				HasBranchProtection: true,
 				SignedReleases:      false,
-				RequiredReviewers:   0,
 			},
 			mustContain: "gaps remain",
 		},
 		{
 			name: "four points - strong release security",
 			metadata: models.PackageMetadata{
-				HasReleaseProcess:   true, // All 4 controls
-				HasBranchProtection: true,
-				SignedReleases:      true,
-				RequiredReviewers:   1,
+				HasReleaseProcess: true, // All 4 controls
+				SignedReleases:    true,
+				OSSFChecks:        map[string]int{"Branch-Protection": 8},
+				CodeReviewRate:    80,
 			},
 			mustContain: "Multiple release security controls",
 		},
@@ -460,11 +447,11 @@ func TestScoreReleaseSecurity_EvidenceContainsExpectedSignals(t *testing.T) {
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/evidence-check/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   3,
-			CISystems:           []string{"GitHub Actions"},
+			HasReleaseProcess: true,
+			SignedReleases:    true,
+			CISystems:         []string{"GitHub Actions"},
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
 		},
 	}
 
@@ -481,9 +468,9 @@ func TestScoreReleaseSecurity_EvidenceContainsExpectedSignals(t *testing.T) {
 		contains string
 	}{
 		{"CI release process", "Automated CI/CD release process detected"},
-		{"branch protection", "Branch protection enabled on default branch"},
+		{"branch protection", "OSSF Branch-Protection: 8/10"},
 		{"signed releases", "Releases are cryptographically signed"},
-		{"required reviewers", "3 required reviewers for PRs"},
+		{"required reviewers", "80% PRs reviewed"},
 	}
 
 	for _, check := range evidenceChecks {
@@ -514,9 +501,7 @@ func TestScoreReleaseSecurity_BoundaryConditions(t *testing.T) {
 			name: "one point - moderate risk",
 			metadata: models.PackageMetadata{
 				HasReleaseProcess:   true,  // +1
-				HasBranchProtection: false, // no points
 				SignedReleases:      false,
-				RequiredReviewers:   0,
 			},
 			expectedRiskPoints: 1,
 			description:        "1 point should be moderate risk (threshold is 1)",
@@ -525,10 +510,8 @@ func TestScoreReleaseSecurity_BoundaryConditions(t *testing.T) {
 			// Boundary: exactly 2 points (still moderate)
 			name: "two points - still moderate risk",
 			metadata: models.PackageMetadata{
-				HasReleaseProcess:   true, // +1
-				HasBranchProtection: true, // +1
-				SignedReleases:      false,
-				RequiredReviewers:   0,
+				HasReleaseProcess: true, // +1
+				SignedReleases:    true, // +1
 			},
 			expectedRiskPoints: 1,
 			description:        "2 points should be moderate risk",
@@ -537,10 +520,9 @@ func TestScoreReleaseSecurity_BoundaryConditions(t *testing.T) {
 			// Boundary: exactly 3 points (crosses into low risk)
 			name: "three points - crosses into low risk",
 			metadata: models.PackageMetadata{
-				HasReleaseProcess:   true, // +1
-				HasBranchProtection: true, // +1
-				SignedReleases:      true, // +1
-				RequiredReviewers:   0,
+				HasReleaseProcess: true, // +1
+				SignedReleases:    true, // +1
+				OSSFChecks:        map[string]int{"Branch-Protection": 8}, // +1
 			},
 			expectedRiskPoints: 0,
 			description:        "3 points should be low risk (threshold is 3)",
@@ -549,10 +531,10 @@ func TestScoreReleaseSecurity_BoundaryConditions(t *testing.T) {
 			// Boundary: exactly 4 points (low risk)
 			name: "four points - low risk",
 			metadata: models.PackageMetadata{
-				HasReleaseProcess:   true, // +1
-				HasBranchProtection: true, // +1
-				SignedReleases:      true, // +1
-				RequiredReviewers:   1,    // +1
+				HasReleaseProcess: true, // +1
+				SignedReleases:    true, // +1
+				OSSFChecks:        map[string]int{"Branch-Protection": 8}, // +1
+				CodeReviewRate:    80, // +1
 			},
 			expectedRiskPoints: 0,
 			description:        "4 points should be low risk",
@@ -588,23 +570,23 @@ func TestScoreReleaseSecurity_RealWorldProfile_WellMaintainedPythonPackage(t *te
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/typical-oss/python-package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,  // Automated releases via GitHub Actions
-			HasBranchProtection: true,  // Branch protection with reviews
-			SignedReleases:      false, // Common gap: most PyPI packages don't sign releases
-			RequiredReviewers:   1,     // At least 1 reviewer required
-			CISystems:           []string{"GitHub Actions"},
+			HasReleaseProcess: true,  // Automated releases via GitHub Actions
+			SignedReleases:    false, // Common gap: most PyPI packages don't sign releases
+			CISystems:         []string{"GitHub Actions"},
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
 		},
 	}
 
 	score := analyzer.scoreReleaseSecurity(result)
 
-	// 3 points (CI + branch protection + reviewers) → riskPoints=0 (low risk)
+	// 3 points (CI + OSSF branch protection + code review) → riskPoints=0 (low risk)
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points for well-maintained package with 3 controls, got %d", score.RiskPoints)
 	}
 
-	if score.Score < 2 || score.Score > 4 {
-		t.Errorf("Expected score 2-4 for well-maintained package, got %d", score.Score)
+	if score.Score != 2 {
+		t.Errorf("Expected score 2 for well-maintained package, got %d", score.Score)
 	}
 
 	if !score.Verified {
@@ -629,9 +611,7 @@ func TestScoreReleaseSecurity_RealWorldProfile_SmallUtilityPackage(t *testing.T)
 		RepositoryURL: "https://github.com/small-maintainer/utility-package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false, // Manual publishing (typical for small packages)
-			HasBranchProtection: false, // No branch protection rules configured
 			SignedReleases:      false, // No cryptographic release signing
-			RequiredReviewers:   0,     // No required code reviews
 			CISystems:           []string{"GitHub Actions"}, // CI exists for tests, not releases
 		},
 	}
@@ -668,11 +648,11 @@ func TestScoreReleaseSecurity_RealWorldProfile_EnterpriseJavaLibrary(t *testing.
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/enterprise-org/java-library",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,  // Automated Maven Central release pipeline
-			HasBranchProtection: true,  // Branch protection with committer rules
-			SignedReleases:      true,  // GPG-signed Maven artifacts (standard for Central)
-			RequiredReviewers:   2,     // Minimum 2 committer reviews
-			CISystems:           []string{"GitHub Actions"},
+			HasReleaseProcess: true,  // Automated Maven Central release pipeline
+			SignedReleases:    true,  // GPG-signed Maven artifacts (standard for Central)
+			CISystems:         []string{"GitHub Actions"},
+			OSSFChecks:        map[string]int{"Branch-Protection": 9},
+			CodeReviewRate:    90,
 		},
 	}
 
@@ -708,9 +688,7 @@ func TestScoreReleaseSecurity_RealWorldProfile_NPMAuthLibrary(t *testing.T) {
 		RepositoryURL: "https://github.com/auth-maintainer/jwt-library",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,  // npm publish via GitHub Actions
-			HasBranchProtection: true,  // Branch protection configured
 			SignedReleases:      false, // npm provenance not yet adopted
-			RequiredReviewers:   0,     // No required reviewers
 			CISystems:           []string{"GitHub Actions"},
 		},
 	}
@@ -743,9 +721,7 @@ func TestScoreReleaseSecurity_RealWorldProfile_NPMSingleMaintainerUtility(t *tes
 		RepositoryURL: "https://github.com/solo-dev/utility-package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false, // npm publish from local machine
-			HasBranchProtection: false, // No branch protection rules
 			SignedReleases:      false, // No npm provenance
-			RequiredReviewers:   0,     // Solo maintainer, no reviews
 			CISystems:           []string{},
 		},
 	}
@@ -783,9 +759,7 @@ func TestScoreReleaseSecurity_Regression_BuildSystemsNonEmpty_CISystemsEmpty_NoP
 		RepositoryURL: "https://github.com/regression/ci-empty",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,
-			HasBranchProtection: true,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			HasSelfHosted:       false,
 			BuildSystems: []models.BuildSystemInfo{
 				{
@@ -831,9 +805,7 @@ func TestScoreReleaseSecurity_SelfHostedPenaltyFloor_CannotGoNegative(t *testing
 		RepositoryURL: "https://github.com/floor-test/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false, // 0 points
-			HasBranchProtection: false, // 0 points
 			SignedReleases:      false, // 0 points
-			RequiredReviewers:   0,     // 0 points
 			HasSelfHosted:       true,  // -1 penalty, clamped to 0
 			BuildSystems: []models.BuildSystemInfo{
 				{
@@ -881,9 +853,7 @@ func TestScoreReleaseSecurity_CloudHostedCI_EvidenceIncluded(t *testing.T) {
 		RepositoryURL: "https://github.com/cloud-ci/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,
-			HasBranchProtection: true,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			HasSelfHosted:       false,
 			BuildSystems: []models.BuildSystemInfo{
 				{
@@ -918,11 +888,11 @@ func TestScoreReleaseSecurity_CIWorkflowRiskPenalty(t *testing.T) {
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/risky-ci/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   1,
-			CISystems:           []string{"GitHub Actions"},
+			HasReleaseProcess: true,
+			SignedReleases:    true,
+			CISystems:         []string{"GitHub Actions"},
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
 					Platform:                     "GitHub Actions",
@@ -962,11 +932,11 @@ func TestScoreReleaseSecurity_CIWorkflowRiskBelowThreshold(t *testing.T) {
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/minor-ci-risk/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   1,
-			CISystems:           []string{"GitHub Actions"},
+			HasReleaseProcess: true,
+			SignedReleases:    true,
+			CISystems:         []string{"GitHub Actions"},
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
 					Platform:        "GitHub Actions",
@@ -998,9 +968,7 @@ func TestScoreReleaseSecurity_CIWorkflowRiskEvidence(t *testing.T) {
 		RepositoryURL: "https://github.com/evidence-ci/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,
-			HasBranchProtection: true,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			CISystems:           []string{"GitHub Actions"},
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
@@ -1046,11 +1014,11 @@ func TestScoreReleaseSecurity_MultipleCIPlatformRisks(t *testing.T) {
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/multi-ci/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   1,
-			CISystems:           []string{"GitHub Actions", "CircleCI"},
+			HasReleaseProcess: true,
+			SignedReleases:    true,
+			CISystems:         []string{"GitHub Actions", "CircleCI"},
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
 			CIWorkflowRisks: []models.CIWorkflowRisk{
 				{
 					Platform:        "GitHub Actions",
@@ -1088,12 +1056,12 @@ func TestScoreReleaseSecurity_EmptyCIWorkflowRisks(t *testing.T) {
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/no-ci-risks/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      true,
-			RequiredReviewers:   1,
-			CISystems:           []string{"GitHub Actions"},
-			CIWorkflowRisks:    []models.CIWorkflowRisk{},
+			HasReleaseProcess: true,
+			SignedReleases:    true,
+			CISystems:         []string{"GitHub Actions"},
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
+			CodeReviewRate:    80,
+			CIWorkflowRisks:   []models.CIWorkflowRisk{},
 		},
 	}
 
@@ -1122,9 +1090,7 @@ func TestScoreReleaseSecurity_OSSFFallback_BranchProtection(t *testing.T) {
 		RepositoryURL: "https://github.com/ossf-fallback/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,  // CI/CD
-			HasBranchProtection: false, // Direct API failed (no admin access)
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			OSSFChecks: map[string]int{
 				"Branch-Protection": 8, // OSSF says branch protection is good
 			},
@@ -1156,9 +1122,7 @@ func TestScoreReleaseSecurity_OSSFFallback_CodeReview(t *testing.T) {
 		RepositoryURL: "https://github.com/ossf-review/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,  // CI/CD
-			HasBranchProtection: false,
 			SignedReleases:      false,
-			RequiredReviewers:   0, // Branch protection API failed
 			CodeReviewRate:      0, // No PR stats available either
 			OSSFChecks: map[string]int{
 				"Code-Review": 9, // OSSF says code review practices are good
@@ -1189,19 +1153,19 @@ func TestScoreReleaseSecurity_OSSFFallback_SignedReleases(t *testing.T) {
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/ossf-signed/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,  // CI/CD
-			HasBranchProtection: true,  // Direct data available
-			SignedReleases:      false, // Direct check didn't find signing
-			RequiredReviewers:   1,
+			HasReleaseProcess: true,  // CI/CD
+			SignedReleases:    false, // Direct check didn't find signing
+			CodeReviewRate:    80,
 			OSSFChecks: map[string]int{
-				"Signed-Releases": 8, // OSSF says releases are signed
+				"Signed-Releases":   8, // OSSF says releases are signed
+				"Branch-Protection": 8,
 			},
 		},
 	}
 
 	score := analyzer.scoreReleaseSecurity(result)
 
-	// Should get 4 points: CI(+1) + Branch(+1) + OSSF Signed(+1) + Reviewers(+1)
+	// Should get 4 points: CI(+1) + OSSFBranch(+1) + OSSF Signed(+1) + CodeReview(+1)
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points with OSSF Signed-Releases fallback, got %d", score.RiskPoints)
 	}
@@ -1223,9 +1187,7 @@ func TestScoreReleaseSecurity_OSSFFallback_Packaging(t *testing.T) {
 		RepositoryURL: "https://github.com/ossf-packaging/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false, // Direct check failed
-			HasBranchProtection: true,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			OSSFChecks: map[string]int{
 				"Packaging": 8, // OSSF says automated packaging exists
 			},
@@ -1256,17 +1218,16 @@ func TestScoreReleaseSecurity_CodeReviewRateFallback(t *testing.T) {
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/review-rate/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true,
-			SignedReleases:      false,
-			RequiredReviewers:   0,    // Branch protection API unavailable
-			CodeReviewRate:      85.0, // But 85% of PRs are reviewed
+			HasReleaseProcess: true,
+			SignedReleases:    false,
+			CodeReviewRate:    85.0, // But 85% of PRs are reviewed
+			OSSFChecks:        map[string]int{"Branch-Protection": 8},
 		},
 	}
 
 	score := analyzer.scoreReleaseSecurity(result)
 
-	// Should get 3 points: CI(+1) + Branch(+1) + CodeReviewRate(+1) → low risk
+	// Should get 3 points: CI(+1) + OSSFBranch(+1) + CodeReviewRate(+1) → low risk
 	if score.RiskPoints != 0 {
 		t.Errorf("Expected 0 risk points with 3 controls (code review rate fallback), got %d", score.RiskPoints)
 	}
@@ -1290,9 +1251,7 @@ func TestScoreReleaseSecurity_AllOSSFFallbacks_ComprehensiveScorecard(t *testing
 		RepositoryURL: "https://github.com/ossf-comprehensive/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false, // Direct checks all unavailable
-			HasBranchProtection: false,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			CodeReviewRate:      0,
 			OSSFChecks: map[string]int{
 				"Packaging":         9,
@@ -1328,9 +1287,7 @@ func TestScoreReleaseSecurity_OSSFFallback_LowScoresNoCredit(t *testing.T) {
 		RepositoryURL: "https://github.com/weak-ossf/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false,
-			HasBranchProtection: false,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			OSSFChecks: map[string]int{
 				"Packaging":         3, // Below threshold
 				"Branch-Protection": 5, // Below threshold
@@ -1365,9 +1322,7 @@ func TestScoreReleaseSecurity_ModerateCodeReviewRate_NoCredit(t *testing.T) {
 		RepositoryURL: "https://github.com/moderate-review/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   true,
-			HasBranchProtection: true,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			CodeReviewRate:      60.0, // Moderate but below 75% threshold
 		},
 	}
@@ -1384,39 +1339,53 @@ func TestScoreReleaseSecurity_ModerateCodeReviewRate_NoCredit(t *testing.T) {
 	}
 }
 
-// Test: Direct data takes precedence over OSSF fallbacks
-// Justification: When direct API data is available (e.g., branch protection API returns data),
-//                it should take precedence over OSSF Scorecard. Direct data is more current
-//                and specific to the exact branch being analyzed.
+// Test: Direct data takes precedence over OSSF fallbacks for signing and code review
+// Justification: When direct API data is available (e.g., SignedReleases=true, CodeReviewRate >= 75),
+//                it should take precedence over OSSF Scorecard fallbacks. Direct data is more current.
+//                Branch protection uses OSSF exclusively (GitHub API requires admin access).
 // Source: Data freshness principle - direct API data is more authoritative
-// Methodology: Set both direct data and OSSF scores; verify direct data is used in evidence
-// Result: Evidence shows direct data, not OSSF fallback
+// Methodology: Set both direct data and OSSF scores for signing and code review;
+//              verify direct data is used in evidence (not OSSF fallback)
+// Result: Evidence shows direct signing and review data; OSSF used only for branch protection
 func TestScoreReleaseSecurity_DirectDataTakesPrecedenceOverOSSF(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/direct-precedence/package",
 		Metadata: models.PackageMetadata{
-			HasReleaseProcess:   true,
-			HasBranchProtection: true, // Direct data available
-			SignedReleases:      true, // Direct data available
-			RequiredReviewers:   2,    // Direct data available
+			HasReleaseProcess: true,
+			SignedReleases:    true, // Direct data available - should take precedence over OSSF Signed-Releases
+			CodeReviewRate:    80,   // Direct data available - should take precedence over OSSF Code-Review
 			OSSFChecks: map[string]int{
-				"Branch-Protection": 9, // Also available but should not be used
-				"Signed-Releases":   8,
-				"Code-Review":       7,
+				"Branch-Protection": 9, // OSSF is the only path for branch protection
+				"Signed-Releases":   8, // Should NOT be used (direct data available)
+				"Code-Review":       7, // Should NOT be used (direct data available)
 			},
 		},
 	}
 
 	score := analyzer.scoreReleaseSecurity(result)
 
-	// Should use direct data, not OSSF
-	if strings.Contains(score.Evidence, "OSSF") {
-		t.Errorf("Expected direct data to take precedence over OSSF, but evidence contains OSSF: %q", score.Evidence)
+	// Direct signing should take precedence - evidence should show direct signing, not OSSF
+	if strings.Contains(score.Evidence, "OSSF Signed-Releases") {
+		t.Errorf("Expected direct signing data to take precedence over OSSF Signed-Releases, but evidence contains OSSF: %q", score.Evidence)
 	}
 
-	if !strings.Contains(score.Evidence, "Branch protection enabled on default branch") {
-		t.Errorf("Expected direct branch protection evidence, got: %q", score.Evidence)
+	if !strings.Contains(score.Evidence, "Releases are cryptographically signed") {
+		t.Errorf("Expected direct signing evidence, got: %q", score.Evidence)
+	}
+
+	// Direct code review rate should take precedence - evidence should show review rate, not OSSF
+	if strings.Contains(score.Evidence, "OSSF Code-Review") {
+		t.Errorf("Expected direct code review rate to take precedence over OSSF Code-Review, but evidence contains OSSF: %q", score.Evidence)
+	}
+
+	if !strings.Contains(score.Evidence, "80% PRs reviewed") {
+		t.Errorf("Expected direct code review rate evidence, got: %q", score.Evidence)
+	}
+
+	// Branch protection should use OSSF (the only path)
+	if !strings.Contains(score.Evidence, "OSSF Branch-Protection: 9/10") {
+		t.Errorf("Expected OSSF Branch-Protection evidence (only path for branch protection), got: %q", score.Evidence)
 	}
 }
 
@@ -1432,9 +1401,7 @@ func TestScoreReleaseSecurity_NilOSSFChecks_NoPanic(t *testing.T) {
 		RepositoryURL: "https://github.com/no-ossf/package",
 		Metadata: models.PackageMetadata{
 			HasReleaseProcess:   false,
-			HasBranchProtection: false,
 			SignedReleases:      false,
-			RequiredReviewers:   0,
 			OSSFChecks:          nil, // OSSF not available
 		},
 	}
@@ -1463,8 +1430,6 @@ func TestScoreReleaseSecurity_BranchProtection_APIAccessDenied_OSSFFallback(t *t
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/example/repo",
 		Metadata: models.PackageMetadata{
-			HasBranchProtection:    false, // GitHub API returned 403
-			BranchProtectionDenied: true,  // Access was denied (403/404)
 			OSSFChecks: map[string]int{
 				"Branch-Protection": 8, // OSSF confirms branch protection exists
 			},
@@ -1492,25 +1457,23 @@ func TestScoreReleaseSecurity_BranchProtection_APIAccessDenied_OSSFFallback(t *t
 	}
 }
 
-// Test: Neither GitHub API nor OSSF has branch protection data → UNAVAILABLE, not FAIL
-// Justification: When the GitHub API returns 403/404 (admin access required) and OSSF
-//                Scorecard has no data for the repository, we cannot determine whether
-//                branch protection is configured. Reporting FAIL would incorrectly penalize
-//                the package for something we simply cannot check. The correct status is
-//                UNAVAILABLE, following the pattern used by governance.go and other checkers.
+// Test: No OSSF data available for branch protection → UNAVAILABLE, not FAIL
+// Justification: When OSSF Scorecard has no data for the repository, we cannot determine
+//                whether branch protection is configured. Reporting FAIL would incorrectly
+//                penalize the package for something we simply cannot check. The correct
+//                status is UNAVAILABLE, following the pattern used by governance.go and
+//                other checkers. Branch protection is checked exclusively via OSSF Scorecard
+//                since the GitHub API requires admin access (returns 403/404 without it).
 // Source: SLSA Build Level Requirements (https://slsa.dev/spec/v1.0/levels)
 //         Governance check UNAVAILABLE pattern (governance.go:245)
-// Methodology: Set BranchProtectionDenied=true, HasBranchProtection=false, and provide
-//              nil OSSFChecks. Verify the check reports UNAVAILABLE.
-// Result: Branch protection check returns UNAVAILABLE when neither source has data.
+// Methodology: Provide nil OSSFChecks. Verify the check reports UNAVAILABLE.
+// Result: Branch protection check returns UNAVAILABLE when OSSF has no data.
 func TestScoreReleaseSecurity_BranchProtection_APIAccessDenied_NoOSSF_ReportsUnavailable(t *testing.T) {
 	analyzer := NewAnalyzer()
 	result := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/example/repo",
 		Metadata: models.PackageMetadata{
-			HasBranchProtection:    false, // GitHub API returned 403
-			BranchProtectionDenied: true,  // Access was denied (403/404)
-			OSSFChecks:             nil,   // No OSSF data available
+			OSSFChecks: nil, // No OSSF data available
 		},
 	}
 
@@ -1521,11 +1484,11 @@ func TestScoreReleaseSecurity_BranchProtection_APIAccessDenied_NoOSSF_ReportsUna
 	for _, check := range score.ChecksPerformed {
 		if check.Name == "Branch protection" {
 			if check.Status != "UNAVAILABLE" {
-				t.Errorf("Expected UNAVAILABLE status for branch protection when API denied and no OSSF data, got %q (detail: %s)",
+				t.Errorf("Expected UNAVAILABLE status for branch protection when no OSSF data, got %q (detail: %s)",
 					check.Status, check.Detail)
 			}
-			if !strings.Contains(check.Detail, "admin access") {
-				t.Errorf("Expected detail to mention admin access requirement, got: %s", check.Detail)
+			if !strings.Contains(check.Detail, "No OSSF Scorecard data available") {
+				t.Errorf("Expected detail to mention no OSSF data available, got: %s", check.Detail)
 			}
 			foundBranchProtCheck = true
 		}
@@ -1538,9 +1501,7 @@ func TestScoreReleaseSecurity_BranchProtection_APIAccessDenied_NoOSSF_ReportsUna
 	result2 := &models.AnalysisResult{
 		RepositoryURL: "https://github.com/example/repo",
 		Metadata: models.PackageMetadata{
-			HasBranchProtection:    false,
-			BranchProtectionDenied: true,
-			OSSFChecks:             map[string]int{"Code-Review": 9}, // Has OSSF data but not for Branch-Protection
+			OSSFChecks: map[string]int{"Code-Review": 9}, // Has OSSF data but not for Branch-Protection
 		},
 	}
 
@@ -1605,8 +1566,6 @@ func TestScoreReleaseSecurity_BranchProtection_OSSFScorecard_CorrectScoring(t *t
 			result := &models.AnalysisResult{
 				RepositoryURL: "https://github.com/example/repo",
 				Metadata: models.PackageMetadata{
-					HasBranchProtection:    false,
-					BranchProtectionDenied: true,
 					OSSFChecks: map[string]int{
 						"Branch-Protection": tt.ossfScore,
 					},

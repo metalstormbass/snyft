@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,7 +27,6 @@ type PyPIPackage struct {
 	RepositoryURL  string
 	Homepage       string
 	License        string
-	Downloads      int64
 	PublishedAt    time.Time
 	Maintainers    []string
 	DirectDepCount int // Number of direct dependencies from requires_dist
@@ -90,9 +88,6 @@ func (c *PyPIClient) GetPackageInfo(packageName string) (*PyPIPackage, error) {
 	// Source: PyPI JSON API docs — info.author, info.author_email, info.maintainer,
 	//         info.maintainer_email fields
 	pkg.Maintainers = extractPyPIMaintainers(pypiResp.Info)
-
-	// PyPI doesn't provide download counts in the JSON API directly
-	pkg.Downloads = 0
 
 	// Count direct dependencies from requires_dist, excluding extras-only deps.
 	// requires_dist entries with "; extra ==" are optional extras, not required deps.
@@ -486,19 +481,6 @@ func (c *PyPIClient) scrapePyPIPackageInfo(packageName string) (*PyPIPackage, er
 	doc.Find("a.vertical-tabs__tab").Each(func(i int, s *goquery.Selection) {
 		if href, exists := s.Attr("href"); exists && isSourceRepoHost(href) {
 			pkg.RepositoryURL = stripRepoSubpageSuffix(href)
-		}
-	})
-
-	// Extract download stats if available
-	doc.Find("p:contains('downloads')").Each(func(i int, s *goquery.Selection) {
-		text := strings.TrimSpace(s.Text())
-		// Try to extract download number
-		parts := strings.Fields(text)
-		for _, part := range parts {
-			if num, err := strconv.ParseInt(strings.ReplaceAll(part, ",", ""), 10, 64); err == nil && num > 0 {
-				pkg.Downloads = num
-				break
-			}
 		}
 	})
 

@@ -46,11 +46,8 @@ type RepoAnalysisData struct {
 	BusFactor              int
 	CommitDistribution     map[string]int
 	TopContributorPct      float64
-	CodeReviewRate         float64
-	RequiredReviewers      int
-	HasBranchProtection    bool
-	BranchProtectionDenied bool
-	CIQualityScore         int
+	CodeReviewRate float64
+	CIQualityScore int
 
 	// Provenance (repo-level parts from analyzeProvenance)
 	SignedReleases    bool
@@ -169,9 +166,6 @@ func applyRepoData(result *models.AnalysisResult, rd *RepoAnalysisData) {
 	result.Metadata.CommitDistribution = rd.CommitDistribution
 	result.Metadata.TopContributorPct = rd.TopContributorPct
 	result.Metadata.CodeReviewRate = rd.CodeReviewRate
-	result.Metadata.RequiredReviewers = rd.RequiredReviewers
-	result.Metadata.HasBranchProtection = rd.HasBranchProtection
-	result.Metadata.BranchProtectionDenied = rd.BranchProtectionDenied
 	result.Metadata.CIQualityScore = rd.CIQualityScore
 
 	// Provenance (repo-level)
@@ -224,11 +218,8 @@ func extractRepoData(result *models.AnalysisResult) *RepoAnalysisData {
 		BusFactor:              result.Metadata.BusFactor,
 		CommitDistribution:     result.Metadata.CommitDistribution,
 		TopContributorPct:      result.Metadata.TopContributorPct,
-		CodeReviewRate:         result.Metadata.CodeReviewRate,
-		RequiredReviewers:      result.Metadata.RequiredReviewers,
-		HasBranchProtection:    result.Metadata.HasBranchProtection,
-		BranchProtectionDenied: result.Metadata.BranchProtectionDenied,
-		CIQualityScore:         result.Metadata.CIQualityScore,
+		CodeReviewRate: result.Metadata.CodeReviewRate,
+		CIQualityScore: result.Metadata.CIQualityScore,
 
 		// Provenance (repo-level)
 		SignedReleases:    result.Metadata.SignedReleases,
