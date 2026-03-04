@@ -41,15 +41,22 @@ var (
 		`from\s+Cython\b|` +
 		`import\s+Cython\b|` +
 		`\bbuild_ext\b|` +
+		`\bbuild_clib\b|` +
 		`\bnumpy\.distutils\b|` +
 		`\bnumpy\.get_include\b|` +
 		`\bpybind11\b|` +
-		`\bcffi\b)`)
+		`\bcffi\b|` +
+		`\./configure\b|` +
+		`\bautoconf\b|` +
+		`\bautomake\b|` +
+		`\bCMakeLists\b)`)
 	// Benign build commands that compilers and build tools use.
 	rePyBenignBuildCmd = regexp.MustCompile(`(?i)(?:gcc|g\+\+|cc\b|c\+\+|clang|clang\+\+|` +
 		`cmake|make\b|pkg-config|swig|cython|gfortran|ar\b|ld\b|` +
 		`python\s+setup\.py\s+build|` +
-		`sdist|bdist|build_ext|egg_info)`)
+		`sdist|bdist|build_ext|egg_info|` +
+		`\./configure|configure\b.*--prefix|autoconf|automake|autoreconf|libtool|` +
+		`\w+[_-]config\b)`)
 	// Truly dangerous subprocess targets — network operations, downloads, unknown script execution.
 	rePyDangerousSubprocessTarget = regexp.MustCompile(`(?i)(?:curl|wget|pip\s+install|` +
 		`fetch\s+http|requests\.get|urllib|` +
@@ -68,6 +75,7 @@ var buildExplainablePatterns = map[string]bool{
 	"process spawn":          true,
 	"cmdclass override":      true,
 	"python -c":              true,
+	"ctypes library load":    true,
 }
 
 // AnalyzePythonSetup patterns — Python-specific supply chain attack patterns.
