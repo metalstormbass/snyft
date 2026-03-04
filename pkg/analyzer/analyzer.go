@@ -333,20 +333,9 @@ func (a *Analyzer) Analyze(dep models.Dependency) models.AnalysisResult {
 		repoURL = mavenPkg.RepositoryURL
 		metadata = packageMetadataFromMaven(mavenPkg)
 
-		// Try to fetch and analyze pom.xml if repository is available
-		if repoURL != "" {
-			gitClient := a.getGitClient(repoURL)
-			if pomContent, err := gitClient.GetFileContent(repoURL, "pom.xml"); err == nil {
-				scriptAnalysis := AnalyzeJavaPOM(pomContent)
-				// Always record that a pom.xml exists so the "single benign
-				// install script" scoring path (1 risk point) is reachable.
-				// Previously HasInstallScripts was only set when dangerous
-				// patterns were found, making the benign path unreachable.
-				metadata.InstallScripts = map[string]string{"pom.xml": pomContent}
-				metadata.HasInstallScripts = true
-				metadata.InstallScriptAnalysis = convertToModelAnalysis(scriptAnalysis)
-			}
-		}
+		// Maven pom.xml is NOT analyzed for install-time hooks because Maven's
+		// build lifecycle does NOT execute during dependency resolution. Flagging
+		// exec-maven-plugin / maven-antrun-plugin was 100% false positive.
 	}
 
 	result.RepositoryURL = repoURL

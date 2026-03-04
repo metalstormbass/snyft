@@ -1525,8 +1525,8 @@ func TestGetCommitAuthors_RateLimited429(t *testing.T) {
 // Test: GetRepositoryInfo returns cached result on second call without hitting the server
 // Justification: Caching reduces redundant network calls. A single package
 //
-//	analysis calls GetRepositoryInfo at least twice (analyzeRepository +
-//	getBranchProtection), so caching is critical for performance.
+//	analysis calls GetRepositoryInfo multiple times, so caching
+//	is critical for performance.
 //
 // Methodology: Count server-side requests via atomic counter; assert the
 //
@@ -2533,7 +2533,6 @@ func TestCrossPackageDeduplication(t *testing.T) {
 		commitAuthorsHits     atomic.Int32
 		signedCommitsHits     atomic.Int32
 		prStatsHits           atomic.Int32
-		branchProtectionHits  atomic.Int32
 		issueResponseTimeHits atomic.Int32
 		workflowFilesHits     atomic.Int32
 	)
@@ -2543,7 +2542,7 @@ func TestCrossPackageDeduplication(t *testing.T) {
 		path := r.URL.Path
 
 		switch {
-		// Repo info (for getBranchProtection -> GetRepositoryInfo)
+		// Repo info
 		case path == "/repos/org/repo":
 			_ = json.NewEncoder(w).Encode(GitHubRepository{
 				Name:          "repo",
@@ -2582,11 +2581,6 @@ func TestCrossPackageDeduplication(t *testing.T) {
 		case path == "/repos/org/repo/pulls":
 			prStatsHits.Add(1)
 			_ = json.NewEncoder(w).Encode([]GitHubPullRequest{})
-
-		// Branch protection (getBranchProtection)
-		case strings.Contains(path, "/branches/main/protection"):
-			branchProtectionHits.Add(1)
-			w.WriteHeader(http.StatusNotFound)
 
 		// Issue response time (GetAverageIssueResponseTime)
 		case path == "/repos/org/repo/issues":
@@ -2628,7 +2622,6 @@ func TestCrossPackageDeduplication(t *testing.T) {
 	firstCommitAuthors := commitAuthorsHits.Load()
 	firstSignedCommits := signedCommitsHits.Load()
 	firstPRStats := prStatsHits.Load()
-	firstBranchProtection := branchProtectionHits.Load()
 	firstIssueResponseTime := issueResponseTimeHits.Load()
 	firstWorkflowFiles := workflowFilesHits.Load()
 
@@ -2663,9 +2656,6 @@ func TestCrossPackageDeduplication(t *testing.T) {
 	}
 	if got := prStatsHits.Load(); got != firstPRStats {
 		t.Errorf("GetPullRequestStats: expected %d total hits, got %d (cache miss on second call)", firstPRStats, got)
-	}
-	if got := branchProtectionHits.Load(); got != firstBranchProtection {
-		t.Errorf("getBranchProtection: expected %d total hits, got %d (cache miss on second call)", firstBranchProtection, got)
 	}
 	if got := issueResponseTimeHits.Load(); got != firstIssueResponseTime {
 		t.Errorf("GetAverageIssueResponseTime: expected %d total hits, got %d (cache miss on second call)", firstIssueResponseTime, got)

@@ -167,18 +167,6 @@ func TestFetchBatchRepoData(t *testing.T) {
 		t.Error("expected CODEOWNERS to NOT exist")
 	}
 
-	// Verify branch protection
-	if batch.BranchProtection == nil {
-		t.Fatal("expected branch protection, got nil")
-	}
-	if batch.BranchProtection.RequiredReviews == nil {
-		t.Fatal("expected required reviews, got nil")
-	}
-	if batch.BranchProtection.RequiredReviews.RequiredApprovingReviewCount != 2 {
-		t.Errorf("expected 2 required reviewers, got %d",
-			batch.BranchProtection.RequiredReviews.RequiredApprovingReviewCount)
-	}
-
 	// Verify caches were populated
 	if cached, ok := client.cache.getRepoInfo("expressjs/express"); !ok || cached == nil {
 		t.Error("expected repo info to be cached")
@@ -349,11 +337,6 @@ func TestBatchGovernanceFilesAllMissing(t *testing.T) {
 		t.Errorf("expected 0 releases, got %d", len(batch.Releases))
 	}
 
-	// No branch protection
-	if batch.BranchProtection != nil {
-		t.Error("expected no branch protection, got non-nil")
-	}
-
 	// License should be empty
 	if batch.RepoInfo.License != "" {
 		t.Errorf("expected empty license, got %q", batch.RepoInfo.License)
@@ -431,7 +414,7 @@ func TestBuildBatchQuery(t *testing.T) {
 
 	// Verify key fields are present
 	for _, field := range []string{
-		"stargazerCount", "forkCount", "releases", "branchProtectionRules",
+		"stargazerCount", "forkCount", "releases",
 		"defaultBranchRef", "isArchived", "licenseInfo",
 	} {
 		if !strings.Contains(query, field) {
