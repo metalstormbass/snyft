@@ -519,6 +519,20 @@ func centerText(text string, width int) string {
 	return strings.Repeat(" ", left) + text + strings.Repeat(" ", right)
 }
 
+// formatDownloads formats a download count with K/M/B suffixes for readability.
+func formatDownloads(count int64) string {
+	switch {
+	case count >= 1_000_000_000:
+		return fmt.Sprintf("%.1fB", float64(count)/1_000_000_000)
+	case count >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(count)/1_000_000)
+	case count >= 1_000:
+		return fmt.Sprintf("%.1fK", float64(count)/1_000)
+	default:
+		return fmt.Sprintf("%d", count)
+	}
+}
+
 func formatBool(b bool) string {
 	if b {
 		return ColorGreen + "✓ Yes" + ColorReset
