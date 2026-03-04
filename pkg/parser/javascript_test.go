@@ -2,6 +2,7 @@ package parser
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/metalstormbass/snyft/pkg/models"
@@ -505,6 +506,355 @@ func TestParsePackageJSON_AllDirect(t *testing.T) {
 	for _, dep := range deps {
 		if dep.IsTransitive {
 			t.Errorf("package.json dependency %s should be direct (IsTransitive=false)", dep.Name)
+		}
+	}
+}
+
+// ---- v1 lockfile parsing tests ----
+
+// Test: parsePackageLockJSON extracts dependencies from v1 lockfile
+// Justification: Older npm lockfiles (v1-v6) use nested "dependencies" instead
+//                of flat "packages" - both formats must be handled for accurate
+//                supply chain risk assessment across all npm versions
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) - dependency
+//         tree analysis requires parsing all lockfile formats
+// Methodology: Parse a v1 lockfile and verify dependency extraction with transitive tagging
+// Result: Returns all unique dependencies with correct direct/transitive flags
+func TestParsePackageLockJSON_V1Format(t *testing.T) {
+	deps, err := parsePackageLockJSON("testdata/package-lock-v1.json")
+	if err != nil {
+		t.Fatalf("Failed to parse v1 lockfile: %v", err)
+	}
+
+	// v1 format: express (direct) + lodash (direct) + accepts, mime-types, body-parser (transitive) = 5
+	if len(deps) != 5 {
+		t.Fatalf("Expected 5 dependencies from v1 lockfile, got %d", len(deps))
+	}
+
+	depMap := make(map[string]models.Dependency)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep
+	}
+
+	// Direct dependencies
+	if dep, ok := depMap["express"]; !ok {
+		t.Error("Expected express dependency")
+	} else {
+		if dep.Version != "4.18.2" {
+			t.Errorf("Expected express@4.18.2, got %s", dep.Version)
+		}
+		if dep.IsTransitive {
+			t.Error("express should be direct (IsTransitive=false)")
+		}
+	}
+
+	if dep, ok := depMap["lodash"]; !ok {
+		t.Error("Expected lodash dependency")
+	} else {
+		if dep.IsTransitive {
+			t.Error("lodash should be direct (IsTransitive=false)")
+		}
+	}
+
+	// Transitive dependencies
+	for _, name := range []string{"accepts", "mime-types", "body-parser"} {
+		dep, ok := depMap[name]
+		if !ok {
+			t.Errorf("Expected transitive dependency %s", name)
+			continue
+		}
+		if !dep.IsTransitive {
+			t.Errorf("%s should be transitive (IsTransitive=true)", name)
+		}
+		if dep.Ecosystem != models.EcosystemNPM {
+			t.Errorf("Expected npm ecosystem for %s", name)
+		}
+	}
+}
+
+// ---- Scoped package tests ----
+
+// Test: parsePackageJSON handles scoped packages (@scope/name)
+// Justification: Scoped packages are commonly used in the npm ecosystem
+//                (e.g., @babel/core, @types/node). Incorrect parsing of scoped
+//                package names would miss supply chain risk assessment for
+//                these packages entirely.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) - scoped
+//         packages can also be targets for typosquatting attacks
+// Methodology: Parse package.json with scoped dependencies and verify names
+// Result: Scoped package names are preserved exactly as written
+func TestParsePackageJSON_ScopedPackages(t *testing.T) {
+	content := `{
+		"name": "test-scoped",
+		"version": "1.0.0",
+		"dependencies": {
+			"@babel/core": "^7.22.0",
+			"@types/node": "^20.0.0"
+		},
+		"devDependencies": {
+			"@testing-library/react": "^14.0.0"
+		}
+	}`
+
+	tmpFile := t.TempDir() + "/package.json"
+	if err := writeTestFile(tmpFile, content); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	deps, err := parsePackageJSON(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	if len(deps) != 3 {
+		t.Fatalf("Expected 3 dependencies, got %d", len(deps))
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	expected := map[string]string{
+		"@babel/core":             "7.22.0",
+		"@types/node":             "20.0.0",
+		"@testing-library/react":  "14.0.0",
+	}
+	for name, version := range expected {
+		if v, ok := depMap[name]; !ok {
+			t.Errorf("Missing scoped package %s", name)
+		} else if v != version {
+			t.Errorf("Expected %s@%s, got %s", name, version, v)
+		}
+	}
+}
+
+// Test: parsePackageLockJSON handles scoped packages in node_modules paths
+// Justification: Scoped packages in lockfiles use paths like
+//                "node_modules/@scope/name" - the name extraction must preserve
+//                the full scoped name for correct registry lookups
+// Source: npm registry API requires full scoped name for package lookups
+// Methodology: Parse lockfile with scoped package paths
+// Result: Scoped names extracted correctly including @scope/ prefix
+func TestParsePackageLockJSON_ScopedPackages(t *testing.T) {
+	content := `{
+		"name": "test-scoped",
+		"version": "1.0.0",
+		"lockfileVersion": 3,
+		"packages": {
+			"": {
+				"dependencies": {
+					"@babel/core": "^7.22.0",
+					"@types/node": "^20.0.0"
+				}
+			},
+			"node_modules/@babel/core": {
+				"version": "7.22.10"
+			},
+			"node_modules/@types/node": {
+				"version": "20.4.5"
+			},
+			"node_modules/@babel/core/node_modules/@babel/parser": {
+				"version": "7.22.7"
+			}
+		}
+	}`
+
+	tmpFile := t.TempDir() + "/package-lock.json"
+	if err := writeTestFile(tmpFile, content); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	deps, err := parsePackageLockJSON(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	if len(deps) != 3 {
+		t.Fatalf("Expected 3 dependencies, got %d", len(deps))
+	}
+
+	depMap := make(map[string]models.Dependency)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep
+	}
+
+	// Direct scoped packages
+	if dep, ok := depMap["@babel/core"]; !ok {
+		t.Error("Expected @babel/core")
+	} else if dep.IsTransitive {
+		t.Error("@babel/core should be direct")
+	}
+
+	if dep, ok := depMap["@types/node"]; !ok {
+		t.Error("Expected @types/node")
+	} else if dep.IsTransitive {
+		t.Error("@types/node should be direct")
+	}
+
+	// Nested scoped package (transitive)
+	nestedName := "@babel/core/node_modules/@babel/parser"
+	if dep, ok := depMap[nestedName]; !ok {
+		t.Errorf("Expected nested scoped package %s", nestedName)
+	} else if !dep.IsTransitive {
+		t.Error("Nested scoped package should be transitive")
+	}
+}
+
+// ---- Workspace filtering tests ----
+
+// Test: parsePackageLockJSON filters out workspace packages
+// Justification: Workspace packages are local project members, not external
+//                dependencies from the npm registry. Including them would
+//                cause false positives in supply chain risk analysis since
+//                they cannot be looked up on npm.
+// Source: npm workspaces documentation - workspace entries in lockfile
+//         represent local packages, not external dependencies
+// Methodology: Parse lockfile with workspace entries (paths without node_modules/ prefix)
+// Result: Only node_modules/ entries are returned as dependencies
+func TestParsePackageLockJSON_WorkspaceFiltering(t *testing.T) {
+	content := `{
+		"name": "my-monorepo",
+		"version": "1.0.0",
+		"lockfileVersion": 3,
+		"packages": {
+			"": {
+				"workspaces": ["packages/*"],
+				"dependencies": {
+					"lodash": "^4.17.21"
+				}
+			},
+			"packages/my-lib": {
+				"name": "@my-org/my-lib",
+				"version": "1.0.0"
+			},
+			"packages/my-app": {
+				"name": "@my-org/my-app",
+				"version": "2.0.0"
+			},
+			"node_modules/lodash": {
+				"version": "4.17.21"
+			},
+			"node_modules/@my-org/my-lib": {
+				"resolved": "packages/my-lib",
+				"link": true
+			}
+		}
+	}`
+
+	tmpFile := t.TempDir() + "/package-lock.json"
+	if err := writeTestFile(tmpFile, content); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	deps, err := parsePackageLockJSON(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	// Should get lodash + @my-org/my-lib symlink (both under node_modules/), NOT workspace entries
+	for _, dep := range deps {
+		if strings.HasPrefix(dep.Name, "packages/") {
+			t.Errorf("Workspace package %s should have been filtered out", dep.Name)
+		}
+	}
+
+	// lodash should be present
+	found := false
+	for _, dep := range deps {
+		if dep.Name == "lodash" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected lodash dependency")
+	}
+}
+
+// ---- Git and file: dependency tests ----
+
+// Test: parsePackageJSON preserves non-semver version specs
+// Justification: Git URLs and file: paths in package.json represent
+//                dependencies with special resolution. Mangling these
+//                through semver cleaning would produce invalid versions
+//                that fail registry lookups during analysis.
+// Source: npm documentation - alternative dependency specifiers
+// Methodology: Parse package.json with git and file dependencies
+// Result: Non-semver specs are preserved as-is
+func TestParsePackageJSON_GitAndFileDependencies(t *testing.T) {
+	content := `{
+		"name": "test-special-deps",
+		"version": "1.0.0",
+		"dependencies": {
+			"my-git-dep": "git+https://github.com/user/repo.git#v1.0.0",
+			"my-github-dep": "github:user/repo",
+			"my-file-dep": "file:../local-lib",
+			"normal-dep": "^1.2.3"
+		}
+	}`
+
+	tmpFile := t.TempDir() + "/package.json"
+	if err := writeTestFile(tmpFile, content); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	deps, err := parsePackageJSON(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to parse: %v", err)
+	}
+
+	if len(deps) != 4 {
+		t.Fatalf("Expected 4 dependencies, got %d", len(deps))
+	}
+
+	depMap := make(map[string]string)
+	for _, dep := range deps {
+		depMap[dep.Name] = dep.Version
+	}
+
+	// Git and file deps should be preserved as-is
+	if v := depMap["my-git-dep"]; v != "git+https://github.com/user/repo.git#v1.0.0" {
+		t.Errorf("Git dep version mangled: got %q", v)
+	}
+	if v := depMap["my-github-dep"]; v != "github:user/repo" {
+		t.Errorf("GitHub shorthand version mangled: got %q", v)
+	}
+	if v := depMap["my-file-dep"]; v != "file:../local-lib" {
+		t.Errorf("File dep version mangled: got %q", v)
+	}
+
+	// Normal dep should still be cleaned
+	if v := depMap["normal-dep"]; v != "1.2.3" {
+		t.Errorf("Normal dep should be cleaned: got %q", v)
+	}
+}
+
+// Test: cleanVersion handles non-semver specs
+// Justification: Ensures cleanVersion does not corrupt special dependency specifiers
+// Source: npm semver specification and alternative dependency types
+// Methodology: Pass various non-semver specs through cleanVersion
+// Result: Non-semver specs returned unchanged
+func TestCleanVersion_NonSemverSpecs(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"git+https://github.com/user/repo.git", "git+https://github.com/user/repo.git"},
+		{"git://github.com/user/repo.git", "git://github.com/user/repo.git"},
+		{"github:user/repo", "github:user/repo"},
+		{"gitlab:user/repo", "gitlab:user/repo"},
+		{"bitbucket:user/repo", "bitbucket:user/repo"},
+		{"file:../local-lib", "file:../local-lib"},
+		{"https://example.com/pkg.tgz", "https://example.com/pkg.tgz"},
+		{"http://example.com/pkg.tgz", "http://example.com/pkg.tgz"},
+		{"npm:other-pkg@^1.0.0", "npm:other-pkg@^1.0.0"},
+	}
+
+	for _, tt := range tests {
+		result := cleanVersion(tt.input)
+		if result != tt.expected {
+			t.Errorf("cleanVersion(%q) = %q, want %q", tt.input, result, tt.expected)
 		}
 	}
 }
