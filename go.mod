@@ -5,7 +5,6 @@ go 1.24.0
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/spf13/cobra v1.8.0
-	golang.org/x/time v0.14.0
 )
 
 require (
