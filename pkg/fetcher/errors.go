@@ -12,3 +12,11 @@ var ErrPackageNotFound = errors.New("package not found")
 // API-only operations (commit history, tag checks). Callers should treat this as
 // "data unavailable" rather than interpreting empty results as "no issues found".
 var ErrRateLimited = errors.New("API rate limited")
+
+// ErrScrapingRateLimited is returned when a scraping request receives HTTP 429.
+// Callers should treat this as "unable to verify" rather than a risk signal.
+var ErrScrapingRateLimited = errors.New("unable to verify (GitHub rate limit)")
+
+// ErrScrapingAccessDenied is returned when a scraping request receives HTTP 403.
+// Callers should treat this as "unable to verify" rather than a risk signal.
+var ErrScrapingAccessDenied = errors.New("unable to verify (access denied)")

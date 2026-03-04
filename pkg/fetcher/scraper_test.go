@@ -2,6 +2,7 @@ package fetcher
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1131,5 +1132,73 @@ func TestBitbucketGetRepositoryInfo_RateLimitFallback(t *testing.T) {
 		if strings.Contains(errMsg, "bitbucket API returned 429") {
 			t.Error("GetRepositoryInfo() returned raw API error instead of attempting scraping fallback")
 		}
+	}
+}
+
+// Test: scrapeWithUserAgent returns clean errors for 403/429 without raw HTML
+// Justification: When GitHub returns rate limit (429) or access denied (403) during
+//                scraping, raw HTML error pages were being stored as evidence/description
+//                in user-facing findings, making reports unreadable and confusing
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — scraping reliability
+// Methodology: Mock HTTP server returning 403/429 with HTML bodies, verify error messages
+// Result: Returns sentinel errors (ErrScrapingRateLimited, ErrScrapingAccessDenied) without HTML
+func TestScrapeWithUserAgent_CleanErrorsFor403And429(t *testing.T) {
+	tests := []struct {
+		name           string
+		statusCode     int
+		body           string
+		expectedErr    error
+		notContains    string
+	}{
+		{
+			name:        "429 returns rate limit error without HTML",
+			statusCode:  429,
+			body:        "<html><body><h1>Rate limit exceeded</h1><p>Please wait before retrying.</p></body></html>",
+			expectedErr: ErrScrapingRateLimited,
+			notContains: "<html>",
+		},
+		{
+			name:        "403 returns access denied error without HTML",
+			statusCode:  403,
+			body:        "<html><body><h1>Forbidden</h1><p>Access denied.</p></body></html>",
+			expectedErr: ErrScrapingAccessDenied,
+			notContains: "<html>",
+		},
+		{
+			name:        "500 returns clean status code error without HTML",
+			statusCode:  500,
+			body:        "<html><body>Internal Server Error</body></html>",
+			expectedErr: nil, // no sentinel, just a generic error
+			notContains: "<html>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				fmt.Fprint(w, tt.body)
+			}))
+			defer server.Close()
+
+			_, err := scrapeWithUserAgent(server.URL)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+
+			errMsg := err.Error()
+
+			// Verify no raw HTML in error message
+			if strings.Contains(errMsg, tt.notContains) {
+				t.Errorf("error message contains raw HTML: %s", errMsg)
+			}
+
+			// Verify sentinel error wrapping for 403/429
+			if tt.expectedErr != nil {
+				if !errors.Is(err, tt.expectedErr) {
+					t.Errorf("expected error to wrap %v, got: %v", tt.expectedErr, err)
+				}
+			}
+		})
 	}
 }
