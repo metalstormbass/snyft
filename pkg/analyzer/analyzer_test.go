@@ -1683,8 +1683,9 @@ func TestScoreDependencySprawl_HighRisk_200PlusDependencies(t *testing.T) {
 // Source: SLSA v1.0 specification (https://slsa.dev/spec/v1.0/), Sigstore documentation (https://www.sigstore.dev/)
 
 func TestScoreProvenance_HighRisk_NoProvenance(t *testing.T) {
-	// Test: No provenance evidence (no SLSA, no Sigstore, no signatures)
-	// Justification: Cannot verify build integrity; build could be tampered without detection
+	// Test: No provenance evidence (no SLSA, no Sigstore, no signatures, no source)
+	// Justification: Cannot verify build integrity; build could be tampered without detection.
+	//                No source available and no attestations = worst case.
 	// Source: SLSA specification v1.0 - Build provenance is foundation for supply chain security
 	//         https://slsa.dev/spec/v1.0/requirements
 	// Methodology: Checked for SLSA attestations, Sigstore signatures, npm provenance, signed releases
@@ -1698,14 +1699,13 @@ func TestScoreProvenance_HighRisk_NoProvenance(t *testing.T) {
 
 	score := analyzer.scoreProvenance(result)
 
-	// Nil SourceVerification means we couldn't check, not that it failed.
-	// This is unknown/moderate (1 risk point), not worst case (2).
-	if score.RiskPoints != 1 {
-		t.Errorf("Expected 1 risk point for nil source verification (unknown, not failed), got %d", score.RiskPoints)
+	// No source and no attestations = worst case (2 risk points).
+	if score.RiskPoints != 2 {
+		t.Errorf("Expected 2 risk points for no source and no attestations, got %d", score.RiskPoints)
 	}
 
-	if score.Score != 1 {
-		t.Errorf("Expected score 1 for nil source verification, got %d", score.Score)
+	if score.Score != 0 {
+		t.Errorf("Expected score 0 for no source and no attestations, got %d", score.Score)
 	}
 
 	if !score.Verified {

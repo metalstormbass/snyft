@@ -2158,8 +2158,19 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 	// Production path: web scraping
 	stats, err := c.scrapePullRequestStats(owner, repo)
 	if err != nil {
-		return &PRStats{}, nil // Return empty stats on scraping failure
+		stats = &PRStats{}
 	}
+
+	// Fallback: use merge commit rate from git clone data as evidence of code review.
+	// In production, per-PR review data is unavailable (requires API access).
+	// Merge commits indicate a PR-based workflow — repos with >50% merge commits
+	// almost certainly use code review.
+	if stats.CodeReviewRate == 0 {
+		if mergeRate, ok := c.getMergeCommitRateFromClone(owner, repo); ok && mergeRate > 0 {
+			stats.CodeReviewRate = mergeRate
+		}
+	}
+
 	if c.cache != nil {
 		c.cache.setPRStats(cacheKey, stats)
 	}
