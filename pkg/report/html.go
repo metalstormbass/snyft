@@ -448,6 +448,10 @@ func (r *Reporter) printHTMLPackage(w io.Writer, result models.AnalysisResult, i
 		f(w, "<span><span class=\"meta-label\">Scorecard:</span> <a href=\"%s\" target=\"_blank\" rel=\"noopener\">OpenSSF Scorecard</a></span>\n",
 			html.EscapeString(result.ScorecardURL))
 	}
+	if result.Metadata.WeeklyDownloads > 0 {
+		f(w, "<span><span class=\"meta-label\">Downloads:</span> %s/week</span>\n",
+			html.EscapeString(formatDownloads(result.Metadata.WeeklyDownloads)))
+	}
 	if result.SourceCodeAvailable {
 		f(w, "<span><span class=\"meta-label\">Source:</span> Available</span>\n")
 	} else {

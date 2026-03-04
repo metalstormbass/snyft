@@ -539,13 +539,14 @@ func (a *Analyzer) analyzeProvenance(result *models.AnalysisResult, repoURL stri
 // Helper functions to convert package info to metadata
 func packageMetadataFromNPM(pkg *fetcher.NPMPackage) models.PackageMetadata {
 	metadata := models.PackageMetadata{
-		DownloadCount:  pkg.Downloads,
-		PublishedAt:    pkg.PublishedAt,
-		LatestVersion:  pkg.LatestVersion,
-		Maintainers:    pkg.Maintainers,
-		License:        pkg.License,
-		Homepage:       pkg.Homepage,
-		InstallScripts: pkg.Scripts,
+		DownloadCount:   pkg.Downloads,
+		WeeklyDownloads: pkg.WeeklyDownloads,
+		PublishedAt:     pkg.PublishedAt,
+		LatestVersion:   pkg.LatestVersion,
+		Maintainers:     pkg.Maintainers,
+		License:         pkg.License,
+		Homepage:        pkg.Homepage,
+		InstallScripts:  pkg.Scripts,
 	}
 	// Pre-populate dependency metrics from registry data.
 	// analyzeDependencySprawl may override this with more precise lock file data.
