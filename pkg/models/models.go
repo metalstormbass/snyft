@@ -123,6 +123,7 @@ type PackageMetadata struct {
 	RepoUpdatedAt    time.Time `json:"repo_updated_at"`
 	RepoDefaultBranch string   `json:"repo_default_branch"`
 	RepoArchived     bool      `json:"repo_archived"`
+	RepoDescription  string    `json:"repo_description,omitempty"` // Repository or package description (for deprecation detection)
 
 	// Package registry information
 	DownloadCount    int64     `json:"download_count"`

@@ -593,6 +593,15 @@ func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*model
 		}
 	})
 
+	// Detect archived status from the page.
+	// GitHub shows a banner with "archived" text and a read-only notice.
+	// The banner typically contains "This repository has been archived" or the
+	// repo page includes an "archived" label/tag near the repo name.
+	pageText := strings.ToLower(doc.Text())
+	if strings.Contains(pageText, "this repository has been archived") {
+		info.Archived = true
+	}
+
 	// Set current time for updated_at as approximation
 	info.UpdatedAt = time.Now()
 

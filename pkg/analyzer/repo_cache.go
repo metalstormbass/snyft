@@ -32,6 +32,7 @@ type RepoAnalysisData struct {
 	RepoUpdatedAt       time.Time
 	RepoDefaultBranch   string
 	RepoArchived        bool
+	RepoDescription     string
 
 	// Build infrastructure (from analyzeBuildInfrastructure)
 	BuildInfrastructure string
@@ -155,6 +156,7 @@ func applyRepoData(result *models.AnalysisResult, rd *RepoAnalysisData) {
 	result.Metadata.RepoUpdatedAt = rd.RepoUpdatedAt
 	result.Metadata.RepoDefaultBranch = rd.RepoDefaultBranch
 	result.Metadata.RepoArchived = rd.RepoArchived
+	result.Metadata.RepoDescription = rd.RepoDescription
 
 	// Build infrastructure
 	result.Metadata.HasCI = rd.HasCI
@@ -210,6 +212,7 @@ func extractRepoData(result *models.AnalysisResult) *RepoAnalysisData {
 		RepoUpdatedAt:     result.Metadata.RepoUpdatedAt,
 		RepoDefaultBranch: result.Metadata.RepoDefaultBranch,
 		RepoArchived:      result.Metadata.RepoArchived,
+		RepoDescription:   result.Metadata.RepoDescription,
 
 		// Build infrastructure
 		BuildInfrastructure: result.BuildInfrastructure,
