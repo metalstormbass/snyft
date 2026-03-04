@@ -43,21 +43,11 @@ snyft scan --format markdown -o SECURITY.md
 snyft scan --workers 20                   # Increase concurrency
 ```
 
-If you installed snyft via `go`, you can run commands without the `./` part. Running a scan of your current directory would be done via `snyft scan`.
-
-> **Suggested:** For the best experience, use the HTML report: `snyft scan --format html -o report.html`. It includes interactive scoring details, evidence, and per-category findings that are easier to navigate than terminal output.
-
-> **Note:** Scanning projects with many dependencies may take several minutes. Running multiple scans concurrently may trigger GitHub rate limits (60 requests/hour unauthenticated, 5,000/hour with `GITHUB_TOKEN`).
+> **Suggested:** For the best experience, use the HTML report: `snyft scan --format html -o report.html`. It includes interactive scoring details, confidence indicators, evidence, and per-category findings.
 
 ### Dependency Deduplication
 
-When a project references the same package at multiple versions across different manifest files, snyft **deduplicates by name and keeps the most recent version** by default. This avoids redundant scans for the same library.
-
-To scan every version individually, use the `--all-versions` flag:
-
-```bash
-snyft scan --all-versions
-```
+When a project references the same package at multiple versions across different manifest files, snyft **deduplicates by name and keeps the most recent version** by default. Packages sharing the same source repository are also grouped to avoid redundant analysis.
 
 ### Options
 
@@ -69,7 +59,6 @@ snyft scan --all-versions
 | `-o, --output` | Write results to file | stdout |
 | `--include-transitive` | Analyze transitive dependencies | `false` |
 | `--all-versions` | Scan all versions of duplicate dependencies (skip deduplication) | `false` |
-| `--resume` | Resume a previously interrupted scan from its checkpoint | `false` |
 | `--check` | Run only specific checks (comma-separated) | all checks |
 
 Valid check names: `publisher-control`, `ownership-changes`, `release-anomalies`, `install-execution`, `dependency-sprawl`, `provenance`, `health`, `governance`, `release-security`, `package-maturity`
@@ -78,27 +67,42 @@ Valid check names: `publisher-control`, `ownership-changes`, `release-anomalies`
 snyft scan --check health,provenance,governance
 ```
 
+## How It Works
+
+Snyft collects data using two primary methods that require **no authentication**:
+
+1. **Web scraping** — extracts repository metadata, contributor info, governance files, and CI/CD configuration directly from hosting platform pages (GitHub, GitLab, Bitbucket)
+2. **Bare git clone** — clones repositories to analyze commit history, signed commits, release tags, and contributor patterns without needing API access
+
+Package registry APIs (npm, PyPI, Maven Central) provide maintainer info, version history, and dependency data.
+
+Setting `GITHUB_TOKEN` is optional — it supplements scraping with additional GitHub API data (organization verification, MFA enforcement) and is needed for cloning private repositories.
+
 ## Supply Chain Scoring System
 
 Each dependency is scored across 10 categories (0-2 risk points each):
 
-| Category | Risk Indicators |
-|----------|----------------|
-| **1. Publisher Control** | Single maintainer, no signing, no 2FA |
-| **2. Ownership Changes** | Recent maintainer changes |
-| **3. Release Anomalies** | Long dormancy followed by sudden release |
-| **4. Install Execution** | postinstall scripts, dangerous patterns |
-| **5. Dependency Sprawl** | Many transitive dependencies (50+) |
-| **6. Provenance** | No source verification, unsigned releases, missing build provenance |
-| **7. Health** | Low bus factor, no review oversight |
-| **8. Governance** | No SECURITY.md, slow issue response, no documented release process |
-| **9. Release Security** | Manual publishing, no branch protection, insecure CI config, undocumented release process |
-| **10. Package Maturity** | New/abandoned package, irregular updates |
+| Category | What It Checks |
+|----------|---------------|
+| **1. Publisher Control** | Single maintainer risk, account age, org vs personal, commit signing, MFA enforcement. High-download packages (1M+/week) get reduced single-maintainer penalty. |
+| **2. Ownership Changes** | Recent maintainer or owner transitions |
+| **3. Release Anomalies** | Dormancy reactivation (1yr+ gap then sudden release), unusual release spikes, cadence anomalies |
+| **4. Install Execution** | npm install scripts (postinstall/preinstall), dangerous patterns (code injection, network calls, privilege escalation). Analyzes actual script files from cloned repos. |
+| **5. Dependency Sprawl** | Transitive dependency count. Maven uses scope-aware thresholds (12/29) vs npm/PyPI (5/15). |
+| **6. Provenance** | SLSA attestation, signed releases, build provenance, source code verification |
+| **7. Health** | Bus factor, code review coverage, CI/CD presence |
+| **8. Governance** | SECURITY.md presence, issue response time, abandonment detection (180+ days inactive), archived repos |
+| **9. Release Security** | CI/CD automation vs manual publishing, signed tags, PR review rates, CI workflow security (unpinned actions, script injection, excessive permissions). Branch protection assessed via OSSF Scorecard. |
+| **10. Package Maturity** | Package age (<6mo = high risk), staleness (>1yr = abandoned), release cadence regularity |
 
 **Total Score**: 0-20 points
 - **0-8**: Low risk
 - **9-12**: Medium risk
 - **13+**: High risk
+
+### Missing Data & Confidence
+
+When repository data is unavailable (e.g., no repo URL found), snyft applies a **floor score** (8-10/20) instead of defaulting to best-case scores. A **confidence indicator** (0-100%) shows what fraction of checks had real data vs defaults. The HTML report color-codes confidence: green (≥75%), amber (50-74%), red (<50%).
 
 ## Supported Ecosystems
 
@@ -112,23 +116,8 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 
 Repository analysis works across:
 - **GitHub**, **GitLab**, **Bitbucket** (auto-detected from URLs)
-- Works out of the box with zero configuration — web scraping is the primary data source
-- Optional API tokens (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `BITBUCKET_TOKEN`) for richer data and higher rate limits
-
-## Rate Limits
-
-Snyft works without authentication, but GitHub limits unauthenticated requests to **60/hour**. For large projects, set a token for **5,000 requests/hour**:
-
-```bash
-export GITHUB_TOKEN="ghp_..."
-```
-
-| | Unauthenticated | With `GITHUB_TOKEN` |
-|---|---|---|
-| **GitHub API** | 60 req/hour | 5,000 req/hour |
-| **npm/PyPI/Maven** | No strict limits | - |
-
-The token is **optional** — snyft uses web scraping as the primary data source. The token supplements scraping with richer GitHub data and higher rate limits.
+- Additional support for Sourcehut, Codeberg, Apache/Eclipse Git
+- Works out of the box with zero configuration — web scraping + git clone require no tokens
 
 ## License
 
