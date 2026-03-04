@@ -97,8 +97,8 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 
 **Total Score**: 0-20 points
 - **0-8**: Low risk
-- **9-12**: Medium risk
-- **13+**: High risk
+- **9-10**: Medium risk
+- **11+**: High risk
 
 ### Missing Data & Confidence
 

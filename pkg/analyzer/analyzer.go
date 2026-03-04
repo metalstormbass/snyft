@@ -560,7 +560,7 @@ func populateFindingsFromScores(result *models.AnalysisResult) {
 
 // calculateSupplyChainScore implements a 0-20 point supply chain security rubric
 // Each of 10 categories is scored 0-2 points (0=good, 2=high risk)
-// Total: 0-8=Low risk, 9-12=Medium risk, 13+=High risk
+// Total: 0-8=Low risk, 9-10=Medium risk, 11+=High risk
 func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	score := &models.SupplyChainScore{
 		CategoryScores: models.CategoryScores{},
@@ -735,14 +735,14 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 	}
 
 	// Determine risk level based on total score.
-	// When all 10 categories are active (default): LOW 0-8, MEDIUM 9-12, HIGH 13+
+	// When all 10 categories are active (default): LOW 0-8, MEDIUM 9-10, HIGH 11+
 	// When --check filters are active, thresholds scale proportionally so that
 	// the same percentage of max score triggers each risk level.
-	highThreshold := 13
+	highThreshold := 11
 	mediumThreshold := 9
 	if activeChecks < 10 && activeChecks > 0 {
 		// Scale proportionally: ceil(threshold * activeChecks / 10)
-		highThreshold = (13*activeChecks + 9) / 10
+		highThreshold = (11*activeChecks + 9) / 10
 		mediumThreshold = (9*activeChecks + 9) / 10
 	}
 
