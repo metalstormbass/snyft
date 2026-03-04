@@ -3,6 +3,7 @@ package analyzer
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/metalstormbass/snyft/pkg/models"
 )
@@ -74,12 +75,29 @@ func (a *Analyzer) scoreProvenance(result *models.AnalysisResult) models.Categor
 	// --- Phase 2: Attestation checks (existing logic) ---
 
 	// Check for ecosystem-specific provenance
+	// npm provenance launched April 2023 — don't flag pre-2023 releases as unsigned.
+	npmProvenanceLaunch := time.Date(2023, time.April, 1, 0, 0, 0, 0, time.UTC)
 	if result.Metadata.HasNPMProvenance {
 		provenanceScore += 2
 		evidence = append(evidence, "npm provenance attestations")
 		checks = append(checks, models.CheckResult{Name: "npm provenance", Status: "PASS", Detail: "npm provenance attestations present"})
 	} else if result.Dependency.Ecosystem == models.EcosystemNPM {
-		checks = append(checks, models.CheckResult{Name: "npm provenance", Status: "FAIL", Detail: "No npm provenance attestations found"})
+		// Determine latest activity date to check if the package has releases
+		// after npm provenance became available. Use the most recent date from
+		// available sources: last commit, repo update, or first publish date.
+		latestActivity := result.Metadata.RepoLastCommit
+		if result.Metadata.RepoUpdatedAt.After(latestActivity) {
+			latestActivity = result.Metadata.RepoUpdatedAt
+		}
+		if result.Metadata.PublishedAt.After(latestActivity) {
+			latestActivity = result.Metadata.PublishedAt
+		}
+
+		if !latestActivity.IsZero() && latestActivity.Before(npmProvenanceLaunch) {
+			checks = append(checks, models.CheckResult{Name: "npm provenance", Status: "SKIPPED", Detail: fmt.Sprintf("Package last active before npm provenance launch (latest activity: %s, provenance available since April 2023)", latestActivity.Format("2006-01-02"))})
+		} else {
+			checks = append(checks, models.CheckResult{Name: "npm provenance", Status: "FAIL", Detail: "No npm provenance attestations found"})
+		}
 	}
 
 	// Check for Maven Central GPG signatures (.asc files)
