@@ -98,13 +98,6 @@ type cachedSignedCommits struct {
 	verifiedCount int
 }
 
-// cachedBranchProtection stores the result of getBranchProtection so that
-// multiple packages from the same repo reuse a single API call.
-type cachedBranchProtection struct {
-	protection   *GitHubBranchProtection
-	accessDenied bool
-}
-
 // cachedIssueResponseTime stores the result of GetAverageIssueResponseTime
 // so that multiple packages from the same repo share the expensive
 // per-issue comment fetching.
@@ -123,7 +116,6 @@ type repoCache struct {
 	commitAuthors     map[string]*CommitAuthorStats       // key: "owner/repo"
 	signedCommits     map[string]*cachedSignedCommits     // key: "owner/repo"
 	prStats           map[string]*PRStats                 // key: "owner/repo"
-	branchProtection  map[string]*cachedBranchProtection  // key: "owner/repo"
 	issueResponseTime map[string]*cachedIssueResponseTime // key: "owner/repo"
 	workflowFiles     map[string][]string                 // key: "owner/repo"
 	cloneData         map[string]*gitCloneData            // key: "owner/repo" — data from bare git clone
@@ -139,7 +131,6 @@ func newRepoCache() *repoCache {
 		commitAuthors:     make(map[string]*CommitAuthorStats),
 		signedCommits:     make(map[string]*cachedSignedCommits),
 		prStats:           make(map[string]*PRStats),
-		branchProtection:  make(map[string]*cachedBranchProtection),
 		issueResponseTime: make(map[string]*cachedIssueResponseTime),
 		workflowFiles:     make(map[string][]string),
 		cloneData:         make(map[string]*gitCloneData),
@@ -248,19 +239,6 @@ func (rc *repoCache) setPRStats(key string, stats *PRStats) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.prStats[key] = stats
-}
-
-func (rc *repoCache) getBranchProtectionCached(key string) (*cachedBranchProtection, bool) {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	v, ok := rc.branchProtection[key]
-	return v, ok
-}
-
-func (rc *repoCache) setBranchProtectionCached(key string, bp *cachedBranchProtection) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-	rc.branchProtection[key] = bp
 }
 
 func (rc *repoCache) getIssueResponseTime(key string) (*cachedIssueResponseTime, bool) {
@@ -2218,13 +2196,10 @@ type CommitStats struct{
 
 // PRStats contains pull request statistics for code review verification
 type PRStats struct {
-	TotalPRs               int
-	MergedPRs              int
-	PRsWithReviews         int
-	CodeReviewRate         float64 // Percentage of PRs with reviews
-	RequiredReviewers      int     // Number of required reviewers (from branch protection)
-	HasBranchProtection    bool
-	BranchProtectionDenied bool // True when API returned 403/404 (admin access required)
+	TotalPRs       int
+	MergedPRs      int
+	PRsWithReviews int
+	CodeReviewRate float64 // Percentage of PRs with reviews
 }
 
 // CIQuality contains CI/CD quality metrics
@@ -2572,14 +2547,6 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 		stats.CodeReviewRate = float64(stats.PRsWithReviews) / float64(sampledPRs) * 100
 	}
 
-	// Check branch protection rules
-	branchProtection, accessDenied := c.getBranchProtection(owner, repo)
-	stats.HasBranchProtection = branchProtection != nil
-	stats.BranchProtectionDenied = accessDenied
-	if branchProtection != nil && branchProtection.RequiredReviews != nil {
-		stats.RequiredReviewers = branchProtection.RequiredReviews.RequiredApprovingReviewCount
-	}
-
 	if c.cache != nil {
 		c.cache.setPRStats(cacheKey, stats)
 	}
@@ -2589,8 +2556,7 @@ func (c *GitHubClient) GetPullRequestStats(repoURL string) (*PRStats, error) {
 // scrapePullRequestStats scrapes the pull requests page to build approximate
 // PRStats when the API is rate-limited. This provides a rough merged PR count
 // by scraping the closed PRs tab, though it cannot determine code review rates
-// (which require per-PR API calls). Branch protection also cannot be determined
-// without the API.
+// (which require per-PR API calls).
 func (c *GitHubClient) scrapePullRequestStats(owner, repo string) (*PRStats, error) {
 	pageURL := fmt.Sprintf("https://github.com/%s/%s/pulls?q=is%%3Apr+is%%3Aclosed", owner, repo)
 	doc, err := scrapeWithUserAgent(pageURL)
@@ -2624,9 +2590,6 @@ func (c *GitHubClient) scrapePullRequestStats(owner, repo string) (*PRStats, err
 			}
 		})
 	}
-
-	// Branch protection cannot be determined via scraping
-	stats.BranchProtectionDenied = true
 
 	return stats, nil
 }
@@ -2689,69 +2652,6 @@ func (c *GitHubClient) batchCheckPRReviews(owner, repo string, prNumbers []int) 
 		result[prNum] = c.prHasReviews(owner, repo, prNum)
 	}
 	return result
-}
-
-// getBranchProtection fetches branch protection rules for the default branch.
-// Returns (protection, accessDenied) where accessDenied is true when the API
-// returned 403/404 (admin access required), distinguishing "can't check" from
-// "no protection configured".
-// Results are cached per owner/repo to avoid redundant API calls.
-func (c *GitHubClient) getBranchProtection(owner, repo string) (*GitHubBranchProtection, bool) {
-	cacheKey := owner + "/" + repo
-	if c.cache != nil {
-		if cached, ok := c.cache.getBranchProtectionCached(cacheKey); ok {
-			return cached.protection, cached.accessDenied
-		}
-	}
-
-	// First get the default branch
-	repoInfo, err := c.GetRepositoryInfo(fmt.Sprintf("https://github.com/%s/%s", owner, repo))
-	if err != nil {
-		return nil, false
-	}
-
-	url := fmt.Sprintf("%s/repos/%s/%s/branches/%s/protection", c.baseURL, owner, repo, repoInfo.DefaultBranch)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, false
-	}
-
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := c.doRequest(req)
-	if err != nil {
-		return nil, false
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
-		if c.cache != nil {
-			c.cache.setBranchProtectionCached(cacheKey, &cachedBranchProtection{
-				protection:   nil,
-				accessDenied: true,
-			})
-		}
-		return nil, true
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, false
-	}
-
-	var protection GitHubBranchProtection
-	if err := json.NewDecoder(resp.Body).Decode(&protection); err != nil {
-		return nil, false
-	}
-
-	if c.cache != nil {
-		c.cache.setBranchProtectionCached(cacheKey, &cachedBranchProtection{
-			protection:   &protection,
-			accessDenied: false,
-		})
-	}
-	return &protection, false
 }
 
 // AnalyzeCIQuality evaluates CI/CD quality beyond just presence
@@ -2947,14 +2847,6 @@ type GitHubPullRequest struct {
 type GitHubReview struct {
 	ID    int    `json:"id"`
 	State string `json:"state"`
-}
-
-type GitHubBranchProtection struct {
-	RequiredReviews *GitHubRequiredReviews `json:"required_pull_request_reviews"`
-}
-
-type GitHubRequiredReviews struct {
-	RequiredApprovingReviewCount int `json:"required_approving_review_count"`
 }
 
 type GitHubContent struct {

@@ -44,7 +44,7 @@ func convertToModelAnalysis(analysis ScriptAnalysis) *models.InstallScriptAnalys
 //   - 1 risk point (moderate): Single benign install script
 //   - 2 risk points (worst): Multiple scripts OR dangerous content detected
 func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.CategoryScore {
-	methodology := "Checked package manifest for install-time script hooks (preinstall, install, postinstall for npm; setup.py for PyPI; pom.xml for Maven). Analyzed script content for dangerous patterns (network requests, file system modifications, binary execution)."
+	methodology := "Checked package manifest for install-time script hooks (preinstall, install, postinstall for npm; setup.py for PyPI; ). Analyzed script content for dangerous patterns (network requests, file system modifications, binary execution)."
 
 	// If no install scripts present, return best score
 	if !result.Metadata.HasInstallScripts || len(result.Metadata.InstallScripts) == 0 {
@@ -93,7 +93,7 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 	}
 
 	// Count install-time script hooks
-	installScriptNames := []string{"preinstall", "install", "postinstall", "setup.py", "pom.xml"}
+	installScriptNames := []string{"preinstall", "install", "postinstall", "setup.py"}
 	foundScripts := []string{}
 
 	for _, scriptName := range installScriptNames {
@@ -142,8 +142,8 @@ func (a *Analyzer) scoreInstallExecution(result *models.AnalysisResult) models.C
 	return models.CategoryScore{
 		Score:       2,
 		RiskPoints:  0,
-		Description: "Package has scripts but none are install-time hooks (checked preinstall, install, postinstall, setup.py, pom.xml). No code executes during installation.",
-		Evidence:    "Package has scripts but no install hooks (checked: preinstall, install, postinstall, setup.py, pom.xml)",
+		Description: "Package has scripts but none are install-time hooks (checked preinstall, install, postinstall, setup.py). No code executes during installation.",
+		Evidence:    "Package has scripts but no install hooks (checked: preinstall, install, postinstall, setup.py)",
 		Verified:      true,
 		DataAvailable: true,
 		Methodology:   methodology,
