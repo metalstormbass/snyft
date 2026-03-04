@@ -1972,6 +1972,326 @@ func TestAnalyzeNPMScriptFiles_SkipsNonInstallHooks(t *testing.T) {
 	}
 }
 
+// ============================================================
+// C Extension Allowlist — Real Package Tests
+// ============================================================
+
+// Test: mysqlclient setup.py with os.popen for mysql_config
+// Justification: mysqlclient uses os.popen('mysql_config --cflags') to detect MySQL
+//                library paths. This is a standard build-time configuration pattern,
+//                not a supply chain attack vector.
+// Source: PyPA documentation on building C extensions; mysqlclient build system
+// Methodology: Pass mysqlclient-like setup.py with os.popen/subprocess to AnalyzePythonSetup
+// Result: All build patterns downgraded to LOW, RiskLevel is not HIGH
+func TestAnalyzePythonSetup_MysqlclientBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import subprocess
+import os
+
+class MyBuildExt(build_ext):
+    def build_extensions(self):
+        mysql_config = os.popen('mysql_config --cflags').read().strip()
+        mysql_libs = subprocess.check_output(['mysql_config', '--libs'])
+        build_ext.build_extensions(self)
+
+setup(
+    name='mysqlclient',
+    version='2.2.0',
+    ext_modules=[Extension('_mysql', sources=['_mysql.c'])],
+    cmdclass={'build_ext': MyBuildExt},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Severity == "HIGH" {
+			t.Errorf("mysqlclient build pattern %q should not be HIGH (match: %s)", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for mysqlclient build, got HIGH")
+	}
+}
+
+// Test: uvloop setup.py with subprocess calls to make and custom build_ext
+// Justification: uvloop compiles libuv from source using make/configure via subprocess.
+//                These are standard build operations for packages with vendored C libraries.
+// Source: PyPA documentation on building C extensions; uvloop build system
+// Methodology: Pass uvloop-like setup.py with subprocess make/configure calls
+// Result: All build patterns downgraded to LOW, RiskLevel is not HIGH
+func TestAnalyzePythonSetup_UvloopBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import subprocess
+import os
+
+class build_ext_uvloop(build_ext):
+    def build_libuv(self):
+        subprocess.check_call(['./configure', '--disable-shared'], cwd=libuv_dir)
+        subprocess.check_call(['make', '-j4'], cwd=libuv_dir)
+
+    def build_extensions(self):
+        self.build_libuv()
+        build_ext.build_extensions(self)
+
+setup(
+    name='uvloop',
+    version='0.19.0',
+    ext_modules=[Extension('uvloop._patch', sources=['uvloop/_patch.c'])],
+    cmdclass={'build_ext': build_ext_uvloop},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Severity == "HIGH" {
+			t.Errorf("uvloop build pattern %q should not be HIGH (match: %s)", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for uvloop build, got HIGH")
+	}
+}
+
+// Test: httptools setup.py with subprocess calls to make for llhttp
+// Justification: httptools compiles llhttp C library from source using make via
+//                subprocess. This is identical to uvloop's build pattern.
+// Source: PyPA documentation on building C extensions; httptools build system
+// Methodology: Pass httptools-like setup.py with subprocess make calls
+// Result: All build patterns downgraded to LOW, RiskLevel is not HIGH
+func TestAnalyzePythonSetup_HttptoolsBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import subprocess
+
+class build_ext_httptools(build_ext):
+    def build_llhttp(self):
+        subprocess.check_call(['make', '-C', 'vendor/llhttp'])
+
+    def build_extensions(self):
+        self.build_llhttp()
+        build_ext.build_extensions(self)
+
+setup(
+    name='httptools',
+    version='0.6.1',
+    ext_modules=[Extension('httptools.parser.parser', sources=['httptools/parser/parser.c'])],
+    cmdclass={'build_ext': build_ext_httptools},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Severity == "HIGH" {
+			t.Errorf("httptools build pattern %q should not be HIGH (match: %s)", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for httptools build, got HIGH")
+	}
+}
+
+// Test: markupsafe setup.py with cmdclass build_ext for optional C speedups
+// Justification: markupsafe uses a custom build_ext that gracefully falls back
+//                to pure Python if C compilation fails. The cmdclass override is
+//                standard setuptools practice for optional C extensions.
+// Source: PyPA documentation on building C extensions; markupsafe build system
+// Methodology: Pass markupsafe-like setup.py with cmdclass and Extension
+// Result: All build patterns downgraded to LOW, RiskLevel is not HIGH
+func TestAnalyzePythonSetup_MarkupsafeBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+
+class silent_build_ext(build_ext):
+    def build_extensions(self):
+        try:
+            build_ext.build_extensions(self)
+        except Exception:
+            pass
+
+setup(
+    name='MarkupSafe',
+    version='2.1.5',
+    ext_modules=[Extension('markupsafe._speedups', sources=['src/markupsafe/_speedups.c'])],
+    cmdclass={'build_ext': silent_build_ext},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Severity == "HIGH" {
+			t.Errorf("markupsafe build pattern %q should not be HIGH (match: %s)", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for markupsafe build, got HIGH")
+	}
+}
+
+// Test: grpcio setup.py with os.system for autoconf/configure and subprocess for make
+// Justification: grpcio builds a large C/C++ codebase (gRPC core) using autoconf,
+//                configure, make, and cmake via os.system and subprocess. These are
+//                standard build operations, not supply chain attack vectors.
+// Source: PyPA documentation on building C extensions; grpcio build system
+// Methodology: Pass grpcio-like setup.py with os.system/subprocess build calls
+// Result: All build patterns downgraded to LOW, RiskLevel is not HIGH
+func TestAnalyzePythonSetup_GrpcioBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import subprocess
+import os
+import ctypes
+
+class BuildExt(build_ext):
+    def _build_grpc_core(self):
+        os.system('./configure --prefix=/usr/local')
+        os.system('make -j4')
+        subprocess.check_call(['cmake', '.', '-DCMAKE_BUILD_TYPE=Release'])
+        subprocess.check_call(['cmake', '--build', '.'])
+
+    def build_extensions(self):
+        self._build_grpc_core()
+        build_ext.build_extensions(self)
+
+    def _load_grpc_core(self):
+        lib = ctypes.CDLL('libgrpc.so')
+        return lib
+
+setup(
+    name='grpcio',
+    version='1.60.0',
+    ext_modules=[Extension('grpc._cython.cygrpc', sources=['src/python/grpcio/grpc/_cython/cygrpc.c'])],
+    cmdclass={'build_ext': BuildExt},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Severity == "HIGH" {
+			t.Errorf("grpcio build pattern %q should not be HIGH (match: %s)", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for grpcio build, got HIGH")
+	}
+}
+
+// Test: scipy-style build with numpy.distutils and gfortran subprocess calls
+// Justification: scipy uses numpy.distutils and invokes gfortran/gcc for Fortran/C
+//                extension compilation. These are standard scientific Python build patterns.
+// Source: numpy/scipy build documentation; PyPA C extension build guide
+// Methodology: Pass scipy-like setup.py with gfortran and build tool subprocess calls
+// Result: All build patterns downgraded to LOW, RiskLevel is not HIGH
+func TestAnalyzePythonSetup_ScipyStyleBuild(t *testing.T) {
+	setupContent := `
+from numpy.distutils.core import setup, Extension
+import subprocess
+
+subprocess.check_call(['gfortran', '-v'])
+subprocess.check_call(['gcc', '-shared', '-o', 'libscipy.so'])
+
+ext_modules = [
+    Extension('scipy.linalg._flapack',
+              sources=['scipy/linalg/flapack.pyf.src'])
+]
+
+setup(
+    name='scipy',
+    version='1.12.0',
+    ext_modules=ext_modules,
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Severity == "HIGH" {
+			t.Errorf("scipy build pattern %q should not be HIGH (match: %s)", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for scipy-style build, got HIGH")
+	}
+}
+
+// Test: cryptography-style build with cffi and custom build_ext
+// Justification: cryptography uses cffi to build OpenSSL bindings and invokes
+//                pkg-config via subprocess. These are standard build operations.
+// Source: PyPA documentation on cffi; cryptography build system
+// Methodology: Pass cryptography-like setup.py with cffi, pkg-config subprocess calls
+// Result: All build patterns downgraded to LOW, RiskLevel is not HIGH
+func TestAnalyzePythonSetup_CryptographyStyleBuild(t *testing.T) {
+	setupContent := `
+from setuptools import setup
+from setuptools.command.build_ext import build_ext
+import subprocess
+import cffi
+
+class CustomBuildExt(build_ext):
+    def build_extensions(self):
+        openssl_flags = subprocess.check_output(['pkg-config', '--cflags', 'openssl'])
+        build_ext.build_extensions(self)
+
+ffi = cffi.FFI()
+
+setup(
+    name='cryptography',
+    version='42.0.0',
+    ext_modules=[ffi.verifier.get_extension()],
+    cmdclass={'build_ext': CustomBuildExt},
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Severity == "HIGH" {
+			t.Errorf("cryptography build pattern %q should not be HIGH (match: %s)", p.Pattern, p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for cryptography-style build, got HIGH")
+	}
+}
+
+// Test: os.system with autoconf/configure is recognized as benign build command
+// Justification: autoconf-based packages use os.system('./configure') to detect
+//                system libraries and compiler flags. This is a standard build pattern
+//                used by packages like grpcio, uvloop, and other C extension packages.
+// Source: GNU Autoconf documentation; PyPA C extension build guide
+// Methodology: Pass setup.py with os.system('./configure') in C extension context
+// Result: os.system pattern downgraded to LOW with benign build annotation
+func TestAnalyzePythonSetup_AutoconfConfigure(t *testing.T) {
+	setupContent := `
+from setuptools import setup, Extension
+import os
+
+os.system('./configure --prefix=/usr/local')
+os.system('autoreconf -i')
+os.system('automake --add-missing')
+
+setup(
+    name='native-lib',
+    version='1.0.0',
+    ext_modules=[Extension('native', sources=['native.c'])],
+)
+`
+	analysis := AnalyzePythonSetup(setupContent)
+
+	for _, p := range analysis.DangerousPatterns {
+		if p.Pattern == "os.system/popen/exec" && p.Severity == "HIGH" {
+			t.Errorf("os.system with autoconf/configure should be LOW in build context, got HIGH. Match: %s", p.Match)
+		}
+	}
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Expected non-HIGH risk for autoconf build, got HIGH")
+	}
+}
+
 // Test: Clean script file produces no findings
 // Justification: Legitimate postinstall scripts (node-gyp rebuild, type generation, etc.)
 //                should not produce false positives that inflate risk scores.
