@@ -84,6 +84,20 @@ func parsePackageLockJSON(path string) ([]models.Dependency, error) {
 		return nil, fmt.Errorf("failed to parse package-lock.json: %w", err)
 	}
 
+	// Try v3+ format first (npm 7+), fall back to v1 format
+	if len(lockfile.Packages) > 0 {
+		return parsePackageLockV3(lockfile, path), nil
+	}
+	if len(lockfile.Dependencies) > 0 {
+		return parsePackageLockV1(lockfile, path), nil
+	}
+
+	return []models.Dependency{}, nil
+}
+
+// parsePackageLockV3 extracts dependencies from npm v7+ lockfile format
+// which uses the flat "packages" field with node_modules/ paths.
+func parsePackageLockV3(lockfile PackageLockJSON, path string) []models.Dependency {
 	// Build set of direct dependency names from root package
 	directDeps := make(map[string]bool)
 	if rootPkg, hasRoot := lockfile.Packages[""]; hasRoot {
@@ -97,6 +111,13 @@ func parsePackageLockJSON(path string) ([]models.Dependency, error) {
 	for pkgPath, pkg := range lockfile.Packages {
 		// Skip root package
 		if pkgPath == "" {
+			continue
+		}
+
+		// Skip workspace packages (paths without node_modules/ prefix,
+		// e.g., "packages/my-lib"). These are local workspace members,
+		// not external dependencies to assess for supply chain risk.
+		if !strings.HasPrefix(pkgPath, "node_modules/") {
 			continue
 		}
 
@@ -120,7 +141,44 @@ func parsePackageLockJSON(path string) ([]models.Dependency, error) {
 		})
 	}
 
-	return deps, nil
+	return deps
+}
+
+// parsePackageLockV1 extracts dependencies from older npm lockfile format
+// (v1-v6) which uses nested "dependencies" objects.
+func parsePackageLockV1(lockfile PackageLockJSON, path string) []models.Dependency {
+	var deps []models.Dependency
+	directNames := make(map[string]bool)
+	for name := range lockfile.Dependencies {
+		directNames[name] = true
+	}
+
+	visited := make(map[string]bool)
+	var walk func(entries map[string]PackageLockDependencyV1, isDirect bool)
+	walk = func(entries map[string]PackageLockDependencyV1, isDirect bool) {
+		for name, entry := range entries {
+			key := name + "@" + entry.Version
+			if visited[key] {
+				continue
+			}
+			visited[key] = true
+
+			deps = append(deps, models.Dependency{
+				Name:         name,
+				Version:      entry.Version,
+				Ecosystem:    models.EcosystemNPM,
+				Source:       path,
+				IsTransitive: !isDirect,
+			})
+
+			if len(entry.Dependencies) > 0 {
+				walk(entry.Dependencies, false)
+			}
+		}
+	}
+
+	walk(lockfile.Dependencies, true)
+	return deps
 }
 
 func parseYarnLock(path string) ([]models.Dependency, error) {
@@ -210,8 +268,16 @@ func CountTransitiveDependencies(lockfilePath string) (*models.DependencyMetrics
 }
 
 // cleanVersion removes common version prefixes like ^, ~, >=, etc.
+// Non-semver specs (git URLs, file: paths, npm: aliases) are returned as-is
+// since they represent special dependency types that should be preserved.
 func cleanVersion(version string) string {
 	version = strings.TrimSpace(version)
+
+	// Preserve non-semver version specs as-is
+	if isNonSemverSpec(version) {
+		return version
+	}
+
 	version = strings.TrimPrefix(version, "^")
 	version = strings.TrimPrefix(version, "~")
 	version = strings.TrimPrefix(version, ">=")
@@ -220,4 +286,22 @@ func cleanVersion(version string) string {
 	version = strings.TrimPrefix(version, "<")
 	version = strings.TrimPrefix(version, "=")
 	return version
+}
+
+// isNonSemverSpec returns true for dependency specs that are not semver ranges.
+// These include git URLs, file paths, npm aliases, and URLs.
+func isNonSemverSpec(version string) bool {
+	prefixes := []string{
+		"git+", "git://",
+		"github:", "gitlab:", "bitbucket:",
+		"file:",
+		"http://", "https://",
+		"npm:",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(version, p) {
+			return true
+		}
+	}
+	return false
 }
