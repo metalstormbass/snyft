@@ -66,6 +66,18 @@ type PublisherControlAnalysis struct {
 	MFAEnforced bool   `json:"mfa_enforced"` // true if org-level MFA is required
 	MFAChecked  bool   `json:"mfa_checked"`  // true if we successfully determined MFA status
 
+	// Organizational publisher detection (registry-level)
+	// Justification: Org accounts on package registries (npm scopes like @aws-sdk,
+	// PyPI orgs like Pallets, Maven groupIds like com.google) represent institutional
+	// publishers, not individuals. A single registry "maintainer" that is actually an
+	// org account does NOT carry single-point-of-failure risk because the org has
+	// internal access controls, multiple humans behind the account, and institutional
+	// continuity.
+	// Source: npm org scopes documentation; PyPI organization accounts; Maven Central
+	//         groupId ownership rules require domain verification
+	IsOrgPublisher        bool   `json:"is_org_publisher"`        // true if registry publisher is an org
+	OrgPublisherReason    string `json:"org_publisher_reason,omitempty"` // why we detected it as org
+
 	// Download volume (risk modifier for high-traffic packages)
 	// Justification: Packages with >1M weekly downloads have higher community
 	// scrutiny. A compromised version would be detected faster due to the large
@@ -74,6 +86,9 @@ type PublisherControlAnalysis struct {
 	// packages have higher monitoring density, reducing attacker dwell time.
 	WeeklyDownloads       int64  `json:"weekly_downloads"`
 	HighDownloadVolume    bool   `json:"high_download_volume"` // true if >1M weekly downloads
+
+	// Package identity for org publisher detection
+	PackageName           string `json:"package_name,omitempty"`
 
 	// Ecosystem context for scoring
 	Ecosystem             models.Ecosystem `json:"ecosystem,omitempty"`
@@ -128,10 +143,16 @@ func (a *Analyzer) AnalyzePublisherControl(result *models.AnalysisResult, repoUR
 		MaintainerEmails:      result.Metadata.Maintainers,
 		SingleMaintainer:      len(result.Metadata.Maintainers) == 1,
 		PackagesPerMaintainer: make(map[string]int),
+		PackageName:           result.Dependency.Name,
 		Ecosystem:             result.Dependency.Ecosystem,
 		WeeklyDownloads:       result.Metadata.WeeklyDownloads,
 		HighDownloadVolume:    result.Metadata.WeeklyDownloads > 1_000_000,
 	}
+
+	// 1b. Detect organizational publishers at the registry level
+	// This must run before risk scoring so that org publishers don't get
+	// penalized as single-maintainer individuals.
+	analysis.detectOrgPublisher()
 
 	// Get git platform client
 	var gitClient fetcher.GitPlatformClient
@@ -521,6 +542,274 @@ func (analysis *PublisherControlAnalysis) checkMFAEnforcement(gitClient fetcher.
 	}
 }
 
+// detectOrgPublisher checks if the single registry "maintainer" is actually an
+// organizational publisher account rather than an individual.
+//
+// Methodology:
+// - npm: Check if the package name uses an org scope (@aws-sdk/*, @google-cloud/*, etc.)
+// - PyPI: Check if maintainer names match known organizational patterns (e.g. "Amazon
+//   Web Services", "Google LLC", "Pallets") or well-known org usernames
+// - Maven: Check if the groupId (encoded in the package name) belongs to a known
+//   corporate domain (com.google, com.amazonaws, org.apache, org.springframework)
+//
+// Risk Assessment:
+// When an org publisher is detected, single-maintainer status should NOT carry
+// HIGH risk because:
+// 1. The "single maintainer" is an org account with multiple humans behind it
+// 2. Org accounts have internal access controls and credential management
+// 3. Institutional continuity means the account survives individual departures
+//
+// Source: npm organization documentation - org scopes require team management;
+//         Maven Central groupId verification requires domain ownership proof;
+//         PyPI organization accounts (PEP 711) provide team-based publishing
+func (analysis *PublisherControlAnalysis) detectOrgPublisher() {
+	if !analysis.SingleMaintainer {
+		return // Only relevant when there's a single registry maintainer
+	}
+
+	switch analysis.Ecosystem {
+	case models.EcosystemNPM:
+		analysis.detectNPMOrgPublisher()
+	case models.EcosystemPyPI:
+		analysis.detectPyPIOrgPublisher()
+	case models.EcosystemMaven:
+		analysis.detectMavenOrgPublisher()
+	}
+}
+
+// detectNPMOrgPublisher checks if the npm package uses an organizational scope.
+// npm org scopes (e.g. @aws-sdk/client-s3) require team membership and are
+// managed by organization admins, not individual developers.
+func (analysis *PublisherControlAnalysis) detectNPMOrgPublisher() {
+	if !strings.HasPrefix(analysis.PackageName, "@") {
+		return
+	}
+
+	// Extract scope from @scope/package
+	slashIdx := strings.Index(analysis.PackageName, "/")
+	if slashIdx < 0 {
+		return
+	}
+	scope := strings.ToLower(analysis.PackageName[1:slashIdx])
+
+	// Known organizational npm scopes
+	// These are large orgs where the publish account represents an institution
+	knownOrgScopes := map[string]bool{
+		"aws-sdk":          true,
+		"aws-cdk":          true,
+		"aws-crypto":       true,
+		"aws-amplify":      true,
+		"smithy":           true,
+		"google-cloud":     true,
+		"googleapis":       true,
+		"firebase":         true,
+		"angular":          true,
+		"azure":            true,
+		"microsoft":        true,
+		"types":            true, // DefinitelyTyped org
+		"babel":            true,
+		"eslint":           true,
+		"typescript-eslint": true,
+		"rollup":           true,
+		"vitejs":           true,
+		"vue":              true,
+		"nuxt":             true,
+		"nestjs":           true,
+		"emotion":          true,
+		"mui":              true,
+		"prisma":           true,
+		"trpc":             true,
+		"tanstack":         true,
+		"reduxjs":          true,
+		"testing-library":  true,
+		"storybook":        true,
+		"octokit":          true,
+		"vercel":           true,
+		"sentry":           true,
+		"datadog":          true,
+		"opentelemetry":    true,
+		"grpc":             true,
+		"hashicorp":        true,
+		"pulumi":           true,
+		"terraform-cdk":    true,
+	}
+
+	if knownOrgScopes[scope] {
+		analysis.IsOrgPublisher = true
+		analysis.OrgPublisherReason = fmt.Sprintf("npm org scope @%s", scope)
+	}
+}
+
+// detectPyPIOrgPublisher checks if the PyPI maintainer represents an organization.
+// Some orgs publish under a single org account (e.g. "Amazon Web Services" for boto3).
+func (analysis *PublisherControlAnalysis) detectPyPIOrgPublisher() {
+	// Known PyPI organizational maintainer names/patterns
+	knownOrgMaintainers := map[string]bool{
+		"amazon web services": true,
+		"aws":                 true,
+		"google llc":          true,
+		"google cloud":        true,
+		"google inc":          true,
+		"google inc.":         true,
+		"the pallets team":    true,
+		"pallets":             true,
+		"microsoft":           true,
+		"microsoft corporation": true,
+		"facebook":            true,
+		"meta":                true,
+		"meta platforms":      true,
+		"mozilla":             true,
+		"mozilla foundation":  true,
+		"apache software foundation": true,
+		"django software foundation": true,
+		"python software foundation": true,
+		"twisted matrix laboratories": true,
+		"pypa":                true,
+		"jazzband":            true,
+		"encode":              true,
+		"pydantic":            true,
+		"sentry":              true,
+		"datadog":             true,
+		"elastic":             true,
+		"hashicorp":           true,
+	}
+
+	// Also check known PyPI org usernames (the login, not display name)
+	knownOrgUsernames := map[string]bool{
+		"boto":          true, // AWS boto3/botocore publisher
+		"aws":           true,
+		"google-cloud":  true,
+		"pallets":       true,
+		"psf":           true,
+		"django":        true,
+		"pypa":          true,
+		"jazzband":      true,
+		"encode":        true,
+		"pydantic":      true,
+		"sentry":        true,
+	}
+
+	for _, maintainer := range analysis.MaintainerEmails {
+		// Extract username/name part
+		name := strings.ToLower(strings.TrimSpace(maintainer))
+
+		// Handle "Name <email>" format - check the name part
+		if strings.Contains(name, "<") {
+			namePart := strings.TrimSpace(name[:strings.Index(name, "<")])
+			if knownOrgMaintainers[namePart] {
+				analysis.IsOrgPublisher = true
+				analysis.OrgPublisherReason = fmt.Sprintf("PyPI org maintainer: %s", namePart)
+				return
+			}
+		}
+
+		// Check bare username
+		username := extractUsernameFromEmail(maintainer)
+		if username != "" && knownOrgUsernames[strings.ToLower(username)] {
+			analysis.IsOrgPublisher = true
+			analysis.OrgPublisherReason = fmt.Sprintf("PyPI org username: %s", username)
+			return
+		}
+
+		// Check if the full string matches org patterns
+		if knownOrgMaintainers[name] {
+			analysis.IsOrgPublisher = true
+			analysis.OrgPublisherReason = fmt.Sprintf("PyPI org maintainer: %s", name)
+			return
+		}
+	}
+
+	// Check known org package prefixes (e.g. google-cloud-*, boto*, aws-cdk-*)
+	pkgLower := strings.ToLower(analysis.PackageName)
+	orgPrefixes := map[string]string{
+		"boto":          "AWS",
+		"aws-cdk":       "AWS",
+		"google-cloud-": "Google",
+		"google-api-":   "Google",
+		"azure-":        "Microsoft",
+		"django-":       "Django",  // not all, but commonly org-maintained
+	}
+	for prefix, org := range orgPrefixes {
+		if strings.HasPrefix(pkgLower, prefix) {
+			// Only treat as org publisher if maintainer also looks institutional
+			// (non-personal email or known org username). This avoids false positives
+			// for community forks/wrappers.
+			if analysis.HasOrgDomains || len(analysis.MaintainerEmails) == 0 {
+				analysis.IsOrgPublisher = true
+				analysis.OrgPublisherReason = fmt.Sprintf("PyPI package prefix %s* (%s)", prefix, org)
+				return
+			}
+		}
+	}
+}
+
+// detectMavenOrgPublisher checks if the Maven groupId belongs to a known
+// corporate or foundation domain. Maven Central requires groupId owners to
+// prove domain ownership, making groupId a strong org signal.
+func (analysis *PublisherControlAnalysis) detectMavenOrgPublisher() {
+	pkgLower := strings.ToLower(analysis.PackageName)
+
+	// Maven package names are typically groupId:artifactId
+	// Check if the groupId matches known corporate/org domains
+	knownOrgGroupIds := []string{
+		"com.google",
+		"com.google.",
+		"com.amazonaws",
+		"com.amazonaws.",
+		"com.amazon",
+		"com.amazon.",
+		"software.amazon",
+		"software.amazon.",
+		"org.apache",
+		"org.apache.",
+		"org.springframework",
+		"org.springframework.",
+		"io.spring",
+		"io.spring.",
+		"com.microsoft",
+		"com.microsoft.",
+		"com.azure",
+		"com.azure.",
+		"com.facebook",
+		"com.facebook.",
+		"org.eclipse",
+		"org.eclipse.",
+		"io.netty",
+		"io.netty.",
+		"com.fasterxml",
+		"com.fasterxml.",
+		"org.jetbrains",
+		"org.jetbrains.",
+		"com.squareup",
+		"com.squareup.",
+		"io.grpc",
+		"io.grpc.",
+		"io.opentelemetry",
+		"io.opentelemetry.",
+		"org.mongodb",
+		"org.mongodb.",
+		"com.oracle",
+		"com.oracle.",
+		"org.hibernate",
+		"org.hibernate.",
+		"com.netflix",
+		"com.netflix.",
+		"org.mockito",
+		"org.mockito.",
+		"junit",
+		"org.junit",
+		"org.junit.",
+	}
+
+	for _, prefix := range knownOrgGroupIds {
+		if strings.HasPrefix(pkgLower, prefix) {
+			analysis.IsOrgPublisher = true
+			analysis.OrgPublisherReason = fmt.Sprintf("Maven groupId prefix: %s", prefix)
+			return
+		}
+	}
+}
+
 // calculateRiskScore computes the final risk score based on all factors
 //
 // Scoring rubric (0-2 risk points):
@@ -564,6 +853,13 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 			evidenceParts = append(evidenceParts,
 				fmt.Sprintf("Maintainer data not found (%s can expose this data but none retrieved)", analysis.Ecosystem))
 		}
+	} else if analysis.SingleMaintainer && analysis.IsOrgPublisher {
+		// Org publisher detected: the "single maintainer" is an organizational account
+		// with multiple humans behind it, internal access controls, and institutional
+		// continuity. This is NOT the same risk as a personal single-maintainer account.
+		riskScore += 0.3
+		evidenceParts = append(evidenceParts,
+			fmt.Sprintf("single registry account but org publisher (%s)", analysis.OrgPublisherReason))
 	} else if analysis.SingleMaintainer {
 		riskScore += 1.0
 		evidenceParts = append(evidenceParts, "single maintainer (CRITICAL)")
@@ -771,6 +1067,8 @@ func (analysis *PublisherControlAnalysis) buildPublisherControlChecks() []models
 		} else {
 			checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "FAIL", Detail: "No maintainer data found (ecosystem exposes this data)"})
 		}
+	} else if analysis.SingleMaintainer && analysis.IsOrgPublisher {
+		checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "PASS", Detail: fmt.Sprintf("Single registry account but organizational publisher (%s)", analysis.OrgPublisherReason)})
 	} else if analysis.SingleMaintainer {
 		checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "FAIL", Detail: fmt.Sprintf("Single maintainer: %s", strings.Join(analysis.MaintainerEmails, ", "))})
 	} else {
