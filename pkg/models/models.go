@@ -315,10 +315,10 @@ type ProvenanceInfo struct {
 	BuildSystem          string   `json:"build_system,omitempty"`
 }
 
-// SupplyChainScore represents a 0-20 point supply chain security scoring rubric
+// SupplyChainScore represents a 0-19 point supply chain security scoring rubric
 type SupplyChainScore struct {
-	TotalScore         int            `json:"total_score"`                      // 0-20 points (or fewer when --check filters active)
-	MaxScore           int            `json:"max_score"`                        // Maximum possible score (active_checks * 2)
+	TotalScore         int            `json:"total_score"`                      // 0-19 points (or fewer when --check filters active)
+	MaxScore           int            `json:"max_score"`                        // Maximum possible score (sum of per-category max points)
 	ActiveChecks       int            `json:"active_checks"`                    // Number of checks that were run (10 normally, fewer with --check)
 	RiskLevel          string         `json:"risk_level"`                       // LOW (0-8), MEDIUM (9-10), HIGH (11+)
 	CategoryScores     CategoryScores `json:"category_scores"`
@@ -330,7 +330,7 @@ type CategoryScores struct {
 	OwnershipChanges   CategoryScore `json:"ownership_changes"`    // 0-2 pts: ownership transfers
 	ReleaseAnomalies   CategoryScore `json:"release_anomalies"`    // 0-2 pts: dormant→sudden activity
 	InstallExecution   CategoryScore `json:"install_execution"`    // 0-2 pts: postinstall scripts
-	DependencySprawl   CategoryScore `json:"dependency_sprawl"`    // 0-2 pts: transitive dependencies
+	DependencySprawl   CategoryScore `json:"dependency_sprawl"`    // 0-1 pts: extreme dependency sprawl only (weak signal)
 	Provenance         CategoryScore `json:"provenance"`           // 0-2 pts: reproducible/signed builds
 	Health             CategoryScore `json:"health"`               // 0-2 pts: bus factor/review/CI
 	Governance         CategoryScore `json:"governance"`           // 0-2 pts: governance docs/responsiveness
