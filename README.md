@@ -69,14 +69,14 @@ snyft scan --check health,provenance,governance
 
 ## How It Works
 
-Snyft collects data using two primary methods that require **no authentication**:
+Snyft collects data using two primary methods that require **no API keys or tokens**:
 
 1. **Web scraping** — extracts repository metadata, contributor info, governance files, and CI/CD configuration directly from hosting platform pages (GitHub, GitLab, Bitbucket)
-2. **Bare git clone** — clones repositories to analyze commit history, signed commits, release tags, and contributor patterns without needing API access
+2. **Bare git clone** — clones repositories to analyze commit history, signed commits, release tags, and contributor patterns
 
-Package registry APIs (npm, PyPI, Maven Central) provide maintainer info, version history, and dependency data.
+Package registry metadata (npm, PyPI, Maven Central) provides maintainer info, version history, and dependency data — all publicly accessible without authentication.
 
-Setting `GITHUB_TOKEN` is optional — it supplements scraping with additional GitHub API data (organization verification, MFA enforcement) and is needed for cloning private repositories.
+No `GITHUB_TOKEN` or API keys are needed. Everything works out of the box.
 
 ## Supply Chain Scoring System
 
@@ -84,15 +84,15 @@ Each dependency is scored across 10 categories (0-2 risk points each):
 
 | Category | What It Checks |
 |----------|---------------|
-| **1. Publisher Control** | Single maintainer risk, account age, org vs personal, commit signing, MFA enforcement. High-download packages (1M+/week) get reduced single-maintainer penalty. |
+| **1. Publisher Control** | Single maintainer risk, account age, org vs personal (scraped), verified org badge (scraped), commit signing (git clone). High-download packages (1M+/week) get reduced single-maintainer penalty. |
 | **2. Ownership Changes** | Recent maintainer or owner transitions |
 | **3. Release Anomalies** | Dormancy reactivation (1yr+ gap then sudden release), unusual release spikes, cadence anomalies |
 | **4. Install Execution** | npm install scripts (postinstall/preinstall), dangerous patterns (code injection, network calls, privilege escalation). Analyzes actual script files from cloned repos. |
 | **5. Dependency Sprawl** | Transitive dependency count. Maven uses scope-aware thresholds (12/29) vs npm/PyPI (5/15). |
 | **6. Provenance** | SLSA attestation, signed releases, build provenance, source code verification |
-| **7. Health** | Bus factor, code review coverage, CI/CD presence |
-| **8. Governance** | SECURITY.md presence, issue response time, abandonment detection (180+ days inactive), archived repos |
-| **9. Release Security** | CI/CD automation vs manual publishing, signed tags, PR review rates, CI workflow security (unpinned actions, script injection, excessive permissions). Branch protection assessed via OSSF Scorecard. |
+| **7. Health** | Bus factor (git clone), code review rate (scraped PR data), maintainer count |
+| **8. Governance** | SECURITY.md presence (git clone), issue response time (scraped), abandonment detection (180+ days inactive), archived repos |
+| **9. Release Security** | CI/CD automation vs manual publishing (cloned workflow files), signed tags (git clone), code review rate (scraped PR data), CI workflow security (unpinned actions, script injection, excessive permissions). |
 | **10. Package Maturity** | Package age (<6mo = high risk), staleness (>1yr = abandoned), release cadence regularity |
 
 **Total Score**: 0-20 points
@@ -117,7 +117,7 @@ When repository data is unavailable (e.g., no repo URL found), snyft applies a *
 Repository analysis works across:
 - **GitHub**, **GitLab**, **Bitbucket** (auto-detected from URLs)
 - Additional support for Sourcehut, Codeberg, Apache/Eclipse Git
-- Works out of the box with zero configuration — web scraping + git clone require no tokens
+- Works out of the box with zero configuration — no API keys or tokens needed
 
 ## License
 
