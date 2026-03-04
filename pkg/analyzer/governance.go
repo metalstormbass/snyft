@@ -9,6 +9,129 @@ import (
 	"github.com/metalstormbass/snyft/pkg/models"
 )
 
+// FoundationInfo describes a recognized open source foundation governing a project.
+//
+// Justification: Projects governed by established foundations (Apache, Eclipse, OpenJS,
+// Linux Foundation) have formal governance structures including security committees,
+// release policies, and contributor agreements. These structures significantly reduce
+// supply chain risk compared to individually-maintained projects.
+//
+// Source: OSSF Scorecard Specification — governance checks
+//         Apache Software Foundation Bylaws (https://www.apache.org/foundation/bylaws.html)
+//         Eclipse Foundation Development Process (https://www.eclipse.org/projects/dev_process/)
+//         OpenJS Foundation Charter (https://openjsf.org/about/governance/)
+type FoundationInfo struct {
+	IsFoundationProject bool   `json:"is_foundation_project"`
+	FoundationName      string `json:"foundation_name,omitempty"` // e.g. "Apache Software Foundation"
+	GovernanceModel     string `json:"governance_model,omitempty"` // e.g. "Apache PMC", "Eclipse Project"
+}
+
+// DetectFoundationProject identifies projects governed by well-known open source foundations
+// based on Maven groupId, GitHub organization, or npm scope.
+//
+// Methodology:
+// - Maven: groupId prefixes like org.apache.*, org.eclipse.*, org.springframework.*
+// - GitHub: organization names matching known foundation orgs
+// - npm: scoped packages under foundation orgs (@openjs-foundation/*, etc.)
+//
+// Source: Maven Central Namespace Policy, Apache Bylaws, Eclipse Development Process
+func DetectFoundationProject(result *models.AnalysisResult) *FoundationInfo {
+	info := &FoundationInfo{}
+
+	name := result.Dependency.Name
+	ecosystem := result.Dependency.Ecosystem
+
+	// Maven groupId-based foundation detection
+	if ecosystem == models.EcosystemMaven && strings.Contains(name, ":") {
+		groupID := strings.SplitN(name, ":", 2)[0]
+
+		// Foundation groupId mappings
+		// Maven Central requires domain ownership verification for these prefixes
+		foundationMavenPrefixes := map[string]struct{ foundation, governance string }{
+			"org.apache":          {"Apache Software Foundation", "Apache PMC"},
+			"org.eclipse":         {"Eclipse Foundation", "Eclipse Project"},
+			"org.springframework": {"VMware/Pivotal (Spring)", "Spring PMC"},
+			"org.jetbrains":       {"JetBrains", "JetBrains OSS"},
+			"io.quarkus":          {"Red Hat (Quarkus)", "Quarkus Community"},
+			"org.jboss":           {"Red Hat (JBoss)", "JBoss Community"},
+			"org.wildfly":         {"Red Hat (WildFly)", "WildFly Community"},
+			"org.glassfish":       {"Eclipse Foundation", "Eclipse Project"},
+			"jakarta":             {"Eclipse Foundation", "Jakarta EE"},
+			"javax":               {"Oracle/Eclipse Foundation", "Java Community Process"},
+		}
+
+		for prefix, found := range foundationMavenPrefixes {
+			if groupID == prefix || strings.HasPrefix(groupID, prefix+".") {
+				info.IsFoundationProject = true
+				info.FoundationName = found.foundation
+				info.GovernanceModel = found.governance
+				return info
+			}
+		}
+	}
+
+	// GitHub organization-based foundation detection
+	repoOwner := strings.ToLower(result.Metadata.RepoOwner)
+	if repoOwner != "" {
+		foundationGitHubOrgs := map[string]struct{ foundation, governance string }{
+			// Apache Software Foundation
+			"apache": {"Apache Software Foundation", "Apache PMC"},
+			// Eclipse Foundation
+			"eclipse":     {"Eclipse Foundation", "Eclipse Project"},
+			"eclipse-ee4j": {"Eclipse Foundation", "Jakarta EE"},
+			"eclipsefdn":  {"Eclipse Foundation", "Eclipse Project"},
+			// Linux Foundation
+			"cncf":        {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"kubernetes":  {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"grpc":        {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"envoyproxy":  {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"prometheus":  {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"open-telemetry": {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"lf-edge":     {"Linux Foundation", "LF Edge"},
+			"hyperledger": {"Linux Foundation", "Hyperledger TSC"},
+			"nodejs":      {"OpenJS Foundation", "OpenJS CPC"},
+			"openjs-foundation": {"OpenJS Foundation", "OpenJS CPC"},
+			"jquery":      {"OpenJS Foundation", "OpenJS CPC"},
+			"expressjs":   {"OpenJS Foundation", "OpenJS CPC"},
+			"webpack":     {"OpenJS Foundation", "OpenJS CPC"},
+			"electron":    {"OpenJS Foundation", "OpenJS CPC"},
+			"denoland":    {"Deno", "Deno Company"},
+			// Spring / VMware
+			"spring-projects": {"VMware/Pivotal (Spring)", "Spring PMC"},
+		}
+
+		if found, ok := foundationGitHubOrgs[repoOwner]; ok {
+			info.IsFoundationProject = true
+			info.FoundationName = found.foundation
+			info.GovernanceModel = found.governance
+			return info
+		}
+	}
+
+	// npm scope-based foundation detection
+	if ecosystem == models.EcosystemNPM && strings.HasPrefix(name, "@") {
+		scope := strings.SplitN(name, "/", 2)[0]
+		scope = strings.TrimPrefix(scope, "@")
+
+		foundationNPMScopes := map[string]struct{ foundation, governance string }{
+			"openjs-foundation": {"OpenJS Foundation", "OpenJS CPC"},
+			"kubernetes":        {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"grpc":              {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"opentelemetry":     {"Cloud Native Computing Foundation", "CNCF TOC"},
+			"electron":          {"OpenJS Foundation", "OpenJS CPC"},
+		}
+
+		if found, ok := foundationNPMScopes[scope]; ok {
+			info.IsFoundationProject = true
+			info.FoundationName = found.foundation
+			info.GovernanceModel = found.governance
+			return info
+		}
+	}
+
+	return info
+}
+
 // GovernanceMetrics contains governance-related metrics for risk assessment
 type GovernanceMetrics struct {
 	HasSecurityPolicy    bool    // SECURITY.md — indicates vulnerability disclosure process
@@ -264,12 +387,42 @@ func (a *Analyzer) scoreGovernance(result *models.AnalysisResult) models.Categor
 	}
 
 	// -----------------------------------------------------------------------
+	// Component 3: Foundation governance credit
+	// Projects governed by established foundations (Apache PMC, Eclipse, OpenJS,
+	// CNCF/Linux Foundation) have formal governance structures that provide
+	// security oversight, vulnerability disclosure processes, and contributor
+	// agreements. These are equivalent to or better than having a SECURITY.md.
+	//
+	// Source: Apache Software Foundation Bylaws (https://www.apache.org/foundation/bylaws.html)
+	//         Eclipse Foundation Development Process
+	//         OpenJS Foundation Charter
+	//         CNCF TOC governance
+	// -----------------------------------------------------------------------
+	foundationInfo := DetectFoundationProject(result)
+	if foundationInfo.IsFoundationProject {
+		evidenceParts = append(evidenceParts, fmt.Sprintf("Foundation governance: %s (%s)", foundationInfo.FoundationName, foundationInfo.GovernanceModel))
+		govChecks = append(govChecks, models.CheckResult{
+			Name:   "Foundation governance",
+			Status: "PASS",
+			Detail: fmt.Sprintf("Project governed by %s under %s model — formal security processes, vulnerability disclosure, and contributor agreements", foundationInfo.FoundationName, foundationInfo.GovernanceModel),
+		})
+		// Foundation governance provides both security policy and responsiveness equivalents
+		if securityPolicyPoints == 0 {
+			securityPolicyPoints = 1
+		}
+		if responsivenessPoints == 0 {
+			responsivenessPoints = 1
+		}
+	}
+
+	// -----------------------------------------------------------------------
 	// Final risk calculation
 	// Total possible: 2 points (1 security policy + 1 responsiveness)
 	// 2 pts = 0 risk (responsive + security policy)
 	// 1 pt  = 1 risk (partial signals)
 	// 0 pts = 2 risk (no signals)
 	// Abandonment/archive are handled as early returns above.
+	// Foundation governance can provide both points (security + responsiveness).
 	// -----------------------------------------------------------------------
 	totalPoints := securityPolicyPoints + responsivenessPoints
 

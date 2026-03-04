@@ -237,6 +237,29 @@ func (a *Analyzer) scoreOwnershipChanges(result *models.AnalysisResult) models.C
 		}
 	}
 
+	// 4.5. Foundation project team rotation adjustment
+	// Foundation-governed projects (Apache, Eclipse, OpenJS, CNCF) experience normal
+	// team rotation as committers join and leave. High author turnover in these projects
+	// is a feature of their governance model, not a compromise signal.
+	//
+	// Source: Apache Software Foundation Bylaws — committer rotation is standard
+	//         "Backstabber's Knife Collection" (Ohm et al., 2020) — distinguish
+	//         organizational governance from malicious takeover
+	foundationInfo := DetectFoundationProject(result)
+	if foundationInfo.IsFoundationProject && riskPoints > 0 && !confirmedTransfer {
+		riskPoints = 0
+		evidenceParts = append(evidenceParts,
+			fmt.Sprintf("Foundation project (%s, %s) — team rotation is normal governance",
+				foundationInfo.FoundationName, foundationInfo.GovernanceModel))
+		ownerChecks = append(ownerChecks, models.CheckResult{
+			Name:   "Foundation governance",
+			Status: "PASS",
+			Detail: fmt.Sprintf("Project governed by %s — committer rotation is standard under %s model",
+				foundationInfo.FoundationName, foundationInfo.GovernanceModel),
+		})
+		verified = true
+	}
+
 	// 5. Fallback to repository age heuristic if no other data available
 	//    Justification: Very new packages with a single maintainer have not had time to
 	//    establish a track record, making ownership-change detection impossible and

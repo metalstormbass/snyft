@@ -33,6 +33,16 @@ type PublisherControlAnalysis struct {
 	OrgName               string   `json:"org_name,omitempty"`
 	VerifiedOrgMembership bool     `json:"verified_org_membership"` // GitHub verified org badge
 
+	// Corporate publisher detection
+	// Justification: Corporate-backed packages (npm orgs like @stripe, Maven groupIds
+	// like com.google, software.amazon) represent organizational publishers, not individuals.
+	// A single listed maintainer on a corporate package does not indicate single-point-of-failure
+	// risk — the corporation has internal access controls, security teams, and multiple engineers.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — corporate-backed
+	//         packages have fundamentally different risk profiles than individual-maintained ones.
+	IsCorporatePublisher  bool     `json:"is_corporate_publisher"`
+	CorporateEntity       string   `json:"corporate_entity,omitempty"` // e.g. "Stripe", "Google", "Amazon"
+
 	// Account age and stability
 	MaintainerAccountAges []AccountAge `json:"maintainer_account_ages,omitempty"`
 	HasNewMaintainers     bool         `json:"has_new_maintainers"` // Accounts < 6 months old
@@ -122,6 +132,12 @@ func (a *Analyzer) AnalyzePublisherControl(result *models.AnalysisResult, repoUR
 		PackagesPerMaintainer: make(map[string]int),
 		Ecosystem: result.Dependency.Ecosystem,
 	}
+
+	// 1.5. Detect corporate publishers from package name patterns
+	// Corporate publishers (npm scoped packages, Maven corporate groupIds) should
+	// not be penalized as single-maintainer packages — the listed maintainer
+	// represents an organization with internal access controls.
+	analysis.detectCorporatePublisher(result)
 
 	// Get git platform client
 	var gitClient fetcher.GitPlatformClient
@@ -514,6 +530,147 @@ func (analysis *PublisherControlAnalysis) checkMFAEnforcement(gitClient fetcher.
 	}
 }
 
+// detectCorporatePublisher identifies corporate-backed packages from package name patterns.
+//
+// Methodology:
+// - npm: Scoped packages (@stripe/*, @aws-sdk/*, @google-cloud/*) indicate corporate publishers.
+//   npm scoped packages require an npm organization, which implies organizational ownership.
+// - Maven: GroupId prefixes (com.google, com.stripe, software.amazon, com.microsoft) indicate
+//   verified corporate ownership. Maven Central requires domain ownership verification for groupIds.
+//
+// Justification: Corporate publishers have internal security teams, access controls, and
+// multiple engineers with publish rights. A single listed maintainer on a corporate package
+// does not represent a single point of failure — it represents an organizational contact.
+//
+// Source: Maven Central Namespace Policy (https://central.sonatype.org/publish/requirements/coordinates/)
+//         npm Organizations documentation (https://docs.npmjs.com/organizations)
+//         "Small World with High Risks" (Zimmermann et al., 2019) — differentiation of
+//         corporate vs individual maintainer risk profiles
+func (analysis *PublisherControlAnalysis) detectCorporatePublisher(result *models.AnalysisResult) {
+	name := result.Dependency.Name
+	ecosystem := result.Dependency.Ecosystem
+
+	// Known corporate npm scoped packages
+	// npm scoped packages (@scope/pkg) require an npm organization account
+	if ecosystem == models.EcosystemNPM && strings.HasPrefix(name, "@") {
+		scope := strings.SplitN(name, "/", 2)[0] // "@stripe" from "@stripe/stripe-node"
+		scope = strings.TrimPrefix(scope, "@")
+
+		// Well-known corporate npm organizations
+		corporateNPMScopes := map[string]string{
+			"stripe":            "Stripe",
+			"aws-sdk":           "Amazon Web Services",
+			"aws-cdk":           "Amazon Web Services",
+			"google-cloud":      "Google",
+			"googleapis":        "Google",
+			"angular":           "Google",
+			"azure":             "Microsoft",
+			"microsoft":         "Microsoft",
+			"types":             "DefinitelyTyped",
+			"babel":             "Babel",
+			"hashicorp":         "HashiCorp",
+			"elastic":           "Elastic",
+			"datadog":           "Datadog",
+			"sentry":            "Sentry",
+			"vercel":            "Vercel",
+			"cloudflare":        "Cloudflare",
+			"shopify":           "Shopify",
+			"salesforce":        "Salesforce",
+			"twilio":            "Twilio",
+			"slack":             "Slack",
+			"apollographql":     "Apollo",
+			"prisma":            "Prisma",
+			"nestjs":            "NestJS",
+			"octokit":           "GitHub",
+			"actions":           "GitHub",
+			"grpc":              "gRPC",
+			"opentelemetry":     "OpenTelemetry",
+			"tensorflow":        "Google",
+			"firebase":          "Google",
+			"mui":               "MUI",
+			"reduxjs":           "Redux",
+			"testing-library":   "Testing Library",
+		}
+
+		if entity, ok := corporateNPMScopes[scope]; ok {
+			analysis.IsCorporatePublisher = true
+			analysis.CorporateEntity = entity
+		}
+	}
+
+	// Maven groupId-based corporate detection
+	// Maven Central requires domain ownership verification for groupIds
+	// Source: https://central.sonatype.org/publish/requirements/coordinates/
+	if ecosystem == models.EcosystemMaven && strings.Contains(name, ":") {
+		groupID := strings.SplitN(name, ":", 2)[0]
+
+		// Well-known corporate Maven groupId prefixes
+		corporateMavenPrefixes := map[string]string{
+			"com.google":          "Google",
+			"com.stripe":          "Stripe",
+			"software.amazon":     "Amazon Web Services",
+			"com.amazonaws":       "Amazon Web Services",
+			"com.microsoft":       "Microsoft",
+			"com.azure":           "Microsoft",
+			"com.oracle":          "Oracle",
+			"com.ibm":             "IBM",
+			"com.netflix":         "Netflix",
+			"com.uber":            "Uber",
+			"com.twitter":         "Twitter",
+			"com.facebook":        "Meta",
+			"com.meta":            "Meta",
+			"com.linkedin":        "LinkedIn",
+			"com.airbnb":          "Airbnb",
+			"com.squareup":        "Square",
+			"com.palantir":        "Palantir",
+			"com.salesforce":      "Salesforce",
+			"com.datadoghq":       "Datadog",
+			"com.newrelic":        "New Relic",
+			"com.hashicorp":       "HashiCorp",
+			"io.grpc":             "gRPC",
+			"io.opentelemetry":    "OpenTelemetry",
+			"com.slack.api":       "Slack",
+			"com.twilio":          "Twilio",
+			"com.shopify":         "Shopify",
+			"io.dropwizard":       "Dropwizard",
+			"com.zaxxer":          "Zaxxer",
+			"io.netty":            "Netty",
+			"io.vertx":            "Eclipse Vert.x",
+		}
+
+		for prefix, entity := range corporateMavenPrefixes {
+			if groupID == prefix || strings.HasPrefix(groupID, prefix+".") {
+				analysis.IsCorporatePublisher = true
+				analysis.CorporateEntity = entity
+				break
+			}
+		}
+	}
+
+	// PyPI: detect well-known corporate publishers from package name prefixes
+	if ecosystem == models.EcosystemPyPI {
+		corporatePyPIPrefixes := map[string]string{
+			"google-":        "Google",
+			"google_":        "Google",
+			"googleapis-":    "Google",
+			"azure-":         "Microsoft",
+			"aws-":           "Amazon Web Services",
+			"boto":           "Amazon Web Services",
+			"tensorflow":     "Google",
+			"stripe":         "Stripe",
+		}
+
+		lowerName := strings.ToLower(name)
+		for prefix, entity := range corporatePyPIPrefixes {
+			if strings.HasPrefix(lowerName, prefix) || lowerName == strings.TrimSuffix(prefix, "-") || lowerName == strings.TrimSuffix(prefix, "_") {
+				analysis.IsCorporatePublisher = true
+				analysis.CorporateEntity = entity
+				break
+			}
+		}
+	}
+}
+
 // calculateRiskScore computes the final risk score based on all factors
 //
 // Scoring rubric (0-2 risk points):
@@ -558,8 +715,17 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 				fmt.Sprintf("Maintainer data not found (%s can expose this data but none retrieved)", analysis.Ecosystem))
 		}
 	} else if analysis.SingleMaintainer {
-		riskScore += 1.0
-		evidenceParts = append(evidenceParts, "single maintainer (CRITICAL)")
+		if analysis.IsCorporatePublisher {
+			// Corporate publishers (npm orgs, Maven corporate groupIds) list a single
+			// organizational contact, but have internal security teams and access controls.
+			// The listed maintainer is not a single point of failure.
+			// Source: "Small World with High Risks" (Zimmermann et al., 2019)
+			riskScore += 0.3
+			evidenceParts = append(evidenceParts, fmt.Sprintf("single listed maintainer (corporate publisher: %s)", analysis.CorporateEntity))
+		} else {
+			riskScore += 1.0
+			evidenceParts = append(evidenceParts, "single maintainer (CRITICAL)")
+		}
 	} else if analysis.MaintainerCount <= 3 {
 		riskScore += 0.3 // Few maintainers = moderate concern
 		evidenceParts = append(evidenceParts, fmt.Sprintf("%d maintainers (few)", analysis.MaintainerCount))
@@ -580,7 +746,11 @@ func (analysis *PublisherControlAnalysis) calculateRiskScore() {
 	// tip the scale when combined with stronger signals like single-maintainer.
 	// Source: "Small World with High Risks" (Zimmermann et al., 2019) - most npm
 	// maintainers use personal accounts and free email providers.
-	if analysis.IsPersonalAccount {
+	if analysis.IsCorporatePublisher && !analysis.IsOrganization && !analysis.IsPersonalAccount {
+		// Corporate publisher detected from package name, but no repo URL to confirm
+		// account type. Treat as organizational (benefit of the doubt).
+		evidenceParts = append(evidenceParts, fmt.Sprintf("corporate publisher: %s (detected from package name)", analysis.CorporateEntity))
+	} else if analysis.IsPersonalAccount {
 		riskScore += 0.15
 		evidenceParts = append(evidenceParts, "personal account")
 	} else if analysis.IsOrganization {
@@ -743,6 +913,11 @@ func (analysis *PublisherControlAnalysis) buildPublisherControlChecks() []models
 		checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "FAIL", Detail: fmt.Sprintf("Single maintainer: %s", strings.Join(analysis.MaintainerEmails, ", "))})
 	} else {
 		checks = append(checks, models.CheckResult{Name: "Maintainer count", Status: "PASS", Detail: fmt.Sprintf("%d maintainers found", analysis.MaintainerCount)})
+	}
+
+	// Corporate publisher check
+	if analysis.IsCorporatePublisher {
+		checks = append(checks, models.CheckResult{Name: "Corporate publisher", Status: "PASS", Detail: fmt.Sprintf("Corporate publisher detected: %s", analysis.CorporateEntity)})
 	}
 
 	// Organization check

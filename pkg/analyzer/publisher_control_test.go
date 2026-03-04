@@ -1816,3 +1816,192 @@ func TestPublisherControl_NpmEmptyMaintainers_NoDoublePenalty(t *testing.T) {
 		t.Errorf("npm evidence should mention ecosystem capability, got: %s", npmAnalysis.Evidence)
 	}
 }
+
+// Test: Corporate npm scoped package with single maintainer should NOT get HIGH risk
+// Justification: Corporate publishers (e.g. @stripe/stripe-node) represent organizational
+//                accounts with internal security teams, access controls, and multiple engineers.
+//                A single listed maintainer is an organizational contact, not a single point of failure.
+// Source: "Small World with High Risks" (Zimmermann et al., 2019) — corporate-backed
+//         packages have fundamentally different risk profiles than individual-maintained ones.
+// Methodology: Detect @scope in npm package name, match against known corporate scopes
+// Result: Should NOT assign HIGH risk (2 points). Corporate single maintainer ≤ MEDIUM.
+func TestPublisherControl_CorporateNPMScope(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "@stripe/stripe-node",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"stripe-bot@stripe.com"}, // Single maintainer
+		},
+		RepositoryURL: "",
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.IsCorporatePublisher {
+		t.Error("Expected IsCorporatePublisher=true for @stripe/stripe-node")
+	}
+
+	if analysis.CorporateEntity != "Stripe" {
+		t.Errorf("Expected CorporateEntity='Stripe', got '%s'", analysis.CorporateEntity)
+	}
+
+	// Corporate single maintainer should NOT get HIGH risk
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Corporate publisher with single maintainer should not be HIGH risk, got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
+	}
+
+	if analysis.RiskPoints >= 2 {
+		t.Errorf("Expected <2 risk points for corporate publisher, got %d", analysis.RiskPoints)
+	}
+
+	if !strings.Contains(analysis.Evidence, "corporate publisher") {
+		t.Errorf("Expected evidence to mention corporate publisher, got: %s", analysis.Evidence)
+	}
+}
+
+// Test: Maven corporate groupId (com.google) with single maintainer should NOT get HIGH risk
+// Justification: Maven Central requires domain ownership verification for groupIds.
+//                A package with groupId com.google.* is verified as Google-owned.
+//                Single listed maintainer represents the organization, not a vulnerability.
+// Source: Maven Central Namespace Policy (https://central.sonatype.org/publish/requirements/coordinates/)
+//         "Small World with High Risks" (Zimmermann et al., 2019)
+// Methodology: Parse groupId from Maven package name (groupId:artifactId format),
+//              match against known corporate prefixes
+// Result: Should detect corporate publisher and assign ≤ MEDIUM risk
+func TestPublisherControl_CorporateMavenGroupId(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "com.google.guava:guava",
+			Ecosystem: models.EcosystemMaven,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"guava-dev@google.com"},
+		},
+		RepositoryURL: "",
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.IsCorporatePublisher {
+		t.Error("Expected IsCorporatePublisher=true for com.google.guava:guava")
+	}
+
+	if analysis.CorporateEntity != "Google" {
+		t.Errorf("Expected CorporateEntity='Google', got '%s'", analysis.CorporateEntity)
+	}
+
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Corporate Maven publisher should not be HIGH risk, got %s (evidence: %s)",
+			analysis.RiskLevel, analysis.Evidence)
+	}
+}
+
+// Test: Amazon AWS SDK Maven package detected as corporate publisher
+// Justification: software.amazon.* groupIds are verified Amazon-owned on Maven Central.
+// Source: Maven Central Namespace Policy
+// Methodology: Match software.amazon prefix in Maven groupId
+// Result: IsCorporatePublisher=true, CorporateEntity="Amazon Web Services"
+func TestPublisherControl_CorporateMavenAmazon(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "software.amazon.awssdk:s3",
+			Ecosystem: models.EcosystemMaven,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"aws-sdk@amazon.com"},
+		},
+		RepositoryURL: "",
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if !analysis.IsCorporatePublisher {
+		t.Error("Expected IsCorporatePublisher=true for software.amazon.awssdk:s3")
+	}
+
+	if analysis.CorporateEntity != "Amazon Web Services" {
+		t.Errorf("Expected CorporateEntity='Amazon Web Services', got '%s'", analysis.CorporateEntity)
+	}
+
+	if analysis.RiskLevel == "HIGH" {
+		t.Errorf("Corporate Maven publisher should not be HIGH risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: Non-corporate npm package still gets normal single-maintainer risk
+// Justification: Only recognized corporate scopes should get reduced risk.
+//                Unknown or individual packages maintain the single-maintainer penalty.
+// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+// Methodology: Check that a non-corporate scoped package is NOT flagged as corporate
+// Result: IsCorporatePublisher=false, normal single-maintainer risk applies
+func TestPublisherControl_NonCorporateStillPenalized(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "random-package",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"dev@gmail.com"},
+		},
+		RepositoryURL: "",
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+
+	if analysis.IsCorporatePublisher {
+		t.Error("Expected IsCorporatePublisher=false for non-corporate package")
+	}
+
+	// Single maintainer with personal email = MEDIUM (1.0 + 0.15 = 1.15 → MEDIUM)
+	if analysis.RiskLevel != "MEDIUM" {
+		t.Errorf("Non-corporate single maintainer should be MEDIUM risk, got %s", analysis.RiskLevel)
+	}
+}
+
+// Test: Corporate publisher check result appears in buildPublisherControlChecks
+// Justification: CheckResults should include corporate publisher detection for transparency
+// Source: N/A (output formatting test)
+// Methodology: Call buildPublisherControlChecks and verify corporate check is present
+// Result: CheckResult with Name="Corporate publisher" and Status="PASS" should be present
+func TestPublisherControl_CorporateCheckResult(t *testing.T) {
+	analyzer := NewAnalyzer()
+
+	result := &models.AnalysisResult{
+		Dependency: models.Dependency{
+			Name:      "@aws-sdk/client-s3",
+			Ecosystem: models.EcosystemNPM,
+		},
+		Metadata: models.PackageMetadata{
+			Maintainers: []string{"aws-sdk@amazon.com"},
+		},
+		RepositoryURL: "",
+	}
+
+	analysis := analyzer.AnalyzePublisherControl(result, "")
+	checks := analysis.buildPublisherControlChecks()
+
+	foundCorporateCheck := false
+	for _, check := range checks {
+		if check.Name == "Corporate publisher" && check.Status == "PASS" {
+			foundCorporateCheck = true
+			if !strings.Contains(check.Detail, "Amazon Web Services") {
+				t.Errorf("Expected corporate check detail to mention 'Amazon Web Services', got: %s", check.Detail)
+			}
+		}
+	}
+
+	if !foundCorporateCheck {
+		t.Error("Expected 'Corporate publisher' check result in buildPublisherControlChecks output")
+	}
+}
