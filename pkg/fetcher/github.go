@@ -739,6 +739,8 @@ func (c *GitHubClient) CheckGitTag(repoURL, version string) (bool, string, error
 		"V" + version,
 		"release-" + version,
 		"Release-" + version,
+		"release/" + version,
+		"rel/" + repo + "-" + version,
 		repo + "-" + version,
 		repo + "-v" + version,
 	}
@@ -860,20 +862,11 @@ func parseGitLsRemoteOutput(output []byte) []string {
 // the version appears as a suffix (e.g. "module-name-2.15.3").
 // Uses git ls-remote (preferred) and web scraping. In test mode, uses mock server.
 func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, string) {
-	versionSuffixes := []string{
-		"-" + version,
-		"-v" + version,
-		"_" + version,
-		"_v" + version,
-		"/" + version,
-		"/v" + version,
-	}
-
 	cacheKey := owner + "/" + repo
 
 	if c.cache != nil {
 		if cached, ok := c.cache.getTagNames(cacheKey); ok {
-			return matchTagVersion(cached, versionSuffixes, owner, repo)
+			return matchTagVersion(cached, version, owner, repo)
 		}
 	}
 
@@ -883,32 +876,78 @@ func (c *GitHubClient) searchTagsPaginated(owner, repo, version string) (bool, s
 		if c.cache != nil {
 			c.cache.setTagNames(cacheKey, allTagNames)
 		}
-		return matchTagVersion(allTagNames, versionSuffixes, owner, repo)
+		return matchTagVersion(allTagNames, version, owner, repo)
 	}
 
 	// Production path: git ls-remote (single HTTPS call, ALL tags, not rate-limited)
 	if tags, err := c.fetchTagNamesViaGitLsRemote(owner, repo); err == nil && len(tags) > 0 {
-		return matchTagVersion(tags, versionSuffixes, owner, repo)
+		return matchTagVersion(tags, version, owner, repo)
 	}
 
 	// Fallback: scrape the tags page
 	if scraped, err := c.scrapeTagNames(owner, repo); err == nil {
-		return matchTagVersion(scraped, versionSuffixes, owner, repo)
+		return matchTagVersion(scraped, version, owner, repo)
 	}
 
 	return false, ""
 }
 
-// matchTagVersion searches a list of tag names for any matching the version suffixes.
-func matchTagVersion(tagNames, versionSuffixes []string, owner, repo string) (bool, string) {
+// matchTagVersion searches a list of tag names for any matching the version.
+// It checks suffix-based matches first, then falls back to a contains-based
+// search with boundary checking to catch non-standard tag formats like
+// rel/commons-lang-3.13.0 or release/v1.2.3.
+func matchTagVersion(tagNames []string, version string, owner, repo string) (bool, string) {
+	makeURL := func(tag string) string {
+		return fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tag)
+	}
+
+	versionSuffixes := []string{
+		"-" + version,
+		"-v" + version,
+		"_" + version,
+		"_v" + version,
+		"/" + version,
+		"/v" + version,
+	}
+
+	// Pass 1: suffix-based match (e.g. module-name-2.15.3).
 	for _, name := range tagNames {
 		for _, suffix := range versionSuffixes {
 			if strings.HasSuffix(name, suffix) {
-				tagURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, name)
-				return true, tagURL
+				return true, makeURL(name)
 			}
 		}
 	}
+
+	// Pass 2: contains-based search with boundary check.
+	// A tag matches if it contains the version string and the character
+	// immediately before the version is NOT a digit (to prevent "21.0.0"
+	// matching version "1.0.0"). This catches patterns like:
+	//   rel/commons-lang-3.13.0, release/v1.2.3, v2.9.9, 2.9.9
+	for _, name := range tagNames {
+		idx := strings.Index(name, version)
+		if idx < 0 {
+			continue
+		}
+		// Check boundary: version must be preceded by a non-digit or be at start.
+		if idx > 0 {
+			preceding := name[idx-1]
+			if preceding >= '0' && preceding <= '9' {
+				continue
+			}
+		}
+		// Check end boundary: version must end at end of string or be followed
+		// by a non-digit (to prevent "1.0.0" matching "1.0.0.beta1" version part).
+		endIdx := idx + len(version)
+		if endIdx < len(name) {
+			following := name[endIdx]
+			if following >= '0' && following <= '9' {
+				continue
+			}
+		}
+		return true, makeURL(name)
+	}
+
 	return false, ""
 }
 
