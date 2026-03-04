@@ -122,6 +122,12 @@ type PackageMetadata struct {
 	RepoUpdatedAt    time.Time `json:"repo_updated_at"`
 	RepoDefaultBranch string   `json:"repo_default_branch"`
 	RepoArchived     bool      `json:"repo_archived"`
+	RepoDescription  string    `json:"repo_description,omitempty"`
+
+	// Deprecation signals
+	IsDeprecated      bool   `json:"is_deprecated"`                // Package has been explicitly deprecated or abandoned
+	DeprecationNotice string `json:"deprecation_notice,omitempty"` // The deprecation signal found (keyword, archived, etc.)
+	DeprecationSource string `json:"deprecation_source,omitempty"` // Where the signal was found: "readme", "description", "archived", "registry"
 
 	// Package registry information
 	DownloadCount    int64     `json:"download_count"`

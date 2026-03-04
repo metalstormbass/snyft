@@ -584,6 +584,25 @@ func (c *GitHubClient) scrapeRepositoryInfo(repoURL, owner, repo string) (*model
 		info.Watchers = extractNumber(text)
 	})
 
+	// Detect archived status from the GitHub archived banner.
+	// GitHub renders a flash warning div with text like "This repository has been archived"
+	// when a repo is archived. Also check for the "Public archive" label.
+	doc.Find(".flash-warn, .flash-error").Each(func(i int, s *goquery.Selection) {
+		text := strings.ToLower(strings.TrimSpace(s.Text()))
+		if strings.Contains(text, "archived") {
+			info.Archived = true
+		}
+	})
+	// Fallback: check for "Public archive" or "archived" in repo header labels
+	if !info.Archived {
+		doc.Find(".Label, .topic-tag").Each(func(i int, s *goquery.Selection) {
+			text := strings.ToLower(strings.TrimSpace(s.Text()))
+			if text == "public archive" || text == "archived" {
+				info.Archived = true
+			}
+		})
+	}
+
 	// Extract last commit date from the commit bar
 	doc.Find("relative-time").Each(func(i int, s *goquery.Selection) {
 		if datetime, exists := s.Attr("datetime"); exists && i == 0 {

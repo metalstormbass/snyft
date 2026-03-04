@@ -32,6 +32,12 @@ type RepoAnalysisData struct {
 	RepoUpdatedAt       time.Time
 	RepoDefaultBranch   string
 	RepoArchived        bool
+	RepoDescription     string
+
+	// Deprecation signals (from analyzeRepository)
+	IsDeprecated      bool
+	DeprecationNotice string
+	DeprecationSource string
 
 	// Build infrastructure (from analyzeBuildInfrastructure)
 	BuildInfrastructure string
@@ -155,6 +161,10 @@ func applyRepoData(result *models.AnalysisResult, rd *RepoAnalysisData) {
 	result.Metadata.RepoUpdatedAt = rd.RepoUpdatedAt
 	result.Metadata.RepoDefaultBranch = rd.RepoDefaultBranch
 	result.Metadata.RepoArchived = rd.RepoArchived
+	result.Metadata.RepoDescription = rd.RepoDescription
+	result.Metadata.IsDeprecated = rd.IsDeprecated
+	result.Metadata.DeprecationNotice = rd.DeprecationNotice
+	result.Metadata.DeprecationSource = rd.DeprecationSource
 
 	// Build infrastructure
 	result.Metadata.HasCI = rd.HasCI
@@ -210,6 +220,10 @@ func extractRepoData(result *models.AnalysisResult) *RepoAnalysisData {
 		RepoUpdatedAt:     result.Metadata.RepoUpdatedAt,
 		RepoDefaultBranch: result.Metadata.RepoDefaultBranch,
 		RepoArchived:      result.Metadata.RepoArchived,
+		RepoDescription:   result.Metadata.RepoDescription,
+		IsDeprecated:      result.Metadata.IsDeprecated,
+		DeprecationNotice: result.Metadata.DeprecationNotice,
+		DeprecationSource: result.Metadata.DeprecationSource,
 
 		// Build infrastructure
 		BuildInfrastructure: result.BuildInfrastructure,
