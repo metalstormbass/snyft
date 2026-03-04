@@ -676,6 +676,7 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 
 	// Count active (non-skipped) checks and calculate total score
 	activeChecks := 0
+	dataAvailableCount := 0
 	allCategories := []*models.CategoryScore{
 		&score.CategoryScores.PublisherControl,
 		&score.CategoryScores.OwnershipChanges,
@@ -692,10 +693,60 @@ func (a *Analyzer) calculateSupplyChainScore(result *models.AnalysisResult) {
 		if !cat.Skipped {
 			score.TotalScore += cat.RiskPoints
 			activeChecks++
+			if cat.DataAvailable {
+				dataAvailableCount++
+			}
 		}
 	}
 	score.ActiveChecks = activeChecks
 	score.MaxScore = activeChecks * 2
+
+	// Calculate confidence percentage: what fraction of active checks had real data
+	if activeChecks > 0 {
+		result.ConfidencePercentage = float64(dataAvailableCount) / float64(activeChecks) * 100
+	}
+
+	// Floor score enforcement: when no repository URL is available, many checks
+	// cannot gather real data and default to low/zero risk, which understates the
+	// actual risk of unverifiable packages.
+	//
+	// Justification: A package without a public source repository cannot have its
+	// build integrity, governance, health, or release security independently verified.
+	// This is itself a significant supply chain risk signal — "Backstabber's Knife
+	// Collection" (Ohm et al., 2020) documents that opaque packages are higher-value
+	// targets because compromises are harder to detect.
+	//
+	// Source: "Backstabber's Knife Collection" (Ohm et al., 2020)
+	//         SLSA v1.0 specification — Source requirements
+	missingDataCount := activeChecks - dataAvailableCount
+	if result.RepositoryURL == "" && activeChecks > 0 && a.checkFilter == nil {
+		// Floor score only applies during full scans (no --check filter).
+		// When --check selectively runs specific categories, applying a floor
+		// based on total category count would distort the targeted results.
+		//
+		// Determine floor based on how many categories lack data:
+		// >5 missing → floor 10 (many checks are pure defaults)
+		// otherwise  → floor 8  (some checks still had data)
+		floor := 8
+		if missingDataCount > 5 {
+			floor = 10
+		}
+		if score.TotalScore < floor {
+			score.TotalScore = floor
+		}
+	}
+
+	// Add finding when majority of checks lack data
+	if missingDataCount > 5 {
+		result.Findings = append(result.Findings, models.Finding{
+			Severity:    "MEDIUM",
+			Category:    "Limited Analysis",
+			Description: fmt.Sprintf("Limited analysis confidence: %d of %d categories lacked sufficient data for assessment. Results rely on defaults and may understate actual risk.", missingDataCount, activeChecks),
+			Check:       "Data Availability Assessment",
+			Evidence:    fmt.Sprintf("%.0f%% of checks based on actual data; %d categories used default scores due to missing repository or API data", result.ConfidencePercentage, missingDataCount),
+			Methodology: "Count of categories where DataAvailable was false after all scoring functions completed",
+		})
+	}
 
 	// Determine risk level based on total score.
 	// When all 10 categories are active (default): LOW 0-8, MEDIUM 9-12, HIGH 13+

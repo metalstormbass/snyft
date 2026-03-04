@@ -78,7 +78,8 @@ type AnalysisResult struct {
 	Findings              []Finding              `json:"findings"`
 	Metadata              PackageMetadata        `json:"metadata"`
 	SupplyChainScore      *SupplyChainScore      `json:"supply_chain_score,omitempty"`
-	DataMode              string                 `json:"data_mode,omitempty"` // "" (full) or "scraping-only"
+	DataMode              string                 `json:"data_mode,omitempty"`              // "" (full) or "scraping-only"
+	ConfidencePercentage  float64                `json:"confidence_percentage"`             // 0-100: percentage of checks based on actual data vs defaults
 }
 
 // Finding represents a specific security finding
