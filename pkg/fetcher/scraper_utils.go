@@ -42,10 +42,14 @@ func scrapeWithUserAgent(url string) (*goquery.Document, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		// Read a small portion of the body for the error message
-		limited := io.LimitReader(resp.Body, 512)
-		body, _ := io.ReadAll(limited)
-		return nil, fmt.Errorf("scraping returned status %d: %s", resp.StatusCode, string(body))
+		switch resp.StatusCode {
+		case http.StatusTooManyRequests:
+			return nil, fmt.Errorf("scraping returned status %d: %w", resp.StatusCode, ErrScrapingRateLimited)
+		case http.StatusForbidden:
+			return nil, fmt.Errorf("scraping returned status %d: %w", resp.StatusCode, ErrScrapingAccessDenied)
+		default:
+			return nil, fmt.Errorf("scraping returned status %d", resp.StatusCode)
+		}
 	}
 
 	// Cap response body at 5 MB to prevent excessive memory usage on

@@ -118,10 +118,26 @@ func (a *Analyzer) analyzeRepository(result *models.AnalysisResult, repoURL stri
 	gitClient := a.getGitClient(repoURL)
 	repoInfo, err := gitClient.GetRepositoryInfo(repoURL)
 	if err != nil {
+		// When we have a repo URL from the registry, the source code exists
+		// even if we can't scrape it right now. Don't report "Source: Unavailable"
+		// just because of a transient scraping failure.
+		if repoURL != "" {
+			result.SourceCodeAvailable = true
+		}
+
+		// Provide a clean, user-facing description instead of dumping raw
+		// HTML error pages from GitHub 403/429 responses.
+		desc := "Unable to verify repository metadata"
+		if errors.Is(err, fetcher.ErrScrapingRateLimited) {
+			desc = "Unable to verify repository metadata (GitHub rate limit)"
+		} else if errors.Is(err, fetcher.ErrScrapingAccessDenied) {
+			desc = "Unable to verify repository metadata (access denied)"
+		}
+
 		addFindingSafe(mu, result, models.Finding{
 			Severity:    "MEDIUM",
 			Category:    "Repository Access",
-			Description: fmt.Sprintf("Failed to fetch repository info: %v", err),
+			Description: desc,
 			Check:       "Repository Metadata Check",
 			SourceURL:   repoSrcURL,
 		})
