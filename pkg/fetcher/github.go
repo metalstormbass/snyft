@@ -1276,6 +1276,98 @@ type CommitAuthorStats struct {
 	HistoricalAuthors  []string // Authors with no recent commits
 }
 
+// normalizeAuthorID returns a canonical author identifier from an email and name.
+// It handles GitHub noreply emails (extracting the username) and lowercases for consistency.
+func normalizeAuthorID(email, name string) string {
+	email = strings.TrimSpace(strings.ToLower(email))
+
+	// GitHub noreply format: "12345+username@users.noreply.github.com" or "username@users.noreply.github.com"
+	if strings.HasSuffix(email, "@users.noreply.github.com") {
+		local := strings.TrimSuffix(email, "@users.noreply.github.com")
+		// Strip numeric prefix: "12345+username" → "username"
+		if idx := strings.Index(local, "+"); idx >= 0 {
+			local = local[idx+1:]
+		}
+		if local != "" {
+			return local
+		}
+	}
+
+	if email != "" {
+		return email
+	}
+	return strings.TrimSpace(strings.ToLower(name))
+}
+
+// isBotCommitAuthor returns true if the commit author appears to be a bot account.
+// Bot commits should not count toward human author statistics for ownership analysis.
+func isBotCommitAuthor(email, name string) bool {
+	email = strings.ToLower(email)
+	name = strings.ToLower(name)
+
+	// Common bot email patterns
+	botEmails := []string{
+		"dependabot[bot]@users.noreply.github.com",
+		"renovate[bot]@users.noreply.github.com",
+		"github-actions[bot]@users.noreply.github.com",
+		"snyk-bot@snyk.io",
+		"noreply@github.com",
+		"greenkeeper[bot]@users.noreply.github.com",
+	}
+	for _, botEmail := range botEmails {
+		if email == botEmail {
+			return true
+		}
+	}
+
+	// Bot name patterns: names containing "[bot]"
+	if strings.Contains(name, "[bot]") {
+		return true
+	}
+
+	return false
+}
+
+// finalizeCommitAuthorStats deduplicates authors by name (merging entries where
+// the same person committed with different emails) and categorizes them into
+// recent vs historical based on a 90-day threshold.
+func finalizeCommitAuthorStats(stats *CommitAuthorStats) {
+	// Categorize into recent vs historical
+	stats.UniqueAuthors = nil
+	stats.RecentAuthors = nil
+	stats.HistoricalAuthors = nil
+
+	ninetyDaysAgo := time.Now().AddDate(0, 0, -90)
+	for authorID, lastCommit := range stats.AuthorLastCommit {
+		stats.UniqueAuthors = append(stats.UniqueAuthors, authorID)
+		if lastCommit.After(ninetyDaysAgo) {
+			stats.RecentAuthors = append(stats.RecentAuthors, authorID)
+		} else {
+			stats.HistoricalAuthors = append(stats.HistoricalAuthors, authorID)
+		}
+	}
+}
+
+// mergeAuthorInto merges author data from srcID into dstID within the stats maps.
+func mergeAuthorInto(stats *CommitAuthorStats, dstID, srcID string) {
+	stats.AuthorCommitCounts[dstID] += stats.AuthorCommitCounts[srcID]
+	delete(stats.AuthorCommitCounts, srcID)
+
+	if first, ok := stats.AuthorFirstCommit[srcID]; ok {
+		if existing, exists := stats.AuthorFirstCommit[dstID]; !exists || first.Before(existing) {
+			stats.AuthorFirstCommit[dstID] = first
+		}
+		delete(stats.AuthorFirstCommit, srcID)
+	}
+
+	if last, ok := stats.AuthorLastCommit[srcID]; ok {
+		if existing, exists := stats.AuthorLastCommit[dstID]; !exists || last.After(existing) {
+			stats.AuthorLastCommit[dstID] = last
+		}
+		delete(stats.AuthorLastCommit, srcID)
+	}
+}
+
 type GitHubCommitVerification struct{
 	Verified  bool   `json:"verified"`
 	Reason    string `json:"reason"`
@@ -1649,6 +1741,9 @@ func (c *GitHubClient) getCommitAuthorsViaMock(owner, repo, cacheKey string) (*C
 		HistoricalAuthors:  []string{},
 	}
 
+	// Track name→authorID for deduplication (same as clone path)
+	nameToAuthorID := make(map[string]string)
+
 	for page := 1; page <= 3; page++ {
 		pageURL := fmt.Sprintf("%s&page=%d", url, page)
 		req, err := http.NewRequest("GET", pageURL, nil)
@@ -1689,12 +1784,29 @@ func (c *GitHubClient) getCommitAuthorsViaMock(owner, repo, cacheKey string) (*C
 			authorEmail := commit.Commit.Author.Email
 			commitDate := commit.Commit.Author.Date
 
-			authorID := authorEmail
-			if authorID == "" {
-				authorID = authorName
+			if isBotCommitAuthor(authorEmail, authorName) {
+				continue
 			}
+
+			authorID := normalizeAuthorID(authorEmail, authorName)
 			if authorID == "" {
 				continue
+			}
+
+			// Name-based deduplication: merge authors who share the same git name
+			normalizedName := strings.ToLower(strings.TrimSpace(authorName))
+			if normalizedName != "" {
+				if existingID, ok := nameToAuthorID[normalizedName]; ok && existingID != authorID {
+					if stats.AuthorCommitCounts[existingID] >= stats.AuthorCommitCounts[authorID] {
+						mergeAuthorInto(stats, existingID, authorID)
+						authorID = existingID
+					} else {
+						mergeAuthorInto(stats, authorID, existingID)
+						nameToAuthorID[normalizedName] = authorID
+					}
+				} else {
+					nameToAuthorID[normalizedName] = authorID
+				}
 			}
 
 			stats.TotalCommits++
@@ -1709,19 +1821,7 @@ func (c *GitHubClient) getCommitAuthorsViaMock(owner, repo, cacheKey string) (*C
 		}
 	}
 
-	seen := make(map[string]bool)
-	ninetyDaysAgo := time.Now().AddDate(0, 0, -90)
-	for authorID, lastCommit := range stats.AuthorLastCommit {
-		if !seen[authorID] {
-			stats.UniqueAuthors = append(stats.UniqueAuthors, authorID)
-			seen[authorID] = true
-			if lastCommit.After(ninetyDaysAgo) {
-				stats.RecentAuthors = append(stats.RecentAuthors, authorID)
-			} else {
-				stats.HistoricalAuthors = append(stats.HistoricalAuthors, authorID)
-			}
-		}
-	}
+	finalizeCommitAuthorStats(stats)
 
 	if c.cache != nil {
 		c.cache.setCommitAuthors(cacheKey, stats)

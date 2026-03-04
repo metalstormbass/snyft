@@ -568,43 +568,32 @@ func (c *GitLabClient) GetCommitAuthors(repoURL string) (*CommitAuthorStats, err
 		HistoricalAuthors:  []string{},
 	}
 
-	ninetyDaysAgo := time.Now().AddDate(0, 0, -90)
-
 	for _, commit := range commits {
 		authorEmail := commit.Commit.Author.Email
-		if authorEmail == "" {
-			authorEmail = commit.Commit.Author.Name
+		authorName := commit.Commit.Author.Name
+
+		if isBotCommitAuthor(authorEmail, authorName) {
+			continue
 		}
-		if authorEmail == "" {
+
+		authorID := normalizeAuthorID(authorEmail, authorName)
+		if authorID == "" {
 			continue
 		}
 
 		stats.TotalCommits++
-		stats.AuthorCommitCounts[authorEmail]++
+		stats.AuthorCommitCounts[authorID]++
 
 		commitDate := commit.Commit.Author.Date
-		if firstCommit, exists := stats.AuthorFirstCommit[authorEmail]; !exists || commitDate.Before(firstCommit) {
-			stats.AuthorFirstCommit[authorEmail] = commitDate
+		if firstCommit, exists := stats.AuthorFirstCommit[authorID]; !exists || commitDate.Before(firstCommit) {
+			stats.AuthorFirstCommit[authorID] = commitDate
 		}
-		if lastCommit, exists := stats.AuthorLastCommit[authorEmail]; !exists || commitDate.After(lastCommit) {
-			stats.AuthorLastCommit[authorEmail] = commitDate
+		if lastCommit, exists := stats.AuthorLastCommit[authorID]; !exists || commitDate.After(lastCommit) {
+			stats.AuthorLastCommit[authorID] = commitDate
 		}
 	}
 
-	// Categorize authors
-	seen := make(map[string]bool)
-	for authorID, lastCommit := range stats.AuthorLastCommit {
-		if !seen[authorID] {
-			stats.UniqueAuthors = append(stats.UniqueAuthors, authorID)
-			seen[authorID] = true
-
-			if lastCommit.After(ninetyDaysAgo) {
-				stats.RecentAuthors = append(stats.RecentAuthors, authorID)
-			} else {
-				stats.HistoricalAuthors = append(stats.HistoricalAuthors, authorID)
-			}
-		}
-	}
+	finalizeCommitAuthorStats(stats)
 
 	return stats, nil
 }

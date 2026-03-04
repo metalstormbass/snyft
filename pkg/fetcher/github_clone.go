@@ -342,6 +342,11 @@ func extractCommitAuthors(ctx context.Context, cloneDir string) (*CommitAuthorSt
 		HistoricalAuthors:  []string{},
 	}
 
+	// Track name→authorID for deduplication: when the same person commits
+	// with different emails (e.g., personal + GitHub noreply), their git
+	// author name is typically identical, so we merge under one canonical ID.
+	nameToAuthorID := make(map[string]string)
+
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -358,13 +363,32 @@ func extractCommitAuthors(ctx context.Context, cloneDir string) (*CommitAuthorSt
 		name := strings.TrimSpace(parts[1])
 		dateStr := strings.TrimSpace(parts[2])
 
-		// Use email as primary identifier, fall back to name
-		authorID := email
-		if authorID == "" {
-			authorID = name
+		// Skip bot commits — they inflate author counts and distort ownership analysis
+		if isBotCommitAuthor(email, name) {
+			continue
 		}
+
+		authorID := normalizeAuthorID(email, name)
 		if authorID == "" {
 			continue
+		}
+
+		// Name-based deduplication: if we've seen this name before under a different
+		// authorID, merge into the existing one (the one with more commits wins).
+		normalizedName := strings.ToLower(strings.TrimSpace(name))
+		if normalizedName != "" {
+			if existingID, ok := nameToAuthorID[normalizedName]; ok && existingID != authorID {
+				// Same name, different ID — merge the less-used one into the more-used one
+				if stats.AuthorCommitCounts[existingID] >= stats.AuthorCommitCounts[authorID] {
+					mergeAuthorInto(stats, existingID, authorID)
+					authorID = existingID
+				} else {
+					mergeAuthorInto(stats, authorID, existingID)
+					nameToAuthorID[normalizedName] = authorID
+				}
+			} else {
+				nameToAuthorID[normalizedName] = authorID
+			}
 		}
 
 		commitDate, err := time.Parse(time.RFC3339, dateStr)
@@ -387,22 +411,8 @@ func extractCommitAuthors(ctx context.Context, cloneDir string) (*CommitAuthorSt
 		}
 	}
 
-	// Build unique authors list and categorize recent vs historical
-	seen := make(map[string]bool)
-	ninetyDaysAgo := time.Now().AddDate(0, 0, -90)
-
-	for authorID, lastCommit := range stats.AuthorLastCommit {
-		if !seen[authorID] {
-			stats.UniqueAuthors = append(stats.UniqueAuthors, authorID)
-			seen[authorID] = true
-
-			if lastCommit.After(ninetyDaysAgo) {
-				stats.RecentAuthors = append(stats.RecentAuthors, authorID)
-			} else {
-				stats.HistoricalAuthors = append(stats.HistoricalAuthors, authorID)
-			}
-		}
-	}
+	// Categorize into recent vs historical using shared finalization
+	finalizeCommitAuthorStats(stats)
 
 	return stats, nil
 }
