@@ -168,6 +168,32 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		maturityChecks = append(maturityChecks, models.CheckResult{Name: "Release cadence", Status: "SKIPPED", Detail: "No repository URL available and registry version history unavailable"})
 	}
 
+	// Sub-check 4: Feature-complete detection
+	// Packages like "six" (Python 2/3 compat) are feature-complete, not abandoned.
+	// They have infrequent updates because they are done, not because they are unmaintained.
+	// Check: README/description keywords + repo NOT archived
+	// Justification: Feature-complete packages have intentionally low activity that should
+	//                not be conflated with abandonment. An archived repo is truly unmaintained,
+	//                but a non-archived repo with "stable"/"feature-complete" language signals
+	//                intentional maintenance-mode — lower takeover risk than truly abandoned.
+	// Source: "Small World with High Risks" (Zimmermann et al., 2019) — distinguishes
+	//         intentional stability from neglect when assessing maintenance risk.
+	featureComplete := false
+	if stalenessRisk >= 2 && !result.Metadata.RepoArchived {
+		desc := strings.ToLower(result.Metadata.RepoDescription)
+		if isFeatureCompleteDescription(desc) {
+			featureComplete = true
+			stalenessRisk = 1 // reduce from 2 (abandoned) to 1 (low activity)
+			evidenceParts = append(evidenceParts,
+				"Package appears feature-complete (stable/maintenance-mode keywords in description, repo not archived)")
+			maturityChecks = append(maturityChecks, models.CheckResult{
+				Name:   "Feature-complete detection",
+				Status: "PASS",
+				Detail: "Description contains feature-complete/stable/maintenance-mode keywords and repository is not archived; staleness penalty reduced",
+			})
+		}
+	}
+
 	// Combine sub-checks: take the maximum risk across the three sub-checks.
 	// A package that is either very new OR very stale OR has erratic cadence is risky.
 	riskPoints := ageRisk
@@ -204,6 +230,8 @@ func (a *Analyzer) scorePackageMaturity(result *models.AnalysisResult) models.Ca
 		switch {
 		case cadenceRisk >= 1 && ageRisk == 0 && stalenessRisk == 0:
 			description = evidenceJoined + ". Irregular release cadence may indicate inconsistent maintenance or sudden bursts of activity worth monitoring."
+		case stalenessRisk >= 1 && ageRisk == 0 && featureComplete:
+			description = evidenceJoined + ". Package appears feature-complete with intentionally low activity — lower risk than a truly abandoned project, but reduced maintenance warrants monitoring."
 		case stalenessRisk >= 1 && ageRisk == 0:
 			description = evidenceJoined + ". Package shows signs of reduced maintenance — stale projects may be at higher risk of account takeover."
 		case ageRisk >= 1 && stalenessRisk == 0:
@@ -299,4 +327,31 @@ func scoreCadenceRegularity(releases []fetcher.RegistryRelease) (int, string) {
 	}
 
 	return 0, fmt.Sprintf("Consistent release cadence (CV=%.1f, avg %.0f days between releases)", cv, mean)
+}
+
+// featureCompleteKeywords are terms in a package description that indicate the package
+// is intentionally in maintenance/stable mode rather than abandoned.
+var featureCompleteKeywords = []string{
+	"stable",
+	"feature-complete",
+	"feature complete",
+	"maintenance mode",
+	"maintenance-mode",
+	"mature",
+	"production-ready",
+	"production ready",
+	"no longer actively developed",
+	"considered complete",
+	"fully implemented",
+}
+
+// isFeatureCompleteDescription checks whether a lowercased description contains
+// keywords suggesting the package is intentionally stable/feature-complete.
+func isFeatureCompleteDescription(desc string) bool {
+	for _, kw := range featureCompleteKeywords {
+		if strings.Contains(desc, kw) {
+			return true
+		}
+	}
+	return false
 }
