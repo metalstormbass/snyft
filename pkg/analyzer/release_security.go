@@ -76,9 +76,15 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 			points++
 			evidence = append(evidence, fmt.Sprintf("OSSF Packaging: %d/10 (CI-based package publishing detected)", ossfPackaging))
 			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "PASS", Detail: fmt.Sprintf("OSSF Packaging score: %d/10 (>= 7 threshold; GitHub packaging workflow detected for CI-based publishing)", ossfPackaging)})
+		} else if result.Metadata.HasCI {
+			// CI exists (for testing/building) but no release publishing workflow found.
+			// Distinguish from "no CI at all" to avoid contradictory findings where
+			// CI is detected elsewhere but this check says "no automated release".
+			evidence = append(evidence, fmt.Sprintf("CI detected (%s) but no automated release publishing workflow found", strings.Join(result.Metadata.CISystems, ", ")))
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "FAIL", Detail: fmt.Sprintf("CI/CD present for testing/builds (%s) but no automated release publishing workflow detected; packages may be published from developer machines", strings.Join(result.Metadata.CISystems, ", "))})
 		} else {
-			evidence = append(evidence, "No automated release process (local publishing risk)")
-			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "FAIL", Detail: "No automated release process detected; packages may be published from developer machines"})
+			evidence = append(evidence, "No CI/CD or automated release process detected (local publishing risk)")
+			relSecChecks = append(relSecChecks, models.CheckResult{Name: "CI/CD release process", Status: "FAIL", Detail: "No CI/CD or automated release process detected; packages may be published from developer machines"})
 		}
 	}
 
@@ -256,7 +262,10 @@ func (a *Analyzer) scoreReleaseSecurity(result *models.AnalysisResult) models.Ca
 		}
 		evidence = append(evidence, fmt.Sprintf("Self-hosted CI runners detected (%s): build environment not controlled by trusted provider",
 			strings.Join(selfHostedNames, ", ")))
-	} else if len(result.Metadata.BuildSystems) > 0 && len(result.Metadata.CISystems) > 0 {
+	} else if len(result.Metadata.BuildSystems) > 0 && len(result.Metadata.CISystems) > 0 && result.Metadata.HasReleaseProcess {
+		// Only mention cloud-hosted CI as a positive signal when there's an
+		// automated release process. Without a release process, CI is for
+		// testing only and was already noted in Component 1.
 		evidence = append(evidence, fmt.Sprintf("Cloud-hosted CI: %s", result.Metadata.CISystems[0]))
 	}
 
